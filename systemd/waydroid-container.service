@@ -1,0 +1,23 @@
+[Unit]
+Description=Waydroid Container
+Documentation=https://waydro.id
+After=network.target local-fs.target waydroid-bridge.service
+Requires=waydroid-bridge.service
+ConditionPathExists=/var/lib/waydroid/waydroid.cfg
+
+[Service]
+Type=simple
+# Ensure network is up before starting container
+ExecStartPre=/usr/lib/waydroid/data/scripts/waydroid-net.sh start
+# Mount rootfs before container start (LXC needs it)
+ExecStartPre=/opt/waydroid-scripts/mount-rootfs.sh
+ExecStart=/usr/bin/waydroid container start
+ExecStop=/usr/bin/waydroid container stop
+ExecStopPost=/usr/lib/waydroid/data/scripts/waydroid-net.sh stop
+ExecStopPost=/opt/waydroid-scripts/umount-rootfs.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+
+[Install]
+WantedBy=waydroid-cloud-phone.target

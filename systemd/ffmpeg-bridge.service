@@ -1,0 +1,21 @@
+[Unit]
+Description=FFmpeg RTMP to Virtual Devices Bridge
+Documentation=https://ffmpeg.org
+After=nginx-rtmp.service
+Wants=nginx-rtmp.service
+
+[Service]
+Type=simple
+ExecStart=/opt/waydroid-scripts/ffmpeg-bridge.sh
+Restart=always
+RestartSec=5
+
+# Run as root to access /dev/video42
+User=root
+
+# Resource limits
+CPUQuota=50%
+MemoryMax=512M
+
+[Install]
+WantedBy=waydroid-cloud-phone.target

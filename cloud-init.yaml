@@ -1,0 +1,63 @@
+#cloud-config
+# Waydroid Cloud Phone - Cloud-Init Bootstrap
+# 
+# Use this as User Data when creating an OCI instance.
+# It will automatically install and configure everything.
+#
+# After the instance boots:
+# 1. SSH in and run: sudo /opt/waydroid-cloud-phone/scripts/init-waydroid.sh
+# 2. Start services: sudo systemctl start waydroid-cloud-phone.target
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - wget
+  - git
+  - unzip
+
+write_files:
+  - path: /root/setup-waydroid-cloud-phone.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      
+      echo "Downloading Waydroid Cloud Phone..."
+      cd /opt
+      
+      # Clone or download the project
+      # Replace with your actual repo URL
+      git clone https://github.com/YOUR_USERNAME/waydroid-cloud-phone.git || {
+        echo "Git clone failed, using curl..."
+        mkdir -p waydroid-cloud-phone
+        # Alternative: download from releases
+        # curl -L https://github.com/.../releases/latest/download/waydroid-cloud-phone.tar.gz | tar xz
+      }
+      
+      cd waydroid-cloud-phone
+      chmod +x install.sh scripts/*.sh
+      
+      echo "Running installer..."
+      ./install.sh
+      
+      echo ""
+      echo "========================================"
+      echo "Installation complete!"
+      echo "The system will reboot in 30 seconds."
+      echo ""
+      echo "After reboot, SSH in and run:"
+      echo "  sudo /opt/waydroid-cloud-phone/scripts/init-waydroid.sh"
+      echo "========================================"
+      
+      # Schedule reboot
+      shutdown -r +1 "Rebooting to load kernel modules..."
+
+runcmd:
+  - /root/setup-waydroid-cloud-phone.sh
+
+final_message: |
+  Waydroid Cloud Phone setup initiated.
+  Check /var/log/cloud-init-output.log for progress.
+  System will reboot automatically to load kernel modules.

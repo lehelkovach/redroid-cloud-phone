@@ -1,0 +1,23 @@
+[Unit]
+Description=Waydroid Control API Server
+Documentation=https://github.com/example/waydroid-cloud-phone
+After=waydroid-session.service
+Wants=waydroid-session.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/waydroid-api
+ExecStart=/opt/waydroid-api/venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+
+# Run as root for ADB access
+User=root
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=API_HOST=127.0.0.1
+Environment=API_PORT=8080
+
+[Install]
+WantedBy=waydroid-cloud-phone.target

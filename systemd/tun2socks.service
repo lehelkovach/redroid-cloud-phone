@@ -1,0 +1,30 @@
+[Unit]
+Description=tun2socks SOCKS5 Tunnel
+Documentation=https://github.com/xjasonlyu/tun2socks
+After=network-online.target
+Wants=network-online.target
+
+# This service is NOT enabled by default
+# Enable with: systemctl enable tun2socks.service
+# Configure with: /etc/tun2socks.env
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/tun2socks.env
+
+# Create TUN device and configure routing
+ExecStartPre=/bin/bash -c 'ip tuntap add mode tun dev tun0 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'ip addr add 198.18.0.1/15 dev tun0 2>/dev/null || true'
+ExecStartPre=/sbin/ip link set dev tun0 up
+
+ExecStart=/usr/local/bin/tun2socks -device tun0 -proxy socks5://${SOCKS5_PROXY}
+
+# Cleanup
+ExecStopPost=/sbin/ip link set dev tun0 down
+ExecStopPost=/sbin/ip tuntap del mode tun dev tun0
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
