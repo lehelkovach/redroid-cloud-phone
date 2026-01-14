@@ -125,62 +125,76 @@ fi
 
 # Test 6: ADB Connectivity
 echo -e "${BLUE}[6/10] ADB Connectivity${NC}"
+ADB_AVAILABLE=true
 if ! command -v adb &> /dev/null; then
-    echo "  Installing ADB..."
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq adb 2>&1 | tail -1
+    echo "  ADB not installed. Attempting install..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -qq || true
+        sudo apt-get install -y -qq android-tools-adb 2>/dev/null || sudo apt-get install -y -qq adb 2>/dev/null || true
+    fi
 fi
 
-adb kill-server 2>/dev/null || true
-sleep 1
-
-ADB_CONNECT=$(adb connect "$INSTANCE_IP:5555" 2>&1 || echo "failed")
-if echo "$ADB_CONNECT" | grep -q "connected\|already"; then
-    test_pass "ADB connection established"
-else
-    test_fail "ADB connection" "Failed to connect"
-    echo "      Output: $ADB_CONNECT"
+if ! command -v adb &> /dev/null; then
+    ADB_AVAILABLE=false
+    test_warn "ADB tooling" "adb not available locally; skipping ADB tests"
 fi
 
-sleep 3
+if [ "$ADB_AVAILABLE" = true ]; then
+    adb kill-server 2>/dev/null || true
+    sleep 1
 
-ADB_DEVICES=$(adb devices 2>&1 | grep "$INSTANCE_IP:5555" || echo "")
-if echo "$ADB_DEVICES" | grep -q "device"; then
-    test_pass "ADB device shows as 'device'"
-else
-    test_warn "ADB device status" "Device may still be connecting"
-    echo "      Status: $ADB_DEVICES"
+    ADB_CONNECT=$(adb connect "$INSTANCE_IP:5555" 2>&1 || echo "failed")
+    if echo "$ADB_CONNECT" | grep -q "connected\\|already"; then
+        test_pass "ADB connection established"
+    else
+        test_fail "ADB connection" "Failed to connect"
+        echo "      Output: $ADB_CONNECT"
+    fi
+
+    sleep 3
+
+    ADB_DEVICES=$(adb devices 2>&1 | grep "$INSTANCE_IP:5555" || echo "")
+    if echo "$ADB_DEVICES" | grep -q "device"; then
+        test_pass "ADB device shows as 'device'"
+    else
+        test_warn "ADB device status" "Device may still be connecting"
+        echo "      Status: $ADB_DEVICES"
+    fi
 fi
 
 # Test 7: Android System Information
 echo -e "${BLUE}[7/10] Android System Information${NC}"
-ANDROID_VERSION=$(adb shell getprop ro.build.version.release 2>&1 | head -1 || echo "")
-if [[ -n "$ANDROID_VERSION" ]] && [[ "$ANDROID_VERSION" =~ ^[0-9] ]]; then
-    test_pass "Android version: $ANDROID_VERSION"
-else
-    test_warn "Android version" "Could not retrieve (may still be booting)"
-fi
+if [ "$ADB_AVAILABLE" = true ]; then
+    ANDROID_VERSION=$(adb shell getprop ro.build.version.release 2>&1 | head -1 || echo "")
+    if [[ -n "$ANDROID_VERSION" ]] && [[ "$ANDROID_VERSION" =~ ^[0-9] ]]; then
+        test_pass "Android version: $ANDROID_VERSION"
+    else
+        test_warn "Android version" "Could not retrieve (may still be booting)"
+    fi
 
-DEVICE_MODEL=$(adb shell getprop ro.product.model 2>&1 | head -1 || echo "")
-if [[ -n "$DEVICE_MODEL" ]] && [[ "$DEVICE_MODEL" != "getprop:"* ]]; then
-    test_pass "Device model: $DEVICE_MODEL"
-else
-    test_warn "Device model" "Could not retrieve"
-fi
+    DEVICE_MODEL=$(adb shell getprop ro.product.model 2>&1 | head -1 || echo "")
+    if [[ -n "$DEVICE_MODEL" ]] && [[ "$DEVICE_MODEL" != "getprop:"* ]]; then
+        test_pass "Device model: $DEVICE_MODEL"
+    else
+        test_warn "Device model" "Could not retrieve"
+    fi
 
-SDK_VERSION=$(adb shell getprop ro.build.version.sdk 2>&1 | head -1 || echo "")
-if [[ -n "$SDK_VERSION" ]] && [[ "$SDK_VERSION" =~ ^[0-9]+$ ]]; then
-    test_pass "SDK version: $SDK_VERSION"
-else
-    test_warn "SDK version" "Could not retrieve"
-fi
+    SDK_VERSION=$(adb shell getprop ro.build.version.sdk 2>&1 | head -1 || echo "")
+    if [[ -n "$SDK_VERSION" ]] && [[ "$SDK_VERSION" =~ ^[0-9]+$ ]]; then
+        test_pass "SDK version: $SDK_VERSION"
+    else
+        test_warn "SDK version" "Could not retrieve"
+    fi
 
-# Test ADB shell command
-SHELL_TEST=$(adb shell 'echo "test"' 2>&1 | head -1 || echo "")
-if [[ "$SHELL_TEST" == "test" ]]; then
-    test_pass "ADB shell command execution"
+    # Test ADB shell command
+    SHELL_TEST=$(adb shell 'echo "test"' 2>&1 | head -1 || echo "")
+    if [[ "$SHELL_TEST" == "test" ]]; then
+        test_pass "ADB shell command execution"
+    else
+        test_warn "ADB shell" "Command execution may be limited"
+    fi
 else
-    test_warn "ADB shell" "Command execution may be limited"
+    test_warn "Android system info" "Skipped (adb not available locally)"
 fi
 
 # Test 8: VNC Port Accessibility
