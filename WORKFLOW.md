@@ -2,6 +2,13 @@
 
 This guide walks you through the complete process of setting up, testing, and creating a golden image.
 
+> **Note (2026):** This workflow is **Waydroid-focused** (uses `install.sh` and `waydroid-cloud-phone.target`).
+>
+> If you’re using the **current Redroid** approach, prefer:
+> - `sudo ./install-redroid.sh`
+> - `sudo systemctl start redroid-cloud-phone.target`
+> - `./scripts/test-redroid-full.sh <INSTANCE_IP>`
+
 ## Prerequisites
 
 - OCI CLI installed and configured ✓
