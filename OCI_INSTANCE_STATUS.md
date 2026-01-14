@@ -22,20 +22,33 @@ During live testing on OCI ARM instances (Always Free tier), we encountered pers
 
 ## Root Cause Analysis
 
+**Key Finding**: SSH connectivity fails specifically when Redroid container is running or restarting.
+
 The issue appears to be related to:
 
-1. **Resource exhaustion**: Redroid container may consume significant resources
-2. **Binder module issues**: The kernel 6.8+ has known compatibility issues with Android binder
-3. **Network configuration**: Starting privileged Docker containers may affect networking
+1. **Redroid Startup Impact**: The Redroid container with `--privileged` and port mappings (`-p 5555:5555 -p 5900:5900`) appears to interfere with the host's SSH daemon
+2. **Network namespace conflict**: Privileged container may be modifying network settings
+3. **Resource exhaustion**: Redroid container boot process may saturate CPU/memory
+4. **Binder module issues**: The kernel 6.8+ has known compatibility issues with Android binder
+
+**Observed Pattern**:
+- Fresh instance without Redroid: SSH works perfectly
+- After `docker run` or `docker restart` of Redroid: SSH becomes unresponsive within seconds
+- After instance reboot with Redroid container auto-starting: SSH fails after ~60 seconds
 
 ## Recommended Solutions
 
-1. **Use Ubuntu 20.04**: Has kernel 5.x with better binder compatibility
-2. **Increase resources**: Use at least 2 OCPUs and 12GB RAM
-3. **Enable Serial Console**: For debugging boot issues
-4. **Consider Alternative Deployment**:
+1. **Disable Auto-restart**: Change Redroid container from `--restart=unless-stopped` to `--restart=no`
+2. **Use Serial Console**: Access instance via OCI Cloud Shell serial console to debug
+3. **Use Ubuntu 20.04**: Has kernel 5.x with better binder compatibility  
+4. **Increase resources**: Use at least 2 OCPUs and 12GB RAM
+5. **Remove port mappings**: Try running Redroid with host networking instead:
+   ```bash
+   docker run --network=host --privileged ...
+   ```
+6. **Consider Alternative Deployment**:
    - Use Docker Compose locally first to verify functionality
-   - Deploy on a different cloud provider with better ARM support
+   - Deploy on AWS Graviton or another ARM64 cloud provider
 
 ## Code Status
 
