@@ -53,15 +53,63 @@ apt-get install -y \
   python3 python3-pip python3-venv \
   git jq net-tools iproute2
 
-log_info "[2/6] Enabling Docker..."
+log_info "[2/7] Enabling Docker..."
 systemctl enable docker
 systemctl start docker
 
-log_info "[3/6] Configuring nginx-rtmp..."
+log_info "[3/7] Setting up virtual devices (if kernel supports)..."
+KERNEL_VERSION=$(uname -r)
+KERNEL_MAJOR=$(echo "$KERNEL_VERSION" | cut -d. -f1)
+KERNEL_MINOR=$(echo "$KERNEL_VERSION" | cut -d. -f2)
+
+if [[ "$KERNEL_MAJOR" -eq 5 ]] || [[ "$KERNEL_MAJOR" -lt 6 ]]; then
+  log_info "Kernel $KERNEL_VERSION detected - installing virtual device modules"
+  
+  # Install build dependencies
+  apt-get install -y linux-headers-$(uname -r) dkms build-essential
+  
+  # Install v4l2loopback
+  if apt-get install -y v4l2loopback-dkms v4l2loopback-utils; then
+    log_info "v4l2loopback installed successfully"
+  else
+    log_warn "v4l2loopback installation failed"
+  fi
+  
+  # Configure modules
+  cat > /etc/modprobe.d/v4l2loopback.conf << 'EOF'
+options v4l2loopback devices=1 video_nr=42 card_label="VirtualCam" exclusive_caps=1
+EOF
+  
+  cat > /etc/modprobe.d/snd-aloop.conf << 'EOF'
+options snd-aloop index=10 id=Loopback pcm_substreams=1
+EOF
+  
+  cat > /etc/modules-load.d/redroid-virtual-devices.conf << 'EOF'
+v4l2loopback
+snd-aloop
+EOF
+  
+  # Try to load modules now
+  modprobe v4l2loopback devices=1 video_nr=42 card_label="VirtualCam" exclusive_caps=1 2>/dev/null || log_warn "v4l2loopback will load after reboot"
+  modprobe snd-aloop index=10 id=Loopback pcm_substreams=1 2>/dev/null || log_warn "snd-aloop will load after reboot"
+  
+  # Check if devices were created
+  if [ -e /dev/video42 ]; then
+    log_info "Virtual camera /dev/video42 is ready"
+  else
+    log_warn "Virtual camera not available yet - reboot may be needed"
+  fi
+else
+  log_warn "Kernel $KERNEL_VERSION detected (6.8+) - virtual devices not supported"
+  log_warn "Use Ubuntu 20.04 (Kernel 5.x) for virtual camera/audio support"
+  log_warn "See: scripts/deploy-ubuntu20-redroid.sh"
+fi
+
+log_info "[4/7] Configuring nginx-rtmp..."
 cp "$SCRIPT_DIR/config/nginx-rtmp.conf" /etc/nginx/nginx.conf
 systemctl disable nginx.service 2>/dev/null || true
 
-log_info "[4/6] Installing Control API..."
+log_info "[5/7] Installing Control API..."
 mkdir -p /opt/cloud-phone-api
 cp "$SCRIPT_DIR/api/server.py" /opt/cloud-phone-api/
 cp "$SCRIPT_DIR/api/requirements.txt" /opt/cloud-phone-api/
@@ -71,12 +119,12 @@ python3 -m venv /opt/cloud-phone-api/venv
 /opt/cloud-phone-api/venv/bin/pip install --upgrade pip
 /opt/cloud-phone-api/venv/bin/pip install -r /opt/cloud-phone-api/requirements.txt
 
-log_info "[5/6] Installing scripts..."
+log_info "[6/7] Installing scripts..."
 mkdir -p /opt/waydroid-scripts
 cp "$SCRIPT_DIR/scripts/"*.sh /opt/waydroid-scripts/
 chmod +x /opt/waydroid-scripts/*.sh
 
-log_info "[6/6] Installing systemd units..."
+log_info "[7/7] Installing systemd units..."
 cp "$SCRIPT_DIR/systemd/nginx-rtmp.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/ffmpeg-bridge.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/control-api.service" /etc/systemd/system/
