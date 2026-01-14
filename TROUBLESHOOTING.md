@@ -171,3 +171,4 @@ ls -la /run/user/1002/wayland* 2>/dev/null || echo "Not found"
 
 
 
+

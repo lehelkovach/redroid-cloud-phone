@@ -226,3 +226,4 @@ ls -lt /tmp/redroid-full-test-*.log | head -1 | awk '{print $NF}' | xargs cat
 
 **The system is ready for use** with the understanding that virtual camera/audio input requires additional work for kernel 6.8 compatibility.
 
+

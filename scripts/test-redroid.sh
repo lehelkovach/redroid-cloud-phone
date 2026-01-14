@@ -169,3 +169,4 @@ echo "3. Check if Android is running: adb shell getprop ro.build.version.release
 
 
 
+
