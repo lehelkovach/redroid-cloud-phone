@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Cloud Phone Configuration",
+  "type": "object",
+  "properties": {
+    "instance": {
+      "type": "object",
+      "description": "OCI instance configuration",
+      "properties": {
+        "name": { "type": "string", "description": "Instance display name" },
+        "shape": { "type": "string", "default": "VM.Standard.A1.Flex" },
+        "ocpus": { "type": "integer", "minimum": 1, "maximum": 4, "default": 2 },
+        "memory_gb": { "type": "integer", "minimum": 1, "maximum": 24, "default": 8 },
+        "compartment_id": { "type": "string" },
+        "subnet_id": { "type": "string" },
+        "availability_domain": { "type": "string" },
+        "os_version": { "type": "string", "enum": ["20.04", "22.04"], "default": "20.04" }
+      }
+    },
+    "redroid": {
+      "type": "object",
+      "description": "Redroid container configuration",
+      "properties": {
+        "image": { "type": "string", "default": "redroid/redroid:latest" },
+        "width": { "type": "integer", "default": 1280 },
+        "height": { "type": "integer", "default": 720 },
+        "fps": { "type": "integer", "default": 30 },
+        "dpi": { "type": "integer", "default": 240 },
+        "gpu_mode": { "type": "string", "enum": ["guest", "host", "auto"], "default": "guest" },
+        "vnc_enabled": { "type": "boolean", "default": true },
+        "vnc_port": { "type": "integer", "default": 5900 },
+        "adb_port": { "type": "integer", "default": 5555 },
+        "gapps": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "variant": { "type": "string", "enum": ["pico", "nano", "micro", "mini", "full"], "default": "pico" }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "description": "Network/proxy configuration",
+      "properties": {
+        "proxy": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "type": { "type": "string", "enum": ["http", "socks5", "transparent"], "default": "socks5" },
+            "host": { "type": "string" },
+            "port": { "type": "integer" },
+            "username": { "type": "string" },
+            "password": { "type": "string" },
+            "bypass": { "type": "array", "items": { "type": "string" }, "default": ["localhost", "127.0.0.1"] }
+          }
+        },
+        "dns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["8.8.8.8", "8.8.4.4"]
+        }
+      }
+    },
+    "location": {
+      "type": "object",
+      "description": "GPS/location spoofing",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+        "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+        "altitude": { "type": "number", "default": 0 },
+        "accuracy": { "type": "number", "default": 10 }
+      }
+    },
+    "api": {
+      "type": "object",
+      "description": "Control API configuration",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "host": { "type": "string", "default": "127.0.0.1" },
+        "port": { "type": "integer", "default": 8080 },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "token": { "type": "string" }
+          }
+        }
+      }
+    },
+    "viewing": {
+      "type": "object",
+      "description": "Remote viewing configuration",
+      "properties": {
+        "method": { "type": "string", "enum": ["vnc", "scrcpy", "webrtc", "none"], "default": "vnc" },
+        "headless": { "type": "boolean", "default": false },
+        "vnc_password": { "type": "string", "default": "redroid" }
+      }
+    }
+  }
+}

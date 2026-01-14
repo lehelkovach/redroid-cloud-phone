@@ -1,0 +1,57 @@
+{
+  "instance": {
+    "name": "my-cloud-phone",
+    "shape": "VM.Standard.A1.Flex",
+    "ocpus": 2,
+    "memory_gb": 8,
+    "os_version": "20.04"
+  },
+  "redroid": {
+    "image": "redroid/redroid:latest",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "dpi": 240,
+    "gpu_mode": "guest",
+    "vnc_enabled": true,
+    "vnc_port": 5900,
+    "adb_port": 5555,
+    "gapps": {
+      "enabled": true,
+      "variant": "pico"
+    }
+  },
+  "network": {
+    "proxy": {
+      "enabled": true,
+      "type": "socks5",
+      "host": "proxy.example.com",
+      "port": 1080,
+      "username": "",
+      "password": "",
+      "bypass": ["localhost", "127.0.0.1", "10.0.0.0/8"]
+    },
+    "dns": ["8.8.8.8", "1.1.1.1"]
+  },
+  "location": {
+    "enabled": true,
+    "latitude": 37.7749,
+    "longitude": -122.4194,
+    "altitude": 10,
+    "accuracy": 5
+  },
+  "api": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8080,
+    "auth": {
+      "enabled": true,
+      "token": "your-secret-token"
+    }
+  },
+  "viewing": {
+    "method": "vnc",
+    "headless": false,
+    "vnc_password": "redroid"
+  }
+}

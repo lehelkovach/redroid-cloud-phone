@@ -46,6 +46,24 @@ Note: On Ubuntu 22.04 (kernel 6.8+), virtual devices won't work. Use Ubuntu 20.0
 sudo ./install.sh
 ```
 
+**Option 4: Full-featured deployment with proxy, GPS, GApps**
+
+```bash
+# Deploy with all features
+./scripts/deploy-cloud-phone.sh \
+  --name my-phone \
+  --proxy socks5://proxy.example.com:1080 \
+  --gps 37.7749,-122.4194 \
+  --gapps \
+  --ocpus 2 \
+  --memory 8
+
+# Or use a config file
+./scripts/deploy-cloud-phone.sh --config my-config.json
+```
+
+See **[FEATURES.md](FEATURES.md)** for all configuration options.
+
 ### Quick Verification
 
 ```bash
@@ -86,12 +104,19 @@ adb shell getprop ro.build.version.release
 - Redroid container running on Oracle Cloud ARM
 - ADB access working (port 5555)
 - VNC access working (port 5900)
+- **Proxy support** (HTTP, SOCKS5, Transparent)
+- **GPS/Location spoofing**
+- **Google Play Store** (GApps) installation
+- **Control API** with full ADB interface
+- **Multiple viewing methods** (VNC, scrcpy, WebRTC, headless)
+- **Parameterized deployment** with config files
 - Test suites created and passing
 - Comprehensive documentation
 
 ### ⚠️ Known Limitations
-- Virtual devices (camera/audio) pending kernel 6.8 compatibility
-- Requires Ubuntu 20.04 (kernel 5.x) for full virtual device support
+- Virtual devices (camera/audio) require kernel 5.x
+- Requires Ubuntu 20.04 for full virtual device support
+- GApps may require device certification registration
 
 ---
 
@@ -99,18 +124,28 @@ adb shell getprop ro.build.version.release
 
 ```
 redroid-cloud-phone/
-├── scripts/              # Automation scripts
+├── scripts/                      # Automation scripts
+│   ├── deploy-cloud-phone.sh     # Full-featured deployment
+│   ├── deploy-ubuntu20-redroid.sh # Ubuntu 20.04 deployment
+│   ├── proxy-control.sh          # Proxy configuration
+│   ├── install-gapps.sh          # Google Play installer
+│   ├── viewing-control.sh        # VNC/scrcpy/WebRTC control
+│   ├── redroid-container.sh      # Container management
+│   ├── health-check.sh           # System health check
 │   ├── test-redroid-full.sh      # Comprehensive test suite
-│   ├── test-adb-vnc.sh           # ADB/VNC connectivity test
-│   ├── fix-redroid-vnc.sh        # Fix VNC configuration
-│   ├── check-redroid-vnc.sh      # Check VNC status
 │   └── ...                       # More scripts
-├── *.md                  # Documentation
+├── api/
+│   └── server.py                 # Control API server
+├── config/
+│   ├── cloud-phone-config.schema.json   # Config schema
+│   ├── cloud-phone-config.example.json  # Example config
+│   └── nginx-rtmp.conf           # RTMP config
+├── systemd/                      # Systemd service files
+├── *.md                          # Documentation
+│   ├── FEATURES.md               # All features guide
 │   ├── HANDOFF.md                # Complete handoff guide
-│   ├── TEST_RESULTS_FULL_COVERAGE.md  # Test results
-│   ├── DEVELOPMENT_WORKFLOW.md   # Development guide
 │   └── ...                       # More docs
-└── README.md            # This file
+└── README.md                     # This file
 ```
 
 ---
@@ -130,10 +165,66 @@ redroid-cloud-phone/
 
 ### Components
 
-- **Redroid Container**: Docker-based Android 16
+- **Redroid Container**: Docker-based Android
 - **ADB**: Android Debug Bridge (port 5555)
 - **VNC**: Virtual Network Computing (port 5900)
+- **Control API**: REST API for automation (port 8080)
 - **Oracle Cloud ARM**: Ampere A1 Flex instance
+
+---
+
+## 🎛️ Features
+
+### Proxy Support
+
+Route all Android traffic through a proxy:
+
+```bash
+# Via deployment
+./scripts/deploy-cloud-phone.sh --proxy socks5://proxy:1080
+
+# Via API
+curl -X POST http://localhost:8080/proxy \
+  -d '{"enabled":true,"type":"socks5","host":"proxy","port":1080}'
+```
+
+### GPS Spoofing
+
+Set fake GPS location:
+
+```bash
+# Via deployment
+./scripts/deploy-cloud-phone.sh --gps 37.7749,-122.4194
+
+# Via API
+curl -X POST http://localhost:8080/location \
+  -d '{"enabled":true,"latitude":37.7749,"longitude":-122.4194}'
+```
+
+### Google Play Store
+
+```bash
+./scripts/deploy-cloud-phone.sh --gapps --gapps-variant pico
+```
+
+### Control API
+
+Full REST API for automation:
+
+```bash
+# Screenshot
+curl -o screen.png http://localhost:8080/device/screenshot
+
+# Tap screen
+curl -X POST http://localhost:8080/device/input \
+  -d '{"type":"tap","x":500,"y":500}'
+
+# Run ADB command
+curl -X POST http://localhost:8080/adb/shell \
+  -d '{"command":"pm list packages"}'
+```
+
+See **[FEATURES.md](FEATURES.md)** for complete documentation
 
 ---
 
@@ -335,6 +426,6 @@ For issues, questions, or contributions:
 
 ---
 
-**Status:** ✅ Operational - Ready for Development
+**Status:** ✅ Operational - Full Featured
 
-**Last Updated:** 2026-01-11
+**Last Updated:** 2026-01-14
