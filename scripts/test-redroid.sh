@@ -42,10 +42,10 @@ if ! groups | grep -q docker; then
 fi
 
 echo ""
-echo "=== Pulling Redroid ARM64 image ==="
-docker pull redroid/redroid:latest-arm64 || {
+echo "=== Pulling Redroid image ==="
+docker pull redroid/redroid:latest || {
     echo "Failed to pull image. Trying alternative tag..."
-    docker pull redroid/redroid:11.0.0-arm64 || {
+    docker pull redroid/redroid:11.0.0-latest || {
         echo "Failed to pull ARM64 image. Available tags:"
         echo "Visit: https://hub.docker.com/r/redroid/redroid/tags"
         exit 1
@@ -71,7 +71,7 @@ docker run -itd \
   -p 5555:5555 \
   -p 5900:5900 \
   -v /opt/redroid-data:/data \
-  redroid/redroid:latest-arm64 \
+  redroid/redroid:latest \
   androidboot.redroid_gpu_mode=guest \
   androidboot.redroid_width=1280 \
   androidboot.redroid_height=720 \
@@ -84,7 +84,7 @@ docker run -itd \
       -p 5555:5555 \
       -p 5900:5900 \
       -v /opt/redroid-data:/data \
-      redroid/redroid:11.0.0-arm64 \
+      redroid/redroid:11.0.0-latest \
       androidboot.redroid_gpu_mode=guest \
       androidboot.redroid_width=1280 \
       androidboot.redroid_height=720 \
