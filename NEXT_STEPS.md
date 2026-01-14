@@ -36,7 +36,7 @@ This will test:
 **Option B: Test Existing Instance**
 ```bash
 # If instance already has Ubuntu 20.04
-./scripts/test-ubuntu-20.04.sh 161.153.55.58
+./scripts/test-ubuntu-20.04.sh 137.131.52.69
 ```
 
 ---
@@ -154,13 +154,13 @@ This tests:
 
 ### Check Waydroid Logs:
 ```bash
-ssh -i ~/.ssh/waydroid_oci ubuntu@161.153.55.58
+ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69
 sudo journalctl -u waydroid-container -f
 ```
 
 ### Check Redroid Logs:
 ```bash
-ssh -i ~/.ssh/waydroid_oci ubuntu@161.153.55.58
+ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69
 sudo docker logs -f redroid
 ```
 

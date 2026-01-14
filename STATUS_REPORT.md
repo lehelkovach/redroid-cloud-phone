@@ -1,7 +1,7 @@
 # Status Report - Waydroid Cloud Phone Project
 
 **Date:** January 9, 2025  
-**Instance:** Oracle Cloud ARM (Ampere A1 Flex) - 161.153.55.58  
+**Instance:** Oracle Cloud ARM (Ampere A1 Flex) - 137.131.52.69  
 **Last Update:** Testing Redroid alternative
 
 ---
@@ -36,7 +36,7 @@ After extensive troubleshooting of Waydroid, we've identified persistent binder/
 ## 🔴 Current Issues
 
 ### 1. SSH Connection Timeout
-- **Status:** Cannot connect to instance (161.153.55.58)
+- **Status:** Cannot connect to instance (137.131.52.69)
 - **Possible Causes:**
   - Instance rebooting
   - Network/firewall issue
@@ -59,7 +59,7 @@ After extensive troubleshooting of Waydroid, we've identified persistent binder/
    oci compute instance get --instance-id <your-instance-id>
    
    # Or try SSH again
-   ssh -i ~/.ssh/waydroid_oci ubuntu@161.153.55.58
+   ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69
    ```
 
 2. **Complete Redroid Deployment** (once connection restored)
@@ -89,7 +89,7 @@ After extensive troubleshooting of Waydroid, we've identified persistent binder/
 3. **Test Redroid Connection**
    ```bash
    # From local machine
-   adb connect 161.153.55.58:5555
+   adb connect 137.131.52.69:5555
    adb devices
    
    # Check Android version
@@ -99,7 +99,7 @@ After extensive troubleshooting of Waydroid, we've identified persistent binder/
 4. **Set Up VNC Access**
    - Redroid exposes VNC on port 5900
    - Default password: `redroid`
-   - Connect with: `vncviewer 161.153.55.58:5900`
+   - Connect with: `vncviewer 137.131.52.69:5900`
 
 ---
 
@@ -197,7 +197,7 @@ After extensive troubleshooting of Waydroid, we've identified persistent binder/
 ## 📞 Connection Information
 
 ### Instance Details:
-- **IP:** 161.153.55.58
+- **IP:** 137.131.52.69
 - **SSH Key:** `~/.ssh/waydroid_oci`
 - **User:** `ubuntu`
 - **OS:** Ubuntu 22.04.5 LTS
@@ -217,7 +217,7 @@ After extensive troubleshooting of Waydroid, we've identified persistent binder/
 ### Check Instance Status:
 ```bash
 # SSH connection
-ssh -i ~/.ssh/waydroid_oci ubuntu@161.153.55.58
+ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69
 
 # Check Docker
 sudo docker ps -a
@@ -238,7 +238,7 @@ sudo docker ps -a | grep redroid
 sudo docker logs -f redroid
 
 # ADB connection
-adb connect 161.153.55.58:5555
+adb connect 137.131.52.69:5555
 adb devices
 adb shell getprop ro.build.version.release
 ```
