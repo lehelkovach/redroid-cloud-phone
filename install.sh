@@ -193,14 +193,17 @@ chown -R "$VNC_USER:$VNC_USER" "$VNC_HOME/.vnc"
 # ============================================
 log_info "[7/8] Setting up Control API..."
 
-mkdir -p /opt/waydroid-api
-cp "$SCRIPT_DIR/api/server.py" /opt/waydroid-api/
-cp "$SCRIPT_DIR/api/requirements.txt" /opt/waydroid-api/
+mkdir -p /opt/cloud-phone-api
+cp "$SCRIPT_DIR/api/server.py" /opt/cloud-phone-api/
+cp "$SCRIPT_DIR/api/requirements.txt" /opt/cloud-phone-api/
+
+# Backwards-compatible path (older docs/scripts)
+ln -sfn /opt/cloud-phone-api /opt/waydroid-api
 
 # Create virtual environment
-python3 -m venv /opt/waydroid-api/venv
-/opt/waydroid-api/venv/bin/pip install --upgrade pip
-/opt/waydroid-api/venv/bin/pip install -r /opt/waydroid-api/requirements.txt
+python3 -m venv /opt/cloud-phone-api/venv
+/opt/cloud-phone-api/venv/bin/pip install --upgrade pip
+/opt/cloud-phone-api/venv/bin/pip install -r /opt/cloud-phone-api/requirements.txt
 
 # ============================================
 # Step 8: Install systemd units

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Waydroid Control API Server
+Cloud Phone Control API Server
 
 Thin HTTP API wrapping ADB for remote Android automation.
 ADB-first design: all operations go through ADB, not VNC.
+
+Works with both:
+- Redroid: default `ADB_CONNECT=127.0.0.1:5555` (host-mapped ADB)
+- Waydroid (legacy): falls back to `192.168.240.112:5555`
 
 Endpoints:
   GET  /device/info        - Device dimensions and density
@@ -20,6 +24,7 @@ import os
 import subprocess
 import tempfile
 import logging
+from typing import Dict, Tuple, Optional, List
 from flask import Flask, request, jsonify, send_file, Response
 from functools import wraps
 
@@ -36,10 +41,10 @@ logger = logging.getLogger(__name__)
 API_HOST = os.environ.get('API_HOST', '127.0.0.1')
 API_PORT = int(os.environ.get('API_PORT', 8080))
 ADB_DEVICE = os.environ.get('ADB_DEVICE', '')  # Empty = default device
+ADB_CONNECT = os.environ.get('ADB_CONNECT', '127.0.0.1:5555')  # host:port for adb connect (optional)
 
-# Waydroid's internal IP (typical default)
-WAYDROID_IP = '192.168.240.112'
-WAYDROID_ADB_PORT = 5555
+# Legacy Waydroid fallback (only used if ADB_CONNECT fails)
+WAYDROID_FALLBACK = '192.168.240.112:5555'
 
 
 def run_adb(args, capture_output=True, binary=False):
@@ -55,6 +60,11 @@ def run_adb(args, capture_output=True, binary=False):
             capture_output=capture_output,
             timeout=30
         )
+        if result.returncode != 0:
+            stderr = (result.stderr or b'').decode('utf-8', errors='ignore').strip()
+            stdout = (result.stdout or b'').decode('utf-8', errors='ignore').strip()
+            msg = stderr or stdout or f"adb exited with code {result.returncode}"
+            raise RuntimeError(msg)
         if binary:
             return result.stdout
         return result.stdout.decode('utf-8', errors='ignore').strip()
@@ -66,13 +76,63 @@ def run_adb(args, capture_output=True, binary=False):
         raise
 
 
+def run_adb_shell(command: str) -> str:
+    """Run an ADB shell command preserving quoting/pipes."""
+    return run_adb(['shell', 'sh', '-c', command])
+
+
+def parse_adb_devices(output: str) -> Dict[str, str]:
+    """
+    Parse `adb devices` output into {serial: state}.
+    Example line: "127.0.0.1:5555 device"
+    """
+    devices: Dict[str, str] = {}
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    for ln in lines[1:]:  # skip header
+        parts = ln.split()
+        if len(parts) >= 2:
+            devices[parts[0]] = parts[1]
+    return devices
+
+
+def get_connected_state() -> Tuple[bool, Dict[str, str]]:
+    """Return (connected, devices_map)."""
+    devices_out = run_adb(['devices'])
+    devices = parse_adb_devices(devices_out)
+    if ADB_DEVICE:
+        return (devices.get(ADB_DEVICE) == 'device', devices)
+    return (any(state == 'device' for state in devices.values()), devices)
+
+
+def adb_connect(target: str) -> None:
+    """Connect to ADB target (host:port)."""
+    run_adb(['connect', target])
+
+
 def ensure_adb_connected():
-    """Ensure ADB is connected to Waydroid."""
+    """Ensure ADB is connected to a device (Redroid or Waydroid)."""
     try:
-        devices = run_adb(['devices'])
-        if WAYDROID_IP not in devices and 'device' not in devices:
-            # Try to connect
-            run_adb(['connect', f'{WAYDROID_IP}:{WAYDROID_ADB_PORT}'])
+        connected, devices = get_connected_state()
+        if connected:
+            return
+
+        # Prefer explicit ADB_CONNECT; fall back to legacy Waydroid IP.
+        targets: List[str] = []
+        if ADB_CONNECT:
+            targets.append(ADB_CONNECT)
+        targets.append(WAYDROID_FALLBACK)
+
+        last_err: Optional[Exception] = None
+        for t in targets:
+            try:
+                adb_connect(t)
+                if get_connected_state()[0]:
+                    return
+            except Exception as e:
+                last_err = e
+
+        if last_err:
+            raise last_err
     except Exception as e:
         logger.warning(f"ADB connection check failed: {e}")
 
@@ -145,12 +205,13 @@ def device_info():
     
     # Add rotation if available
     try:
-        rotation_output = run_adb(['shell', 'dumpsys', 'input', '|', 'grep', 'SurfaceOrientation'])
-        if 'Orientation' in rotation_output:
-            info['rotation'] = int(rotation_output.split(':')[-1].strip())
+        rotation_output = run_adb_shell('dumpsys input | grep -m 1 SurfaceOrientation || true')
+        # Example: "SurfaceOrientation: 0"
+        if ':' in rotation_output:
+            info['rotation'] = int(rotation_output.split(':')[-1].strip() or '0')
         else:
             info['rotation'] = 0
-    except:
+    except Exception:
         info['rotation'] = 0
     
     return jsonify(info)
@@ -334,7 +395,7 @@ def shell_command(data):
     command = data['command']
     
     try:
-        output = run_adb(['shell'] + command.split())
+        output = run_adb_shell(command)
         return jsonify({'success': True, 'output': output})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -389,7 +450,7 @@ def stop_app(data):
 # ============================================
 
 if __name__ == '__main__':
-    logger.info(f"Starting Waydroid Control API on {API_HOST}:{API_PORT}")
+    logger.info(f"Starting Control API on {API_HOST}:{API_PORT}")
     
     # Initial ADB connection attempt
     try:

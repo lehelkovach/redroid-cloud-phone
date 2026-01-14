@@ -1,10 +1,14 @@
 #!/bin/bash
-# Health check script for Redroid/Waydroid Cloud Phone
+# Health check script for Cloud Phone (Redroid or Waydroid)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+have_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
 
 check_service() {
     local service=$1
@@ -28,9 +32,21 @@ check_device() {
     fi
 }
 
+MODE="unknown"
+if have_cmd docker; then
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "redroid"; then
+        MODE="redroid"
+    fi
+fi
+if [ "$MODE" = "unknown" ] && have_cmd waydroid; then
+    MODE="waydroid"
+fi
+
 echo "========================================"
-echo "  Redroid Cloud Phone Health Check"
+echo "  Cloud Phone Health Check"
 echo "========================================"
+echo ""
+echo "Mode: $MODE"
 echo ""
 
 # Docker/Redroid status
@@ -86,12 +102,22 @@ echo ""
 
 # Services
 echo "Systemd Services:"
-check_service "nginx-rtmp"
-check_service "xvnc"
-check_service "waydroid-container"
-check_service "waydroid-session"
-check_service "ffmpeg-bridge"
-check_service "control-api"
+if [ "$MODE" = "redroid" ]; then
+    check_service "docker"
+    echo "  Redroid container:"
+    if docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null | grep -q "^redroid:"; then
+        docker ps --format '    {{.Names}}  {{.Status}}  {{.Ports}}' | grep "^redroid" || true
+    else
+        echo -e "    ${RED}✗${NC} redroid (not running)"
+    fi
+else
+    check_service "nginx-rtmp"
+    check_service "xvnc"
+    check_service "waydroid-container"
+    check_service "waydroid-session"
+    check_service "ffmpeg-bridge"
+    check_service "control-api"
+fi
 
 echo ""
 
@@ -103,45 +129,54 @@ else
     echo -e "  ${YELLOW}○${NC} RTMP (1935) - not listening"
 fi
 
-if ss -tlnp | grep -q ":5555 "; then
-    echo -e "  ${GREEN}✓${NC} ADB (5555)"
-else
-    echo -e "  ${YELLOW}○${NC} ADB (5555) - not listening"
-fi
+if [ "$MODE" = "redroid" ]; then
+    if ss -tlnp | grep -q ":5555 "; then
+        echo -e "  ${GREEN}✓${NC} ADB (5555)"
+    else
+        echo -e "  ${YELLOW}○${NC} ADB (5555) - not listening"
+    fi
 
-if ss -tlnp | grep -q ":5900 "; then
-    echo -e "  ${GREEN}✓${NC} VNC (5900)"
+    if ss -tlnp | grep -q ":5900 "; then
+        echo -e "  ${GREEN}✓${NC} VNC (5900)"
+    else
+        echo -e "  ${YELLOW}○${NC} VNC (5900) - not listening"
+    fi
 else
-    echo -e "  ${YELLOW}○${NC} VNC (5900) - not listening"
-fi
+    if ss -tlnp | grep -q ":5901 "; then
+        echo -e "  ${GREEN}✓${NC} VNC (5901)"
+    else
+        echo -e "  ${YELLOW}○${NC} VNC (5901) - not listening"
+    fi
 
-if ss -tlnp | grep -q ":5901 "; then
-    echo -e "  ${GREEN}✓${NC} VNC Alt (5901)"
-else
-    echo -e "  ${YELLOW}○${NC} VNC Alt (5901) - not listening"
-fi
-
-if ss -tlnp | grep -q ":8080 "; then
-    echo -e "  ${GREEN}✓${NC} API (8080)"
-else
-    echo -e "  ${YELLOW}○${NC} API (8080) - not listening"
+    if ss -tlnp | grep -q ":8080 "; then
+        echo -e "  ${GREEN}✓${NC} API (8080)"
+    else
+        echo -e "  ${YELLOW}○${NC} API (8080) - not listening"
+    fi
 fi
 
 echo ""
 
 # Waydroid status
-echo "Waydroid Status:"
-if command -v waydroid &> /dev/null; then
-    waydroid status 2>/dev/null | sed 's/^/  /'
-else
-    echo -e "  ${RED}✗${NC} waydroid not installed"
+if [ "$MODE" = "waydroid" ]; then
+    echo "Waydroid Status:"
+    if have_cmd waydroid; then
+        waydroid status 2>/dev/null | sed 's/^/  /'
+    else
+        echo -e "  ${RED}✗${NC} waydroid not installed"
+    fi
+    echo ""
 fi
 
 echo ""
 
 # ADB status
 echo "ADB Devices:"
-adb devices 2>/dev/null | tail -n +2 | grep -v "^$" | sed 's/^/  /' || echo "  (none)"
+if have_cmd adb; then
+    adb devices 2>/dev/null | tail -n +2 | grep -v "^$" | sed 's/^/  /' || echo "  (none)"
+else
+    echo -e "  ${YELLOW}○${NC} adb not installed"
+fi
 
 echo ""
 

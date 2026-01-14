@@ -17,6 +17,7 @@ NC='\033[0m'
 RTMP_URL="${1:-rtmp://127.0.0.1/live/cam}"
 VIDEO_DEVICE="/dev/video42"
 TEST_DURATION=10
+VERBOSE="${VERBOSE:-false}"
 
 echo -e "${BLUE}=========================================="
 echo "RTMP Stream Pipeline Test"

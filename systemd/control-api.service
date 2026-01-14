@@ -1,13 +1,13 @@
 [Unit]
-Description=Waydroid Control API Server
-Documentation=https://github.com/example/waydroid-cloud-phone
-After=waydroid-session.service
-Wants=waydroid-session.service
+Description=Cloud Phone Control API Server (ADB wrapper)
+Documentation=https://github.com/lehelkovach/redroid-cloud-phone
+After=network.target docker.service waydroid-session.service
+Wants=docker.service waydroid-session.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/waydroid-api
-ExecStart=/opt/waydroid-api/venv/bin/python server.py
+WorkingDirectory=/opt/cloud-phone-api
+ExecStart=/opt/cloud-phone-api/venv/bin/python server.py
 Restart=on-failure
 RestartSec=5
 
@@ -18,6 +18,8 @@ User=root
 Environment=PYTHONUNBUFFERED=1
 Environment=API_HOST=127.0.0.1
 Environment=API_PORT=8080
+Environment=ADB_CONNECT=127.0.0.1:5555
 
 [Install]
 WantedBy=waydroid-cloud-phone.target
+WantedBy=redroid-cloud-phone.target

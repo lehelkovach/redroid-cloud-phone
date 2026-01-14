@@ -2,6 +2,14 @@
 
 Complete step-by-step instructions for deploying on Oracle Cloud Infrastructure.
 
+> **Note (2026):** This document primarily describes the **legacy Waydroid-based** deployment (systemd services, VNC :5901, API :8080).
+>
+> The **current recommended path** for this repo is **Redroid (Docker-based)**:
+> - Install: `sudo ./install-redroid.sh`
+> - Start: `sudo systemctl start redroid-cloud-phone.target`
+> - Verify: `./scripts/test-redroid-full.sh <INSTANCE_IP>` and `sudo /opt/waydroid-scripts/health-check.sh`
+> - Primary docs: `HANDOFF.md`, `QUICK_START.md`, `README.md`
+
 ---
 
 ## Prerequisites
