@@ -49,6 +49,24 @@ echo ""
 echo "Mode: $MODE"
 echo ""
 
+# Docker/Redroid status
+echo "Docker/Redroid Status:"
+if command -v docker &> /dev/null && systemctl is-active --quiet docker; then
+    echo -e "  ${GREEN}✓${NC} Docker service running"
+    
+    if docker ps --format "{{.Names}}" | grep -q "redroid"; then
+        echo -e "  ${GREEN}✓${NC} Redroid container running"
+        CONTAINER_STATUS=$(docker ps --format "{{.Status}}" --filter "name=redroid" | head -1)
+        echo "      Status: $CONTAINER_STATUS"
+    else
+        echo -e "  ${RED}✗${NC} Redroid container not running"
+    fi
+else
+    echo -e "  ${RED}✗${NC} Docker service not running"
+fi
+
+echo ""
+
 # Kernel modules
 echo "Kernel Modules:"
 if lsmod | grep -q v4l2loopback; then
@@ -112,16 +130,16 @@ else
 fi
 
 if [ "$MODE" = "redroid" ]; then
-    if ss -tlnp | grep -q ":5900 "; then
-        echo -e "  ${GREEN}✓${NC} VNC (5900)"
-    else
-        echo -e "  ${YELLOW}○${NC} VNC (5900) - not listening"
-    fi
-
     if ss -tlnp | grep -q ":5555 "; then
         echo -e "  ${GREEN}✓${NC} ADB (5555)"
     else
         echo -e "  ${YELLOW}○${NC} ADB (5555) - not listening"
+    fi
+
+    if ss -tlnp | grep -q ":5900 "; then
+        echo -e "  ${GREEN}✓${NC} VNC (5900)"
+    else
+        echo -e "  ${YELLOW}○${NC} VNC (5900) - not listening"
     fi
 else
     if ss -tlnp | grep -q ":5901 "; then

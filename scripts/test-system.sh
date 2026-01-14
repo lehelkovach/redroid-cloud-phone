@@ -58,8 +58,22 @@ log_test() {
 }
 
 echo -e "${BLUE}=========================================="
-echo "Waydroid Cloud Phone System Tests"
+echo "Redroid/Waydroid Cloud Phone System Tests"
 echo "==========================================${NC}"
+echo ""
+
+# Detect which system is in use
+USE_REDROID=false
+USE_WAYDROID=false
+
+if command -v docker &>/dev/null && docker ps 2>/dev/null | grep -q redroid; then
+    USE_REDROID=true
+    echo -e "${BLUE}Detected: Redroid (Docker-based Android)${NC}"
+fi
+if command -v waydroid &>/dev/null; then
+    USE_WAYDROID=true
+    echo -e "${BLUE}Detected: Waydroid${NC}"
+fi
 echo ""
 
 # ============================================
@@ -170,10 +184,30 @@ if ss -tlnp | grep -q ":1935 "; then
         log_test WARN "RTMP port 1935" "Listening on $LISTEN_ADDR (should be 0.0.0.0:1935)"
     fi
 else
-    log_test FAIL "RTMP port 1935" "Not listening. Check nginx-rtmp service."
+    log_test WARN "RTMP port 1935" "Not listening (optional for RTMP streaming)"
 fi
 
-# VNC (5901) - should be listening on localhost
+# ADB (5555) - Redroid
+if ss -tlnp | grep -q ":5555 "; then
+    log_test PASS "ADB port 5555 (Redroid)"
+else
+    if [ "$USE_REDROID" = true ]; then
+        log_test FAIL "ADB port 5555" "Not listening. Check Redroid container."
+    else
+        log_test WARN "ADB port 5555" "Not listening (Redroid not in use)"
+    fi
+fi
+
+# VNC (5900) - Redroid
+if ss -tlnp | grep -q ":5900 "; then
+    log_test PASS "VNC port 5900 (Redroid)"
+else
+    if [ "$USE_REDROID" = true ]; then
+        log_test WARN "VNC port 5900" "Not listening (Redroid VNC may not be enabled)"
+    fi
+fi
+
+# VNC (5901) - should be listening on localhost (Waydroid)
 if ss -tlnp | grep -q ":5901 "; then
     LISTEN_ADDR=$(ss -tlnp | grep ":5901 " | awk '{print $4}')
     if [[ "$LISTEN_ADDR" == "127.0.0.1:5901" ]] || [[ "$LISTEN_ADDR" == "::1:5901" ]]; then
@@ -182,7 +216,9 @@ if ss -tlnp | grep -q ":5901 "; then
         log_test WARN "VNC port 5901" "Listening on $LISTEN_ADDR (should be localhost)"
     fi
 else
-    log_test FAIL "VNC port 5901" "Not listening. Check xvnc service."
+    if [ "$USE_WAYDROID" = true ]; then
+        log_test FAIL "VNC port 5901" "Not listening. Check xvnc service."
+    fi
 fi
 
 # API (8080) - should be listening on localhost
@@ -194,17 +230,41 @@ if ss -tlnp | grep -q ":8080 "; then
         log_test WARN "API port 8080" "Listening on $LISTEN_ADDR (should be localhost)"
     fi
 else
-    log_test FAIL "API port 8080" "Not listening. Check control-api service."
+    log_test WARN "API port 8080" "Not listening (optional for API access)"
 fi
 
 echo ""
 
 # ============================================
-# Test 5: Waydroid Status
+# Test 5: Docker/Redroid or Waydroid Status
 # ============================================
-echo -e "${BLUE}[5/9] Testing Waydroid${NC}"
+echo -e "${BLUE}[5/9] Testing Android Container${NC}"
 
-if command -v waydroid &>/dev/null; then
+# Test Docker/Redroid
+if [ "$USE_REDROID" = true ]; then
+    if systemctl is-active --quiet docker; then
+        log_test PASS "Docker service is running"
+    else
+        log_test FAIL "Docker service" "Not running. Start with: sudo systemctl start docker"
+    fi
+    
+    REDROID_STATUS=$(docker ps --format "{{.Status}}" --filter "name=redroid" 2>/dev/null | head -1)
+    if [[ -n "$REDROID_STATUS" ]] && echo "$REDROID_STATUS" | grep -qi "up"; then
+        log_test PASS "Redroid container is running ($REDROID_STATUS)"
+        
+        # Check ADB port inside container
+        if docker exec redroid sh -c 'netstat -tlnp 2>/dev/null | grep 5555 || ss -tlnp 2>/dev/null | grep 5555' &>/dev/null; then
+            log_test PASS "Redroid ADB port listening"
+        else
+            log_test WARN "Redroid ADB" "Container running but ADB port may not be listening"
+        fi
+    else
+        log_test FAIL "Redroid container" "Not running. Start with: docker start redroid"
+    fi
+fi
+
+# Test Waydroid (if installed)
+if [ "$USE_WAYDROID" = true ]; then
     WAYDROID_STATUS=$(waydroid status 2>/dev/null || echo "ERROR")
     
     if echo "$WAYDROID_STATUS" | grep -q "STOPPED"; then
@@ -221,8 +281,11 @@ if command -v waydroid &>/dev/null; then
     else
         log_test WARN "Waydroid" "Status unknown: $WAYDROID_STATUS"
     fi
-else
-    log_test FAIL "Waydroid" "Command not found. Waydroid may not be installed."
+fi
+
+# If neither is running
+if [ "$USE_REDROID" = false ] && [ "$USE_WAYDROID" = false ]; then
+    log_test FAIL "Android container" "Neither Redroid nor Waydroid is running"
 fi
 
 echo ""

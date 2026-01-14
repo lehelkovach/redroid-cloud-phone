@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-INSTANCE_IP="${1:-161.153.55.58}"
+INSTANCE_IP="${1:-137.131.52.69}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
 
 echo "=========================================="
@@ -108,7 +108,9 @@ sudo docker run -itd \
   androidboot.redroid_gpu_mode=guest \
   androidboot.redroid_width=1280 \
   androidboot.redroid_height=720 \
-  androidboot.redroid_fps=30 || {
+  androidboot.redroid_fps=30 \
+  androidboot.redroid_vnc=1 \
+  androidboot.redroid_vnc_port=5900 || {
     echo "Failed to start with device passthrough. Trying without devices..."
     sudo docker run -itd \
       --privileged \
@@ -121,7 +123,9 @@ sudo docker run -itd \
       androidboot.redroid_gpu_mode=guest \
       androidboot.redroid_width=1280 \
       androidboot.redroid_height=720 \
-      androidboot.redroid_fps=30
+      androidboot.redroid_fps=30 \
+      androidboot.redroid_vnc=1 \
+      androidboot.redroid_vnc_port=5900
 }
 echo ""
 

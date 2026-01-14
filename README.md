@@ -177,6 +177,23 @@ redroid-cloud-phone/
 
 ## 🔧 Setup & Configuration
 
+### Quick Install (Redroid - Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/lehelkovach/redroid-cloud-phone.git
+cd redroid-cloud-phone
+
+# Run the Redroid installer
+sudo ./install-redroid.sh
+```
+
+This will:
+- Install Docker and required packages
+- Pull and start the Redroid container
+- Configure VNC (port 5900) and ADB (port 5555)
+- Set up virtual device modules (if compatible)
+
 ### Instance Details
 - **OS**: Ubuntu 22.04.5 LTS
 - **Kernel**: 6.8.0-1038-oracle (aarch64)

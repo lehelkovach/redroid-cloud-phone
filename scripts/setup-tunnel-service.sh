@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-INSTANCE_IP="${1:-161.153.55.58}"
+INSTANCE_IP="${1:-137.131.52.69}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Setting up persistent SSH tunnel service..."

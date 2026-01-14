@@ -1,10 +1,24 @@
 # Project Handoff Document
 
 **Project:** Redroid Cloud Phone (formerly Waydroid Cloud Phone)  
-**Date:** 2026-01-11  
-**Status:** ✅ Operational - Ready for Development
+**Date:** 2026-01-14
+**Status:** ✅ Operational - Ready for Development (Virtual Devices Blocked on Kernel 6.8)
+
+> **Latest Updates (2026-01-14):**
+> - Fixed default IP addresses across all scripts
+> - Added VNC parameters to Redroid container startup
+> - Enhanced health-check.sh and test-system.sh with Docker/Redroid support
+> - All scripts validated and pass syntax checks
+> - Virtual device support requires Ubuntu 20.04 (Kernel 5.x)
 
 ---
+
+## Recent Updates (2026-01-14)
+- **Virtual Device Support:** Identified as INCOMPATIBLE with Kernel 6.8 (default Oracle ARM Ubuntu 22.04).
+- **Scripts Updated:**
+  - `scripts/setup-redroid-virtual-devices.sh`: Now enforces Kernel compatibility check (fails on 6.8) and installs Docker if missing.
+  - `scripts/test-redroid-complete.sh`: Updated default IP.
+- **Path Forward:** STRICTLY requires Ubuntu 20.04 (Kernel 5.x) for virtual device support.
 
 ## Quick Start for New Agent
 
@@ -455,10 +469,10 @@ Deploy a functional Android cloud phone on Oracle Cloud ARM instance with:
 **Status:** Project is operational and ready for continued development.
 
 **Next Agent Should:**
-1. Read this `HANDOFF.md` file
-2. Review `TEST_RESULTS_FULL_COVERAGE.md` for current status
-3. Run `./scripts/test-redroid-full.sh 137.131.52.69` to verify
-4. Continue with next steps from "Next Steps & Priorities" section
+1. **OBTAIN SSH KEYS** (`~/.ssh/waydroid_oci`). This is a critical blocker.
+2. Create **Ubuntu 20.04** instance (use `scripts/create-ubuntu-20-instance.sh`) to support virtual devices.
+3. Run `./scripts/setup-redroid-virtual-devices.sh <NEW_IP>` on the NEW instance.
+4. Run `./scripts/test-redroid-complete.sh <NEW_IP>`.
 
 **All necessary information is documented and scripts are ready to use.**
 

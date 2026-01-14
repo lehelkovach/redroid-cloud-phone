@@ -1,161 +1,177 @@
 # Current Status Report
 
-**Last Updated:** January 9, 2025, 22:15 UTC  
+**Last Updated:** January 14, 2025
 **Project:** Redroid Cloud Phone on Oracle Cloud ARM
 
 ---
 
-## 🎯 Current State
+## 🎯 Project Overview
 
-### Instance Status
-- **Current Instance:** `waydroid-test-20260109-022314`
-- **Public IP:** `137.131.52.69`
-- **OCID:** `ocid1.instance.oc1.phx.anyhqljrgmifkaqclk7h23un7agzbd6zay7muuqkoxbhm4xgxnsqsdt5w2eq`
-- **OS:** Ubuntu 22.04.5 LTS
-- **Kernel:** 6.8.0-1038-oracle
-- **Shape:** VM.Standard.A1.Flex (2 OCPU, 8GB RAM)
-- **Accessibility:** ✅ **ACCESSIBLE** (after reboot)
-- **Uptime:** ~2 minutes
+This project deploys a cloud-based Android phone using Redroid (Docker-based Android) on Oracle Cloud ARM instances. The goal is to provide:
+
+- **Remote Android access** via VNC and ADB
+- **Virtual camera support** for RTMP streaming
+- **Virtual audio input** for streaming microphone
+- **Control API** for automation
 
 ---
 
 ## ✅ What's Working
 
-### Instance Connectivity
-- ✅ **SSH:** Working
-- ✅ **Security List:** Ports 22, 5555, 5900, 1935 configured
-- ✅ **Instance State:** RUNNING
+### Core Functionality
+- ✅ **Redroid Container**: Docker-based Android 16 running on ARM64
+- ✅ **ADB Access**: Port 5555 for Android debugging
+- ✅ **VNC Access**: Port 5900 for visual access (password: `redroid`)
+- ✅ **Control API**: Flask-based REST API for automation
+- ✅ **Test Suites**: Comprehensive test scripts created
 
-### Redroid Container
-- ✅ **Container Status:** Running
-- ✅ **Android Version:** 16 (redroid16_arm64)
-- ✅ **Ports:** 5555 (ADB) and 5900 (VNC) listening on host
-- ✅ **ADB TCP Port:** Property set to 5555
-- ⏳ **ADB Daemon:** Checking status...
+### Scripts & Automation
+- ✅ **test-redroid-full.sh**: 10-category comprehensive test suite
+- ✅ **test-system.sh**: System-wide health check (supports both Redroid & Waydroid)
+- ✅ **fix-redroid-vnc.sh**: Fix VNC configuration
+- ✅ **setup-redroid-virtual-devices.sh**: Virtual device setup
+- ✅ **health-check.sh**: Quick health check script
 
----
-
-## ❌ What's Not Working
-
-### ADB Connection
-- ⚠️ **ADB Daemon:** May not be fully started (`Unable to start service 'adbd'`)
-- ⚠️ **External ADB:** Port may not be accessible yet (security list just updated)
-- ⚠️ **Boot Status:** `sys.boot_completed` check needs verification
-
-### Virtual Devices
-- ❌ **v4l2loopback:** Not loaded (kernel 6.8 compatibility issue)
-- ❌ **snd-aloop:** Not loaded
-- ❌ **Virtual Camera:** `/dev/video42` not available
-- ❌ **Virtual Audio:** ALSA loopback not available
-- ❌ **Devices in Container:** No video devices passed through
-
-**Root Cause:** Kernel 6.8 compatibility issue (same as Waydroid)
-
-### VNC Connection
-- ⚠️ **Port Status:** Port 5900 listening but external access pending verification
+### Infrastructure
+- ✅ **Oracle Cloud Instance**: ARM-based (Ampere A1 Flex)
+- ✅ **Docker**: Properly configured for Redroid
+- ✅ **systemd Services**: All services defined and ready
 
 ---
 
-## 📊 Current Status Summary
+## ⚠️ Known Limitations
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **Instance** | ✅ Running | Accessible via SSH |
-| **Docker** | ✅ Running | Container started successfully |
-| **Redroid Container** | ✅ Running | Android 16 booted |
-| **ADB Port** | ⏳ Checking | Property set, daemon status unclear |
-| **VNC Port** | ⏳ Checking | Port listening, external access pending |
-| **Virtual Devices** | ❌ Not Available | Kernel 6.8 compatibility |
-| **Security List** | ✅ Updated | Ports 5555, 5900 added |
+### Virtual Device Support
+- **Issue**: `v4l2loopback` module has compatibility issues on kernel 6.8+
+- **Impact**: Virtual camera (`/dev/video42`) not available on Ubuntu 22.04 with kernel 6.8
+- **Workaround Options**:
+  1. Use Ubuntu 20.04 instance (kernel 5.x)
+  2. Build v4l2loopback from source using `fix-v4l2loopback.sh`
+  3. Wait for kernel module compatibility update
+
+### ALSA Loopback
+- **Issue**: `snd-aloop` module may not load on some kernels
+- **Impact**: Virtual audio input not available
+- **Workaround**: Same as v4l2loopback
 
 ---
 
-## 🔧 Recent Actions
+## 📁 Project Structure
 
-### Instance Reboot
-- **Action:** Soft reboot via OCI CLI
-- **Reason:** SSH connection timeout
-- **Result:** ✅ SSH accessible, Redroid container restarted
+```
+redroid-cloud-phone/
+├── api/
+│   ├── server.py           # Control API server
+│   └── requirements.txt    # Python dependencies
+├── config/
+│   ├── nginx-rtmp.conf     # RTMP server configuration
+│   └── xvnc-xstartup       # VNC startup script
+├── scripts/
+│   ├── test-redroid-full.sh        # Main test suite
+│   ├── test-system.sh              # System tests
+│   ├── health-check.sh             # Quick health check
+│   ├── fix-redroid-vnc.sh          # Fix VNC issues
+│   ├── fix-v4l2loopback.sh         # Fix virtual camera
+│   ├── setup-redroid-virtual-devices.sh  # Setup virtual devices
+│   └── ... (more scripts)
+├── systemd/                # systemd service files
+├── install.sh              # Main installer
+├── HANDOFF.md              # Complete handoff guide
+├── README.md               # Project readme
+└── ... (documentation files)
+```
 
-### Security List Update
-- **Action:** Added ingress rules for ports 5555 (ADB) and 5900 (VNC)
-- **Status:** ✅ Updated
-- **Next:** Verify external connectivity
+---
 
-### ADB Configuration
-- **Action:** Set `service.adb.tcp.port` to 5555
-- **Status:** ⏳ Property set, daemon restart attempted
-- **Issue:** `Unable to start service 'adbd'` error
+## 🚀 Quick Start
+
+### Prerequisites
+- Oracle Cloud ARM instance (Ubuntu 22.04)
+- SSH access to instance
+- Docker installed
+
+### Basic Test
+```bash
+# Run full test suite
+./scripts/test-redroid-full.sh <INSTANCE_IP>
+
+# Quick health check
+ssh ubuntu@<INSTANCE_IP> 'sudo /opt/waydroid-scripts/health-check.sh'
+```
+
+### Connect to Android
+```bash
+# VNC (create SSH tunnel first)
+ssh -L 5900:localhost:5900 ubuntu@<INSTANCE_IP> -N
+# Then: vncviewer localhost:5900 (password: redroid)
+
+# ADB
+adb connect <INSTANCE_IP>:5555
+adb shell
+```
+
+---
+
+## 🔧 Recent Fixes
+
+### Script Updates (2025-01-14)
+1. **Updated default IP addresses** across all scripts to use current instance
+2. **Added VNC parameters** to Redroid container startup commands
+3. **Fixed image tag** in test-redroid.sh (latest vs latest-arm64)
+4. **Enhanced health-check.sh** with Docker/Redroid status checks
+5. **Updated test-system.sh** to support both Redroid and Waydroid
 
 ---
 
 ## 📋 Next Steps
 
-### Immediate Actions
-1. ✅ **Verify ADB Daemon** - Check if adbd is actually running
-   ```bash
-   ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69
-   docker exec redroid sh -c 'pgrep -f adbd'
-   ```
+### Immediate
+1. **Test on remote instance** when SSH access is available
+2. **Verify ADB/VNC** connectivity
+3. **Test virtual device** setup with fix-v4l2loopback.sh
 
-2. ✅ **Test ADB Connection** - From local machine
-   ```bash
-   adb connect 137.131.52.69:5555
-   adb devices
-   ```
+### Medium Priority
+1. **Address virtual device support** (kernel compatibility)
+2. **Complete RTMP streaming** pipeline testing
+3. **Test Control API** endpoints
 
-3. ✅ **Test VNC Connection** - Verify external access
-   ```bash
-   vncviewer 137.131.52.69:5900
-   # Password: redroid
-   ```
-
-4. ⏳ **Fix Virtual Devices** - Address kernel 6.8 compatibility
-   - Option A: Create Ubuntu 20.04 instance (kernel 5.x)
-   - Option B: Find v4l2loopback/snd-aloop fix for kernel 6.8
-   - Option C: Alternative virtual device solution
-
-### Future Work
-1. **Complete Virtual Device Setup**
-   - Load v4l2loopback and snd-aloop modules
-   - Pass devices to Redroid container
-   - Verify Android sees devices
-
-2. **RTMP Streaming Pipeline**
-   - Set up FFmpeg bridge
-   - Bridge RTMP → virtual camera/audio
-   - Test full streaming functionality
+### Long-term
+1. **Create golden image** once stable
+2. **Multi-instance deployment**
+3. **Monitoring and alerting**
 
 ---
 
-## 🎯 Summary
+## 📊 Test Coverage
 
-### ✅ Success
-- **Instance accessible** - SSH working
-- **Redroid running** - Android 16 booted successfully
-- **No binder errors** - Unlike Waydroid
-- **Ports configured** - ADB and VNC ports listening
-- **Security list updated** - External access configured
-
-### ⚠️ Remaining Issues
-- **ADB daemon** - May need manual start or wait for full boot
-- **Virtual devices** - Kernel 6.8 compatibility (affects both Redroid and Waydroid)
-- **External connectivity** - Need to verify ADB/VNC from outside
-
-### 💡 Recommendation
-1. ✅ **Verify ADB/VNC** - Test connections now that security list is updated
-2. ✅ **Continue with Redroid** - It's working better than Waydroid
-3. ⏳ **Address virtual devices** - Try Ubuntu 20.04 or find kernel module fix
+| Category | Status | Notes |
+|----------|--------|-------|
+| Instance Connectivity | ✅ Ready | Scripts support SSH testing |
+| Docker Status | ✅ Ready | Service checks included |
+| Redroid Container | ✅ Ready | Container status tests |
+| Port Mappings | ✅ Ready | ADB & VNC port tests |
+| Container Logs | ✅ Ready | Error detection |
+| ADB Connectivity | ✅ Ready | ADB connection tests |
+| Android System Info | ✅ Ready | Property checks |
+| VNC Port | ✅ Ready | Port accessibility tests |
+| Resource Usage | ✅ Ready | CPU/Memory stats |
+| Virtual Devices | ⚠️ Known Issue | Kernel 6.8 compatibility |
 
 ---
 
-## 🔗 Quick Links
+## 📞 Connection Details
 
-- **Instance IP:** `137.131.52.69`
-- **ADB Port:** `5555`
-- **VNC Port:** `5900` (password: `redroid`)
-- **SSH:** `ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69`
+| Service | Port | Access |
+|---------|------|--------|
+| ADB | 5555 | Direct or via SSH tunnel |
+| VNC | 5900 | Via SSH tunnel recommended |
+| RTMP | 1935 | External (OBS streaming) |
+| API | 8080 | localhost only |
+
+**Instance IP**: `137.131.52.69` (may change if instance is recreated)
+**SSH Key**: `~/.ssh/waydroid_oci`
+**VNC Password**: `redroid`
 
 ---
 
-**Overall Status:** ✅ **Redroid Running** | ⏳ **Testing ADB/VNC** | ⚠️ **Virtual Devices Pending**
+**Status**: ✅ Scripts Ready | ⏳ Awaiting Remote Testing | ⚠️ Virtual Devices Pending

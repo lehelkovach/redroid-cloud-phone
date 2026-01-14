@@ -231,7 +231,8 @@ V4L2_MODULE=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP 
 if [[ "$V4L2_MODULE" != "not loaded" ]]; then
     test_pass "v4l2loopback module loaded on host"
 else
-    test_warn "v4l2loopback" "Not loaded (kernel 6.8 compatibility issue)"
+    test_warn "v4l2loopback" "Not loaded (kernel 6.8 compatibility issue on Oracle ARM)"
+    echo "      Note: This is expected on Kernel 6.8. Requires Ubuntu 20.04 (Kernel 5.x)."
 fi
 
 VIDEO42_EXISTS=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP '[ -e /dev/video42 ] && echo "exists" || echo "not found"')

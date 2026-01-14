@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-INSTANCE_IP="${2:-161.153.55.58}"
+INSTANCE_IP="${2:-137.131.52.69}"
 SSH_KEY="${HOME}/.ssh/waydroid_oci"
 SSH_USER="ubuntu"
 PID_FILE="${HOME}/.waydroid-tunnel.pid"

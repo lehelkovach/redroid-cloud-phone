@@ -59,8 +59,6 @@ systemctl start docker
 
 log_info "[3/6] Configuring nginx-rtmp..."
 cp "$SCRIPT_DIR/config/nginx-rtmp.conf" /etc/nginx/nginx.conf
-
-# Prefer our dedicated unit; disable distro nginx unit if present
 systemctl disable nginx.service 2>/dev/null || true
 
 log_info "[4/6] Installing Control API..."

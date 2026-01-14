@@ -17,10 +17,11 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo "[1/7] Stopping all waydroid services..."
+echo "[1/7] Stopping all waydroid/redroid services..."
 systemctl stop waydroid-cloud-phone.target || true
 systemctl stop waydroid-container.service || true
 systemctl stop waydroid-session.service || true
+docker stop redroid || true
 systemctl stop xvnc.service || true
 systemctl stop ffmpeg-bridge.service || true
 systemctl stop nginx-rtmp.service || true

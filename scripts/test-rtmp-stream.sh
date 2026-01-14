@@ -39,6 +39,15 @@ echo -e "${GREEN}✓ ffmpeg found${NC}"
 
 if [ ! -e "$VIDEO_DEVICE" ]; then
     echo -e "${RED}✗ $VIDEO_DEVICE not found${NC}"
+    
+    # Check kernel version
+    KERNEL_VER=$(uname -r)
+    if [[ "$KERNEL_VER" == *"6.8"* ]]; then
+        echo -e "${RED}ERROR: Kernel 6.8 detected ($KERNEL_VER)${NC}"
+        echo "v4l2loopback is known to fail on this kernel on Oracle ARM."
+        echo "Please use Ubuntu 20.04 (Kernel 5.x)."
+    fi
+    
     echo "Load v4l2loopback: sudo modprobe v4l2loopback devices=1 video_nr=42"
     exit 1
 fi

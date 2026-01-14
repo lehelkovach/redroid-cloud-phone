@@ -2,7 +2,7 @@
 # monitor-oci-logs.sh
 # Monitors OCI instance logs and system health
 
-INSTANCE_IP="${1:-161.153.55.58}"
+INSTANCE_IP="${1:-137.131.52.69}"
 SSH_KEY="${HOME}/.ssh/waydroid_oci"
 LOG_FILE="${HOME}/.waydroid-monitor.log"
 
