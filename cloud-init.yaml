@@ -1,63 +1,207 @@
 #cloud-config
-# Waydroid Cloud Phone - Cloud-Init Bootstrap
+# Cloud Phone - Cloud-Init Bootstrap
 # 
 # Use this as User Data when creating an OCI instance.
 # It will automatically install and configure everything.
 #
-# After the instance boots:
-# 1. SSH in and run: sudo /opt/waydroid-cloud-phone/scripts/init-waydroid.sh
-# 2. Start services: sudo systemctl start waydroid-cloud-phone.target
+# Supports both Redroid (recommended) and legacy Waydroid.
+#
+# Configuration via environment variables in instance metadata:
+#   CLOUD_PHONE_MODE=redroid|waydroid (default: redroid)
+#   CLOUD_PHONE_REPO=github-repo (default: lehelkovach/redroid-cloud-phone)
+#   PROXY_URL=socks5://host:port (optional)
+#   GPS_COORDS=lat,lon (optional)
+#   API_TOKEN=secret (optional)
+#   REDROID_IMAGE=image:tag (optional)
 
 package_update: true
-package_upgrade: true
+package_upgrade: false
 
 packages:
   - curl
   - wget
   - git
   - unzip
+  - jq
+  - docker.io
+  - nginx
+  - libnginx-mod-rtmp
+  - ffmpeg
+  - android-tools-adb
+  - python3
+  - python3-pip
+  - python3-venv
 
 write_files:
-  - path: /root/setup-waydroid-cloud-phone.sh
+  # Main setup script
+  - path: /root/setup-cloud-phone.sh
     permissions: '0755'
     content: |
       #!/bin/bash
       set -e
       
-      echo "Downloading Waydroid Cloud Phone..."
-      cd /opt
+      LOG_FILE="/var/log/cloud-phone-setup.log"
+      exec > >(tee -a "$LOG_FILE") 2>&1
       
-      # Clone or download the project
-      # Replace with your actual repo URL
-      git clone https://github.com/YOUR_USERNAME/waydroid-cloud-phone.git || {
-        echo "Git clone failed, using curl..."
-        mkdir -p waydroid-cloud-phone
-        # Alternative: download from releases
-        # curl -L https://github.com/.../releases/latest/download/waydroid-cloud-phone.tar.gz | tar xz
+      echo "=========================================="
+      echo "Cloud Phone Setup Starting"
+      echo "Date: $(date)"
+      echo "=========================================="
+      
+      # Get configuration from metadata
+      METADATA_URL="http://169.254.169.254/opc/v1/instance/metadata"
+      
+      get_metadata() {
+        curl -sf "$METADATA_URL/$1" 2>/dev/null || echo ""
       }
       
-      cd waydroid-cloud-phone
-      chmod +x install.sh scripts/*.sh
+      CLOUD_PHONE_MODE="${CLOUD_PHONE_MODE:-$(get_metadata cloud_phone_mode)}"
+      CLOUD_PHONE_MODE="${CLOUD_PHONE_MODE:-redroid}"
       
-      echo "Running installer..."
-      ./install.sh
+      CLOUD_PHONE_REPO="${CLOUD_PHONE_REPO:-$(get_metadata cloud_phone_repo)}"
+      CLOUD_PHONE_REPO="${CLOUD_PHONE_REPO:-lehelkovach/redroid-cloud-phone}"
+      
+      PROXY_URL="${PROXY_URL:-$(get_metadata proxy_url)}"
+      GPS_COORDS="${GPS_COORDS:-$(get_metadata gps_coords)}"
+      API_TOKEN="${API_TOKEN:-$(get_metadata api_token)}"
+      REDROID_IMAGE="${REDROID_IMAGE:-$(get_metadata redroid_image)}"
+      REDROID_IMAGE="${REDROID_IMAGE:-redroid/redroid:latest}"
+      
+      echo "Configuration:"
+      echo "  Mode: $CLOUD_PHONE_MODE"
+      echo "  Repo: $CLOUD_PHONE_REPO"
+      echo "  Image: $REDROID_IMAGE"
+      echo "  Proxy: ${PROXY_URL:-none}"
+      echo "  GPS: ${GPS_COORDS:-none}"
+      echo ""
+      
+      # Clone repository
+      echo "[1/5] Downloading Cloud Phone..."
+      cd /opt
+      rm -rf cloud-phone
+      git clone "https://github.com/${CLOUD_PHONE_REPO}.git" cloud-phone
+      cd cloud-phone
+      chmod +x install.sh install-redroid.sh scripts/*.sh
+      
+      # Run appropriate installer
+      echo "[2/5] Running installer..."
+      if [[ "$CLOUD_PHONE_MODE" == "redroid" ]]; then
+        ./install-redroid.sh
+      else
+        ./install.sh
+      fi
+      
+      # Save runtime configuration
+      echo "[3/5] Saving configuration..."
+      mkdir -p /etc/cloud-phone
+      cat > /etc/cloud-phone/config.json <<EOF
+      {
+        "redroid": {
+          "image": "$REDROID_IMAGE"
+        },
+        "network": {
+          "proxy": {
+            "enabled": $([ -n "$PROXY_URL" ] && echo true || echo false),
+            "url": "$PROXY_URL"
+          }
+        },
+        "location": {
+          "enabled": $([ -n "$GPS_COORDS" ] && echo true || echo false),
+          "coords": "$GPS_COORDS"
+        },
+        "api": {
+          "auth": {
+            "enabled": $([ -n "$API_TOKEN" ] && echo true || echo false),
+            "token": "$API_TOKEN"
+          }
+        }
+      }
+      EOF
+      
+      # Start services
+      echo "[4/5] Starting services..."
+      systemctl daemon-reload
+      systemctl enable docker
+      systemctl start docker
+      sleep 5
+      
+      if [[ "$CLOUD_PHONE_MODE" == "redroid" ]]; then
+        systemctl start redroid-cloud-phone.target
+      else
+        systemctl start waydroid-cloud-phone.target
+      fi
+      
+      # Wait for Android to boot
+      echo "Waiting for Android to boot..."
+      sleep 45
+      
+      # Apply runtime configuration
+      echo "[5/5] Applying runtime configuration..."
+      
+      if [[ -n "$PROXY_URL" ]]; then
+        echo "Configuring proxy: $PROXY_URL"
+        proxy_type="${PROXY_URL%%://*}"
+        hostport="${PROXY_URL#*://}"
+        host="${hostport%%:*}"
+        port="${hostport##*:}"
+        /opt/waydroid-scripts/proxy-control.sh enable "$proxy_type" "$host" "$port" || true
+      fi
+      
+      if [[ -n "$GPS_COORDS" ]]; then
+        echo "Configuring GPS: $GPS_COORDS"
+        lat="${GPS_COORDS%%,*}"
+        lon="${GPS_COORDS##*,}"
+        curl -s -X POST http://localhost:8080/location \
+          -H "Content-Type: application/json" \
+          -d "{\"enabled\":true,\"latitude\":$lat,\"longitude\":$lon}" || true
+      fi
       
       echo ""
-      echo "========================================"
-      echo "Installation complete!"
-      echo "The system will reboot in 30 seconds."
+      echo "=========================================="
+      echo "Cloud Phone Setup Complete!"
+      echo "=========================================="
       echo ""
-      echo "After reboot, SSH in and run:"
-      echo "  sudo /opt/waydroid-cloud-phone/scripts/init-waydroid.sh"
-      echo "========================================"
+      echo "Connect via VNC (through SSH tunnel):"
+      echo "  ssh -L 5900:localhost:5900 ubuntu@$(curl -sf http://169.254.169.254/opc/v1/vnics/ | jq -r '.[0].publicIp') -N"
+      echo "  vncviewer localhost:5900"
+      echo ""
+      echo "Connect via ADB:"
+      echo "  adb connect $(curl -sf http://169.254.169.254/opc/v1/vnics/ | jq -r '.[0].publicIp'):5555"
+      echo ""
       
-      # Schedule reboot
-      shutdown -r +1 "Rebooting to load kernel modules..."
+      # Signal completion
+      touch /var/log/cloud-phone-setup-complete
+
+  # Service status check script
+  - path: /usr/local/bin/cloud-phone-status
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      if [[ -f /var/log/cloud-phone-setup-complete ]]; then
+        /opt/waydroid-scripts/health-check.sh
+      else
+        echo "Cloud Phone setup still in progress..."
+        echo "Check /var/log/cloud-phone-setup.log for details"
+        tail -20 /var/log/cloud-phone-setup.log
+      fi
 
 runcmd:
-  - /root/setup-waydroid-cloud-phone.sh
+  # Enable and start Docker first
+  - systemctl enable docker
+  - systemctl start docker
+  # Run main setup in background (cloud-init can timeout)
+  - nohup /root/setup-cloud-phone.sh > /var/log/cloud-phone-setup.log 2>&1 &
+  - echo "Cloud Phone setup started in background. Check /var/log/cloud-phone-setup.log"
 
 final_message: |
-  Waydroid Cloud Phone setup initiated.
-  Check /var/log/cloud-init-output.log for progress.
-  System will reboot automatically to load kernel modules.
+  Cloud Phone bootstrap initiated.
+  
+  Setup is running in the background.
+  Check progress: tail -f /var/log/cloud-phone-setup.log
+  Check status: cloud-phone-status
+  
+  Estimated completion time: 5-10 minutes
+  
+  Once complete, connect via:
+    VNC: ssh -L 5900:localhost:5900 ubuntu@IP -N && vncviewer localhost:5900
+    ADB: adb connect IP:5555

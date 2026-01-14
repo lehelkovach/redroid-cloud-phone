@@ -1,11 +1,24 @@
 #!/bin/bash
-# create-golden-image.sh
-# Creates a golden image from a running waydroid instance
+# Create Golden Image for Cloud Phone
 #
-# Usage: ./create-golden-image.sh <PUBLIC_IP> <IMAGE_NAME> [SSH_KEY]
-# Example: ./create-golden-image.sh 123.45.67.89 waydroid-cloud-phone-v1
+# This script creates a reusable OCI custom image from a configured instance.
+# The golden image can be used to rapidly deploy new cloud phone instances.
+#
+# Usage:
+#   ./create-golden-image.sh <instance-ip> [image-name]
+#
+# Prerequisites:
+#   - OCI CLI configured
+#   - SSH access to the instance
+#   - Instance must be running with cloud phone installed
 
 set -euo pipefail
+
+INSTANCE_IP="${1:-}"
+IMAGE_NAME="${2:-cloud-phone-golden-$(date +%Y%m%d)}"
+
+SSH_KEY="${SSH_KEY_FILE:-$HOME/.ssh/waydroid_oci}"
+COMPARTMENT_ID="${COMPARTMENT_ID:-}"
 
 # Colors
 GREEN='\033[0;32m'
@@ -14,141 +27,202 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <PUBLIC_IP> <IMAGE_NAME> [SSH_KEY]"
-    echo "Example: $0 123.45.67.89 waydroid-cloud-phone-v1"
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+log_header() { echo -e "${BLUE}=== $1 ===${NC}"; }
+
+usage() {
+    cat <<EOF
+Create Golden Image for Cloud Phone
+
+Usage: $0 <instance-ip> [image-name]
+
+Arguments:
+  instance-ip     IP address of the configured instance
+  image-name      Name for the golden image (default: cloud-phone-golden-YYYYMMDD)
+
+Environment Variables:
+  SSH_KEY_FILE    Path to SSH private key (default: ~/.ssh/waydroid_oci)
+  COMPARTMENT_ID  OCI compartment ID for the image
+
+Examples:
+  $0 129.146.123.45
+  $0 129.146.123.45 my-cloud-phone-v1
+
+The script will:
+  1. Prepare the instance (clean logs, remove sensitive data)
+  2. Stop the instance
+  3. Create a custom image
+  4. Restart the instance
+
+EOF
     exit 1
-fi
-
-PUBLIC_IP="$1"
-IMAGE_NAME="$2"
-SSH_KEY="${3:-${HOME}/.ssh/waydroid_oci}"
-SSH_USER="ubuntu"
-
-# Load configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/launch-fleet.sh" 2>/dev/null || true
-COMPARTMENT_ID="${COMPARTMENT_ID:-ocid1.tenancy.oc1..aaaaaaaak44wevthunqrdp6h6noor4o5t34a7jqejla6wd22v47admhyzoca}"
-
-# Check prerequisites
-if ! command -v oci &> /dev/null; then
-    echo -e "${RED}Error: OCI CLI is not installed.${NC}"
-    exit 1
-fi
-
-echo -e "${BLUE}=========================================="
-echo "Creating Golden Image"
-echo "==========================================${NC}"
-echo "Instance IP: $PUBLIC_IP"
-echo "Image Name: $IMAGE_NAME"
-echo ""
-
-# Get instance OCID from IP
-echo -e "${BLUE}[1/5] Finding instance OCID...${NC}"
-INSTANCE_OCID=$(oci compute instance list \
-    --compartment-id "$COMPARTMENT_ID" \
-    --query "data[?\"lifecycle-state\"=='RUNNING'].{id:id,\"public-ip\":\"vnics[0].\"public-ip\"}" \
-    --output json 2>/dev/null | \
-    jq -r ".[] | select(.\"public-ip\" == \"$PUBLIC_IP\") | .id" | head -1)
-
-if [[ -z "$INSTANCE_OCID" ]]; then
-    echo -e "${YELLOW}Could not find instance by IP, trying alternative method...${NC}"
-    # Try to find by display name or list all
-    INSTANCE_OCID=$(oci compute instance list \
-        --compartment-id "$COMPARTMENT_ID" \
-        --lifecycle-state RUNNING \
-        --query 'data[0].id' \
-        --raw-output 2>/dev/null || echo "")
-fi
-
-if [[ -z "$INSTANCE_OCID" ]]; then
-    echo -e "${RED}Error: Could not find instance.${NC}"
-    echo "Please provide the instance OCID manually:"
-    echo "  export INSTANCE_OCID=\"ocid1.instance.oc1.phx.xxx\""
-    echo "Or find it:"
-    echo "  oci compute instance list --compartment-id $COMPARTMENT_ID"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ Found instance: $INSTANCE_OCID${NC}"
-
-# Prepare instance
-echo -e "${BLUE}[2/5] Preparing instance for imaging...${NC}"
-echo -e "${YELLOW}This will stop services and clean up the instance${NC}"
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" "sudo /opt/waydroid-scripts/prepare-golden-image.sh"
-
-echo -e "${GREEN}✓ Instance prepared${NC}"
-
-# Shutdown instance
-echo -e "${BLUE}[3/5] Shutting down instance...${NC}"
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" "sudo shutdown -h now" || true
-
-# Wait for instance to stop
-echo -e "${YELLOW}Waiting for instance to stop (this may take 1-2 minutes)...${NC}"
-oci compute instance wait \
-    --instance-id "$INSTANCE_OCID" \
-    --wait-for-state STOPPED \
-    --max-wait-seconds 300 2>/dev/null || {
-    echo -e "${YELLOW}Instance may still be stopping. Proceeding anyway...${NC}"
 }
 
-echo -e "${GREEN}✓ Instance stopped${NC}"
+if [[ -z "$INSTANCE_IP" ]]; then
+    usage
+fi
 
-# Create custom image
-echo -e "${BLUE}[4/5] Creating custom image...${NC}"
-echo -e "${YELLOW}This will take 10-20 minutes...${NC}"
+if ! command -v oci &>/dev/null; then
+    log_error "OCI CLI not installed"
+    exit 1
+fi
+
+if [[ -z "$COMPARTMENT_ID" ]]; then
+    log_error "COMPARTMENT_ID required"
+    exit 1
+fi
+
+SSH_CMD="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10"
+
+log_header "Creating Golden Image: $IMAGE_NAME"
+echo ""
+
+# Step 1: Get instance OCID
+log_info "Finding instance OCID..."
+INSTANCE_OCID=$(oci compute instance list \
+    --compartment-id "$COMPARTMENT_ID" \
+    --query "data[?\"primary-public-ip\"=='$INSTANCE_IP'].id | [0]" \
+    --raw-output 2>/dev/null)
+
+if [[ -z "$INSTANCE_OCID" ]] || [[ "$INSTANCE_OCID" == "null" ]]; then
+    log_error "Could not find instance with IP: $INSTANCE_IP"
+    exit 1
+fi
+log_info "Found instance: ${INSTANCE_OCID:0:50}..."
+
+# Step 2: Prepare instance for imaging
+log_info "Preparing instance for imaging..."
+
+$SSH_CMD ubuntu@$INSTANCE_IP << 'PREPARE_EOF'
+set -e
+echo "Cleaning up for golden image..."
+
+# Stop services gracefully
+sudo systemctl stop redroid-cloud-phone.target 2>/dev/null || true
+sudo systemctl stop docker 2>/dev/null || true
+
+# Clean Docker (keep images, remove containers)
+sudo docker rm -f $(sudo docker ps -aq) 2>/dev/null || true
+
+# Clear logs
+sudo journalctl --rotate
+sudo journalctl --vacuum-time=1s
+sudo rm -rf /var/log/*.gz /var/log/*.1 /var/log/*.old
+sudo truncate -s 0 /var/log/syslog 2>/dev/null || true
+sudo truncate -s 0 /var/log/auth.log 2>/dev/null || true
+
+# Clear temporary files
+sudo rm -rf /tmp/* /var/tmp/*
+
+# Clear bash history
+rm -f ~/.bash_history
+history -c
+
+# Clear SSH keys (will regenerate on first boot)
+# Note: Don't remove authorized_keys, just host keys
+sudo rm -f /etc/ssh/ssh_host_*
+
+# Clear cloud-init for re-initialization
+sudo cloud-init clean --logs 2>/dev/null || true
+
+# Clear machine-id (regenerates on boot)
+sudo truncate -s 0 /etc/machine-id
+
+# Remove any cached credentials
+rm -rf ~/.oci ~/.aws ~/.config/gcloud 2>/dev/null || true
+
+# Clear API tokens from config
+sudo sed -i 's/"token": ".*"/"token": ""/' /etc/cloud-phone/config.json 2>/dev/null || true
+
+# Sync filesystem
+sync
+
+echo "Instance prepared for imaging"
+PREPARE_EOF
+
+log_info "Instance prepared"
+
+# Step 3: Stop the instance
+log_info "Stopping instance..."
+oci compute instance action \
+    --instance-id "$INSTANCE_OCID" \
+    --action STOP \
+    --wait-for-state STOPPED
+
+log_info "Instance stopped"
+
+# Step 4: Create custom image
+log_info "Creating custom image (this may take 10-30 minutes)..."
 
 IMAGE_OCID=$(oci compute image create \
     --compartment-id "$COMPARTMENT_ID" \
     --instance-id "$INSTANCE_OCID" \
     --display-name "$IMAGE_NAME" \
+    --wait-for-state AVAILABLE \
     --query 'data.id' \
     --raw-output)
 
-if [[ -z "$IMAGE_OCID" ]]; then
-    echo -e "${RED}Error: Failed to create image${NC}"
-    exit 1
-fi
+log_info "Image created: ${IMAGE_OCID:0:50}..."
 
-echo -e "${GREEN}✓ Image creation started: $IMAGE_OCID${NC}"
+# Step 5: Restart the instance
+log_info "Restarting instance..."
+oci compute instance action \
+    --instance-id "$INSTANCE_OCID" \
+    --action START \
+    --wait-for-state RUNNING
 
-# Wait for image to be available
-echo -e "${BLUE}[5/5] Waiting for image to be available...${NC}"
-echo -e "${YELLOW}This may take 10-20 minutes. You can check status with:${NC}"
-echo "  oci compute image get --image-id $IMAGE_OCID --query 'data.\"lifecycle-state\"' --raw-output"
+log_info "Instance restarted"
 
-oci compute image wait \
-    --image-id "$IMAGE_OCID" \
-    --wait-for-state AVAILABLE \
-    --max-wait-seconds 1800 2>/dev/null || {
-    echo -e "${YELLOW}Image is still being created. Check status manually.${NC}"
-}
+# Wait for SSH
+log_info "Waiting for SSH..."
+for i in {1..30}; do
+    if $SSH_CMD ubuntu@$INSTANCE_IP 'echo ready' &>/dev/null; then
+        break
+    fi
+    sleep 2
+done
 
-# Check final status
-IMAGE_STATE=$(oci compute image get \
-    --image-id "$IMAGE_OCID" \
-    --query 'data."lifecycle-state"' \
-    --raw-output 2>/dev/null || echo "UNKNOWN")
+# Restart services
+$SSH_CMD ubuntu@$INSTANCE_IP 'sudo systemctl start docker && sudo systemctl start redroid-cloud-phone.target' || true
 
+# Summary
 echo ""
-if [[ "$IMAGE_STATE" == "AVAILABLE" ]]; then
-    echo -e "${GREEN}=========================================="
-    echo "Golden Image Created Successfully!"
-    echo "==========================================${NC}"
-    echo ""
-    echo "Image OCID: $IMAGE_OCID"
-    echo "Image Name: $IMAGE_NAME"
-    echo ""
-    echo "Update launch-fleet.sh with:"
-    echo "  IMAGE_ID=\"$IMAGE_OCID\""
-    echo ""
-    echo "Then launch instances:"
-    echo "  ./scripts/launch-fleet.sh 2"
-    echo ""
-else
-    echo -e "${YELLOW}Image status: $IMAGE_STATE${NC}"
-    echo "Check status:"
-    echo "  oci compute image get --image-id $IMAGE_OCID"
-    echo ""
-fi
+log_header "Golden Image Created Successfully"
+echo ""
+echo "Image Details:"
+echo "  Name: $IMAGE_NAME"
+echo "  OCID: $IMAGE_OCID"
+echo "  Compartment: $COMPARTMENT_ID"
+echo ""
+echo "Deploy new instance from this image:"
+echo ""
+cat <<EOF
+oci compute instance launch \\
+  --compartment-id "$COMPARTMENT_ID" \\
+  --availability-domain "YOUR-AD" \\
+  --shape "VM.Standard.A1.Flex" \\
+  --shape-config '{"ocpus":2,"memoryInGBs":8}' \\
+  --image-id "$IMAGE_OCID" \\
+  --subnet-id "YOUR-SUBNET-ID" \\
+  --display-name "cloud-phone-from-golden" \\
+  --ssh-authorized-keys-file ~/.ssh/your-key.pub \\
+  --assign-public-ip true
+EOF
+echo ""
+echo "Or use the deployment script:"
+echo "  GOLDEN_IMAGE_ID=$IMAGE_OCID ./scripts/deploy-from-golden.sh"
+echo ""
 
+# Save image info
+cat > /tmp/golden-image-info.json <<EOF
+{
+  "image_name": "$IMAGE_NAME",
+  "image_ocid": "$IMAGE_OCID",
+  "compartment_id": "$COMPARTMENT_ID",
+  "created_from": "$INSTANCE_OCID",
+  "created_at": "$(date -Iseconds)"
+}
+EOF
+log_info "Image info saved to /tmp/golden-image-info.json"

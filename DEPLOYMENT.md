@@ -1,503 +1,491 @@
-# Deployment Guide: OCI Always Free ARM Waydroid Cloud Phone
+# Cloud Phone Deployment Guide
 
-Complete step-by-step instructions for deploying on Oracle Cloud Infrastructure.
+This guide covers all deployment options for Cloud Phone.
 
-> **Note (2026):** This document primarily describes the **legacy Waydroid-based** deployment (systemd services, VNC :5901, API :8080).
->
-> The **current recommended path** for this repo is **Redroid (Docker-based)**:
-> - Install: `sudo ./install-redroid.sh`
-> - Start: `sudo systemctl start redroid-cloud-phone.target`
-> - Verify: `./scripts/test-redroid-full.sh <INSTANCE_IP>` and `sudo /opt/waydroid-scripts/health-check.sh`
-> - Primary docs: `HANDOFF.md`, `QUICK_START.md`, `README.md`
+## Table of Contents
 
----
-
-## Prerequisites
-
-- Oracle Cloud account (free tier eligible)
-- SSH key pair (or create one during setup)
-- OBS Studio (for streaming camera/mic)
-- VNC client (optional - can use SSH tunnel + browser)
+- [Deployment Options Overview](#deployment-options-overview)
+- [Option 1: CLI Script Deployment](#option-1-cli-script-deployment)
+- [Option 2: Golden Image Deployment](#option-2-golden-image-deployment)
+- [Option 3: Terraform (Infrastructure as Code)](#option-3-terraform-infrastructure-as-code)
+- [Option 4: Cloud-init (Manual Instance)](#option-4-cloud-init-manual-instance)
+- [Option 5: Docker Compose (Existing Server)](#option-5-docker-compose-existing-server)
+- [Option 6: Custom Docker Image](#option-6-custom-docker-image)
+- [Fleet Deployment (Multiple Instances)](#fleet-deployment-multiple-instances)
 
 ---
 
-## Part 1: Create OCI Account & Instance
+## Deployment Options Overview
 
-### 1.1 Sign Up for Oracle Cloud
-
-1. Go to [cloud.oracle.com](https://cloud.oracle.com)
-2. Click **Sign Up** → Choose your region (closest to you)
-3. Complete verification (credit card required but won't be charged for Always Free)
-4. Wait for account activation (~5-30 minutes)
-
-### 1.2 Create SSH Key (if you don't have one)
-
-```bash
-# On your local machine
-ssh-keygen -t ed25519 -C "waydroid-oci"
-# Save to ~/.ssh/waydroid_oci
-# No passphrase is fine for testing
-
-# View public key (you'll need this)
-cat ~/.ssh/waydroid_oci.pub
-```
-
-### 1.3 Create ARM Instance
-
-1. Log into OCI Console → **Compute** → **Instances** → **Create Instance**
-
-2. **Name**: `waydroid-phone-1`
-
-3. **Placement**: Leave default (AD-1 or AD-2)
-
-4. **Image and Shape**:
-   - Click **Edit**
-   - **Image**: Click **Change Image**
-     - Select **Ubuntu**
-     - Version: **22.04** or **24.04**
-     - Image type: **aarch64** (ARM)
-   - **Shape**: Click **Change Shape**
-     - **Ampere** (ARM processors)
-     - Shape: `VM.Standard.A1.Flex`
-     - **OCPUs**: `2`
-     - **Memory**: `8 GB`
-
-5. **Networking**:
-   - Use default VCN or create new
-   - **Public IPv4**: Assign public IP (required)
-   - Subnet: Public subnet
-
-6. **Add SSH Keys**:
-   - Paste your public key from step 1.2
-
-7. **Boot Volume**:
-   - Size: `50 GB` (within free tier)
-   - Leave encryption default
-
-8. Click **Create**
-
-9. **Wait** for instance to show "Running" (~2-5 minutes)
-
-10. **Copy the Public IP** from instance details
-
-### 1.4 Configure Security List (Firewall)
-
-1. Go to **Networking** → **Virtual Cloud Networks**
-2. Click your VCN → **Security Lists** → **Default Security List**
-3. **Add Ingress Rules**:
-
-| Stateless | Source | Protocol | Dest Port | Description |
-|-----------|--------|----------|-----------|-------------|
-| No | 0.0.0.0/0 | TCP | 22 | SSH |
-| No | 0.0.0.0/0 | TCP | 1935 | RTMP |
-
-> **Note**: VNC (5901) and API (8080) stay on localhost - accessed via SSH tunnel only.
+| Option | Speed | Customization | Best For |
+|--------|-------|---------------|----------|
+| CLI Script | ~15 min | High | Quick single deployment |
+| Golden Image | ~2 min | Medium | Production, scaling |
+| Terraform | ~15 min | High | IaC, reproducible |
+| Cloud-init | ~15 min | Medium | OCI Console users |
+| Docker Compose | ~5 min | High | Existing servers |
+| Custom Image | ~30 min build | Very High | Custom requirements |
 
 ---
 
-## Part 2: Deploy Waydroid Cloud Phone
+## Option 1: CLI Script Deployment
 
-### 2.1 Connect to Instance
+**Best for:** Quick deployments with full customization
 
-```bash
-# Replace YOUR_IP with your instance's public IP
-ssh -i ~/.ssh/waydroid_oci ubuntu@YOUR_IP
-```
-
-### 2.2 Upload and Extract
-
-**Option A: From your local machine (SCP)**
-```bash
-# On your local machine
-scp -i ~/.ssh/waydroid_oci waydroid-cloud-phone.tar.gz ubuntu@YOUR_IP:~
-```
-
-**Option B: Download directly on server**
-```bash
-# On the server - if hosted somewhere
-# wget https://your-url/waydroid-cloud-phone.tar.gz
-```
-
-**Then on the server:**
-```bash
-cd ~
-tar xzf waydroid-cloud-phone.tar.gz
-cd waydroid-cloud-phone
-```
-
-### 2.3 Run Installer
+### Prerequisites
 
 ```bash
-sudo ./install.sh
+# OCI CLI configured
+oci --version
+
+# Environment variables
+export COMPARTMENT_ID="ocid1.compartment..."
+export SUBNET_ID="ocid1.subnet..."
+export AVAILABILITY_DOMAIN="AD-1"
+export SSH_KEY_FILE="~/.ssh/id_rsa.pub"
 ```
 
-This takes 5-15 minutes. It will:
-- Install all packages (nginx, waydroid, vnc, etc.)
-- Configure kernel modules
-- Set up systemd services
-- Install the control API
-
-### 2.4 Reboot
+### Basic Deployment
 
 ```bash
-sudo reboot
+./scripts/deploy-cloud-phone.sh --name my-phone
 ```
 
-Wait 1-2 minutes, then reconnect:
-```bash
-ssh -i ~/.ssh/waydroid_oci ubuntu@YOUR_IP
-```
-
-### 2.5 Verify Kernel Modules
+### Full-Featured Deployment
 
 ```bash
-lsmod | grep -E "v4l2|snd_aloop|binder"
+./scripts/deploy-cloud-phone.sh \
+  --name production-phone \
+  --ocpus 4 \
+  --memory 16 \
+  --os-version 20.04 \
+  --proxy socks5://proxy.example.com:1080 \
+  --gps 37.7749,-122.4194 \
+  --gapps \
+  --api-token my-secret-token \
+  --image redroid/redroid:11.0.0-latest
 ```
 
-Expected output:
-```
-v4l2loopback           ...
-snd_aloop              ...
-```
-
-Check devices:
-```bash
-ls -la /dev/video42
-ls -la /dev/binderfs/
-```
-
-### 2.6 Initialize Waydroid
+### From Configuration File
 
 ```bash
-sudo /opt/waydroid-scripts/init-waydroid.sh
+# Create config
+cat > my-phone.json <<EOF
+{
+  "instance": {"name": "my-phone", "ocpus": 2, "memory_gb": 8},
+  "redroid": {"image": "redroid/redroid:latest", "gapps": {"enabled": true}},
+  "network": {"proxy": {"enabled": true, "type": "socks5", "host": "proxy", "port": 1080}},
+  "location": {"enabled": true, "latitude": 37.7749, "longitude": -122.4194}
+}
+EOF
+
+# Deploy
+./scripts/deploy-cloud-phone.sh --config my-phone.json
 ```
-
-- Choose `1` for GAPPS (Google Play) or `2` for VANILLA
-- Wait for download (~800MB-1.5GB)
-- Wait for Android to boot (~1-2 minutes)
-
-### 2.7 Start All Services
-
-```bash
-sudo systemctl start waydroid-cloud-phone.target
-```
-
-### 2.8 Verify Everything is Running
-
-```bash
-sudo /opt/waydroid-scripts/health-check.sh
-```
-
-All services should show green checkmarks.
 
 ---
 
-## Part 3: Connect & Use
+## Option 2: Golden Image Deployment
 
-### 3.1 Create SSH Tunnel
+**Best for:** Production deployments, rapid scaling
 
-From your **local machine**:
+A golden image is a pre-configured OCI custom image. Deployment from golden image takes ~2 minutes vs ~15 minutes for fresh install.
+
+### Step 1: Create Golden Image
+
+First, deploy and configure a phone instance:
 
 ```bash
-ssh -i ~/.ssh/waydroid_oci \
-    -L 5901:localhost:5901 \
-    -L 8080:localhost:8080 \
-    -N ubuntu@YOUR_IP
+./scripts/deploy-cloud-phone.sh --name golden-source
 ```
 
-Leave this terminal open. The flags:
-- `-L 5901:localhost:5901` → VNC
-- `-L 8080:localhost:8080` → Control API
-- `-N` → Don't open shell, just tunnel
+Then create the golden image:
 
-### 3.2 Connect VNC
-
-**Option A: VNC Client**
-- Open your VNC client (RealVNC, TigerVNC, etc.)
-- Connect to: `localhost:5901`
-- Password: `waydroid` (change this!)
-
-**Option B: Browser (noVNC)**
-If you want web-based VNC, install noVNC:
 ```bash
-# On server
-sudo apt install novnc websockify
-websockify --web /usr/share/novnc 6080 localhost:5901
+./scripts/create-golden-image.sh 129.146.x.x cloud-phone-golden-v1
 ```
-Then add `-L 6080:localhost:6080` to your SSH tunnel and open `http://localhost:6080`
 
-### 3.3 Test Control API
+### Step 2: Deploy from Golden Image
 
 ```bash
-# Device info
-curl http://localhost:8080/device/info
+# Set the golden image OCID
+export GOLDEN_IMAGE_ID="ocid1.image.oc1.phx.aaaa..."
 
-# Screenshot
-curl http://localhost:8080/device/screenshot > screenshot.png
-open screenshot.png  # or xdg-open on Linux
+# Deploy single instance
+./scripts/deploy-from-golden.sh --name production-phone-1
 
-# Tap center of screen
-curl -X POST http://localhost:8080/device/tap \
+# Deploy with customization
+./scripts/deploy-from-golden.sh \
+  --name production-phone-2 \
+  --proxy socks5://proxy:1080 \
+  --gps 40.7128,-74.0060
+
+# Deploy multiple instances
+for i in 1 2 3; do
+  ./scripts/deploy-from-golden.sh --name phone-$i &
+done
+wait
+```
+
+---
+
+## Option 3: Terraform (Infrastructure as Code)
+
+**Best for:** Reproducible deployments, GitOps, infrastructure management
+
+### Setup
+
+```bash
+cd terraform/
+
+# Copy example variables
+cp terraform.tfvars.example terraform.tfvars
+
+# Edit with your values
+nano terraform.tfvars
+```
+
+### terraform.tfvars Example
+
+```hcl
+# OCI Authentication
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaa..."
+user_ocid        = "ocid1.user.oc1..aaaa..."
+fingerprint      = "aa:bb:cc:dd:ee:ff:..."
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "us-phoenix-1"
+
+# Instance
+compartment_ocid   = "ocid1.compartment.oc1..aaaa..."
+subnet_ocid        = "ocid1.subnet.oc1.phx.aaaa..."
+instance_name      = "cloud-phone"
+instance_count     = 1
+instance_ocpus     = 2
+instance_memory_gb = 8
+ubuntu_version     = "20.04"
+
+# SSH
+ssh_public_key = "ssh-rsa AAAA..."
+
+# Features
+proxy_enabled = true
+proxy_type    = "socks5"
+proxy_host    = "proxy.example.com"
+proxy_port    = 1080
+
+gps_enabled   = true
+gps_latitude  = 37.7749
+gps_longitude = -122.4194
+```
+
+### Deploy
+
+```bash
+# Initialize
+terraform init
+
+# Preview
+terraform plan
+
+# Deploy
+terraform apply
+
+# Deploy multiple instances
+terraform apply -var="instance_count=5"
+
+# Destroy
+terraform destroy
+```
+
+### Outputs
+
+```bash
+# Get connection info
+terraform output connection_commands
+```
+
+---
+
+## Option 4: Cloud-init (Manual Instance)
+
+**Best for:** OCI Console users, simple deployments
+
+### Via OCI Console
+
+1. Go to **Compute → Instances → Create Instance**
+2. Select **Ubuntu 20.04** (for virtual device support)
+3. Select **VM.Standard.A1.Flex** shape
+4. Configure **2 OCPUs, 8GB RAM**
+5. In **Advanced Options → Management**, paste `cloud-init.yaml` contents
+6. Add SSH key and create
+
+### Via OCI CLI with User Data
+
+```bash
+oci compute instance launch \
+  --compartment-id "$COMPARTMENT_ID" \
+  --availability-domain "$AD" \
+  --shape "VM.Standard.A1.Flex" \
+  --shape-config '{"ocpus":2,"memoryInGBs":8}' \
+  --image-id "$IMAGE_ID" \
+  --subnet-id "$SUBNET_ID" \
+  --ssh-authorized-keys-file ~/.ssh/id_rsa.pub \
+  --user-data-file cloud-init.yaml \
+  --display-name "cloud-phone" \
+  --assign-public-ip true
+```
+
+### Custom Metadata (Optional)
+
+Pass configuration via instance metadata:
+
+```bash
+--metadata '{"cloud_phone_mode":"redroid","proxy_url":"socks5://proxy:1080","gps_coords":"37.7749,-122.4194"}'
+```
+
+---
+
+## Option 5: Docker Compose (Existing Server)
+
+**Best for:** Deploying on existing ARM64 servers
+
+### Prerequisites
+
+- ARM64 server (physical or VM)
+- Docker and Docker Compose installed
+- Ubuntu 20.04 recommended for virtual devices
+
+### Deploy
+
+```bash
+cd docker/
+
+# Basic deployment
+docker-compose up -d
+
+# With custom image
+REDROID_IMAGE=my-registry.com/cloud-phone:v1 docker-compose up -d
+
+# With proxy
+docker-compose --profile proxy up -d
+
+# With streaming
+docker-compose --profile streaming up -d
+
+# Multiple instances (requires port adjustment)
+docker-compose up -d --scale redroid=3
+```
+
+### Configuration
+
+Edit environment variables in docker-compose.yml or use .env file:
+
+```bash
+cat > .env <<EOF
+REDROID_IMAGE=redroid/redroid:latest
+REDROID_WIDTH=1920
+REDROID_HEIGHT=1080
+ADB_PORT=5555
+VNC_PORT=5900
+API_PORT=8080
+API_TOKEN=my-secret
+PROXY_URL=socks5://proxy:1080
+EOF
+
+docker-compose up -d
+```
+
+---
+
+## Option 6: Custom Docker Image
+
+**Best for:** Pre-configured deployments, custom apps
+
+### Build Custom Image
+
+```bash
+cd docker/
+
+# Basic build
+./build.sh
+
+# With specific Android version
+./build.sh --android 11
+
+# With GApps (place GApps files in gapps/ directory first)
+./build.sh --gapps
+
+# Build and push to registry
+./build.sh --push myregistry.com/cloud-phone --tag v1.0
+```
+
+### Pre-install Apps
+
+Place APK files in `docker/apps/` before building:
+
+```bash
+mkdir -p docker/apps
+cp my-app.apk docker/apps/
+./build.sh
+```
+
+### Use Custom Image
+
+```bash
+# Via script
+./scripts/deploy-cloud-phone.sh --image myregistry.com/cloud-phone:v1.0
+
+# Via Terraform
+terraform apply -var="golden_image_ocid=" -var="redroid_image=myregistry.com/cloud-phone:v1.0"
+
+# Via Docker Compose
+REDROID_IMAGE=myregistry.com/cloud-phone:v1.0 docker-compose up -d
+```
+
+---
+
+## Fleet Deployment (Multiple Instances)
+
+### CLI Script Fleet
+
+```bash
+# Deploy 10 instances with different proxies
+for i in {1..10}; do
+  ./scripts/deploy-cloud-phone.sh \
+    --name "phone-$i" \
+    --proxy "socks5://proxy$i.example.com:1080" \
+    &
+done
+wait
+```
+
+### Terraform Fleet
+
+```hcl
+# In terraform.tfvars
+instance_count = 10
+```
+
+```bash
+terraform apply
+```
+
+### Golden Image Fleet
+
+```bash
+export GOLDEN_IMAGE_ID="ocid1.image..."
+
+# Parallel deployment
+for i in {1..10}; do
+  ./scripts/deploy-from-golden.sh --name "phone-$i" &
+done
+wait
+```
+
+### Monitoring Fleet
+
+```bash
+# Check all instances
+for ip in $(cat instance-ips.txt); do
+  echo "=== $ip ==="
+  ssh -i key ubuntu@$ip 'sudo /opt/waydroid-scripts/health-check.sh'
+done
+```
+
+---
+
+## Post-Deployment Configuration
+
+### Set Proxy
+
+```bash
+# Via API
+curl -X POST http://localhost:8080/proxy \
   -H "Content-Type: application/json" \
-  -d '{"x": 0.5, "y": 0.5, "mode": "norm"}'
+  -d '{"enabled":true,"type":"socks5","host":"proxy","port":1080}'
+
+# Via script
+ssh ubuntu@IP 'sudo /opt/waydroid-scripts/proxy-control.sh enable socks5 proxy 1080'
 ```
 
-### 3.4 Stream from OBS
-
-1. Open **OBS Studio**
-2. **Settings** → **Stream**:
-   - Service: `Custom`
-   - Server: `rtmp://YOUR_IP/live`
-   - Stream Key: `cam`
-3. Add sources (webcam, mic)
-4. Click **Start Streaming**
-
-The stream will appear as Android's camera input.
-
----
-
-## Part 4: Optional Configuration
-
-### 4.1 Enable SOCKS5 Proxy
-
-Route all traffic through a SOCKS5 proxy:
+### Set GPS
 
 ```bash
-# Enable
-sudo /opt/waydroid-scripts/socks5-toggle.sh enable proxy.example.com 1080
-
-# With authentication
-sudo /opt/waydroid-scripts/socks5-toggle.sh enable proxy.example.com 1080 user pass
-
-# Check status
-sudo /opt/waydroid-scripts/socks5-toggle.sh status
-
-# Disable
-sudo /opt/waydroid-scripts/socks5-toggle.sh disable
+# Via API
+curl -X POST http://localhost:8080/location \
+  -d '{"enabled":true,"latitude":37.7749,"longitude":-122.4194}'
 ```
 
-### 4.2 Change VNC Password
+### Install Apps
 
 ```bash
-sudo -u waydroid vncpasswd /home/waydroid/.vnc/passwd
-# Enter new password twice
-sudo systemctl restart xvnc
+# Via API
+curl -X POST http://localhost:8080/adb/install -F "file=@app.apk"
+
+# Via ADB
+adb connect IP:5555
+adb install app.apk
 ```
-
-### 4.3 Enable Auto-Start on Boot
-
-```bash
-sudo systemctl enable waydroid-cloud-phone.target
-```
-
-### 4.4 Adjust Display Resolution
-
-Edit `/etc/systemd/system/xvnc.service`:
-```bash
-sudo nano /etc/systemd/system/xvnc.service
-# Change -geometry 1080x1920 to your preferred resolution
-sudo systemctl daemon-reload
-sudo systemctl restart xvnc waydroid-session
-```
-
----
-
-## Part 5: Create Golden Image (For Scaling)
-
-Once everything works, create a golden image to quickly launch multiple instances.
-
-### 5.1 Prepare Instance for Golden Image
-
-**On your instance:**
-
-```bash
-# SSH into your instance
-ssh -i ~/.ssh/waydroid_oci ubuntu@YOUR_IP
-
-# Run the preparation script
-sudo /opt/waydroid-scripts/prepare-golden-image.sh
-```
-
-Or manually:
-```bash
-# Stop services
-sudo systemctl stop waydroid-cloud-phone.target
-
-# Clean logs
-sudo journalctl --vacuum-time=1d
-
-# Clear bash history
-history -c
-rm -f ~/.bash_history
-
-# Clear cloud-init
-sudo cloud-init clean --logs
-
-# Shutdown
-sudo shutdown -h now
-```
-
-### 5.2 Create Custom Image in OCI Console
-
-1. **OCI Console** → **Compute** → **Instances**
-2. Click your instance → **More Actions** → **Create Custom Image**
-3. **Name**: `waydroid-cloud-phone-v1`
-4. **Description**: `Waydroid Android cloud phone with VNC, ADB API, RTMP ingest`
-5. Click **Create Custom Image**
-6. Wait 10-20 minutes (status: "Provisioning" → "Available")
-
-### 5.3 Launch New Instances from Golden Image
-
-**Option A: Using the Launch Script (Recommended)**
-
-1. **Install OCI CLI** (if not already installed):
-   ```bash
-   # See: https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm
-   ```
-
-2. **Edit the script** with your OCIDs:
-   ```bash
-   nano scripts/launch-fleet.sh
-   # Set: IMAGE_ID, COMPARTMENT_ID, SUBNET_ID, SSH_KEY_FILE
-   # Adjust: OCPUS, MEMORY_GB, AVAILABILITY_DOMAINS
-   ```
-
-3. **Launch instances**:
-   ```bash
-   ./scripts/launch-fleet.sh 2  # Launch 2 instances
-   ```
-
-**Option B: Via OCI Console**
-
-1. **Compute** → **Instances** → **Create Instance**
-2. **Image**: Click **Change Image** → **My Images** → Select your golden image
-3. **Shape**: `VM.Standard.A1.Flex` (adjust OCPU/RAM as needed)
-4. **Networking**: Same VCN, assign public IP
-5. **SSH Key**: Add your public key
-6. Click **Create**
-
-### 5.4 Start Services on New Instances
-
-After launching, each new instance just needs:
-
-```bash
-# SSH in
-ssh -i ~/.ssh/waydroid_oci ubuntu@NEW_INSTANCE_IP
-
-# Start services (everything is pre-installed)
-sudo systemctl start waydroid-cloud-phone.target
-
-# Check status
-sudo /opt/waydroid-scripts/health-check.sh
-```
-
-### 5.5 Fleet Sizing (Free Tier)
-
-| Config | Instances | Reliability |
-|--------|-----------|-------------|
-| 2 OCPU / 8 GB | **2** | High ✓ |
-| 1 OCPU / 6 GB | **3-4** | Medium |
-| 1 OCPU / 4 GB | **4-6** | Low |
-
-**Recommendation**: Start with 2 × (2 OCPU / 8 GB) for stability.
 
 ---
 
 ## Troubleshooting
 
-### Instance Won't Create (Out of Capacity)
-
-ARM instances are popular. Try:
-- Different availability domain (AD-1, AD-2, AD-3)
-- Smaller shape temporarily, then resize
-- Try again later (capacity changes)
-- Different region
-
-### Waydroid Won't Start
+### Check Deployment Status
 
 ```bash
-# Check binder
-ls /dev/binderfs/
+# Cloud-init deployment
+ssh ubuntu@IP 'tail -f /var/log/cloud-phone-setup.log'
 
-# If empty, mount binderfs
-sudo mount -t binder binder /dev/binderfs
+# Check if complete
+ssh ubuntu@IP 'ls /var/log/cloud-phone-setup-complete'
 
-# Check logs
-journalctl -u waydroid-container -u waydroid-session -f
+# Health check
+ssh ubuntu@IP 'sudo /opt/waydroid-scripts/health-check.sh'
 ```
 
-### No Video in Camera App
+### Container Not Starting
 
 ```bash
-# Check FFmpeg bridge
-journalctl -u ffmpeg-bridge -f
-
-# Check video device
-v4l2-ctl --device=/dev/video42 --all
-
-# Test with ffmpeg manually
-ffmpeg -f v4l2 -i /dev/video42 -frames 1 test.jpg
+ssh ubuntu@IP 'sudo docker logs redroid'
+ssh ubuntu@IP 'sudo systemctl status docker'
 ```
 
-### VNC Black Screen
+### VNC Not Working
 
 ```bash
-# Check Xvnc
-journalctl -u xvnc -f
-
-# Check XFCE
-journalctl -u xfce-session -f
-
-# Restart display stack
-sudo systemctl restart xvnc waydroid-session
+ssh ubuntu@IP 'sudo ss -tlnp | grep 5900'
+ssh ubuntu@IP 'sudo docker exec redroid getprop | grep vnc'
 ```
-
-### API Returns Errors
-
-```bash
-# Check ADB connection
-adb devices
-
-# Reconnect to Waydroid
-adb connect 192.168.240.112:5555
-
-# Check API logs
-journalctl -u control-api -f
-```
-
-### SSH Connection Refused
-
-- Verify security list has port 22 open
-- Check instance is running
-- Verify correct IP address
-- Try: `ssh -vvv` for debug output
 
 ---
 
-## Quick Reference
+## Cost Optimization
 
-| Action | Command |
-|--------|---------|
-| Start all | `sudo systemctl start waydroid-cloud-phone.target` |
-| Stop all | `sudo systemctl stop waydroid-cloud-phone.target` |
-| Status | `sudo /opt/waydroid-scripts/health-check.sh` |
-| Logs | `journalctl -u SERVICE_NAME -f` |
-| VNC tunnel | `ssh -L 5901:localhost:5901 -N ubuntu@IP` |
-| API tunnel | `ssh -L 8080:localhost:8080 -N ubuntu@IP` |
-| Screenshot | `curl localhost:8080/device/screenshot > s.png` |
-| Tap | `curl -X POST localhost:8080/device/tap -d '{"x":540,"y":960}'` |
-| SOCKS5 on | `sudo /opt/waydroid-scripts/socks5-toggle.sh enable HOST PORT` |
-| SOCKS5 off | `sudo /opt/waydroid-scripts/socks5-toggle.sh disable` |
+### Always Free Tier Limits
+
+| Resource | Limit |
+|----------|-------|
+| OCPUs | 4 total (across all instances) |
+| Memory | 24GB total |
+| Boot Volume | 200GB total |
+| Outbound Data | 10TB/month |
+
+### Recommended Configurations
+
+| Use Case | OCPUs | Memory | Instances |
+|----------|-------|--------|-----------|
+| Development | 1 | 6GB | 1 |
+| Production | 2 | 8GB | 1 |
+| Fleet (4 phones) | 1 | 6GB | 4 |
 
 ---
 
-## Cost Summary
+## Security Best Practices
 
-| Resource | Free Tier Limit | Our Usage |
-|----------|-----------------|-----------|
-| ARM OCPUs | 4 | 2 per instance |
-| RAM | 24 GB | 8 GB per instance |
-| Boot Volume | 200 GB total | 50 GB per instance |
-| Outbound Data | 10 TB/month | Varies |
-
-**Result**: 2 instances completely free, or 3-4 smaller instances.
+1. **Use SSH tunnels** for VNC and API access
+2. **Set API tokens** for production deployments
+3. **Use private subnets** where possible
+4. **Rotate credentials** regularly
+5. **Monitor access logs**
+6. **Use golden images** to ensure consistent configuration

@@ -1,0 +1,112 @@
+# Docker Compose for Cloud Phone
+#
+# Usage:
+#   docker-compose up -d                    # Start with defaults
+#   docker-compose --profile gapps up -d    # Start with GApps
+#   docker-compose up -d --scale redroid=3  # Start 3 instances
+#
+# Environment variables:
+#   REDROID_IMAGE         - Base image (default: redroid/redroid:latest)
+#   REDROID_WIDTH         - Screen width (default: 1280)
+#   REDROID_HEIGHT        - Screen height (default: 720)
+#   PROXY_ENABLED         - Enable proxy (true/false)
+#   PROXY_HOST            - Proxy host
+#   PROXY_PORT            - Proxy port
+
+version: '3.8'
+
+services:
+  # Main Redroid container
+  redroid:
+    image: ${REDROID_IMAGE:-redroid/redroid:latest}
+    container_name: redroid
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "${ADB_PORT:-5555}:5555"
+      - "${VNC_PORT:-5900}:5900"
+    volumes:
+      - redroid-data:/data
+      - ./config:/etc/cloud-phone:ro
+    command:
+      - androidboot.redroid_gpu_mode=${GPU_MODE:-guest}
+      - androidboot.redroid_width=${REDROID_WIDTH:-1280}
+      - androidboot.redroid_height=${REDROID_HEIGHT:-720}
+      - androidboot.redroid_fps=${REDROID_FPS:-30}
+      - androidboot.redroid_dpi=${REDROID_DPI:-240}
+      - androidboot.redroid_vnc=1
+      - androidboot.redroid_vnc_port=5900
+    healthcheck:
+      test: ["CMD", "sh", "-c", "getprop sys.boot_completed | grep -q 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - cloud-phone-net
+
+  # Control API
+  control-api:
+    image: python:3.11-slim
+    container_name: control-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - ../api:/app:ro
+      - ./config:/etc/cloud-phone:ro
+    working_dir: /app
+    environment:
+      - ADB_CONNECT=redroid:5555
+      - API_HOST=0.0.0.0
+      - API_PORT=8080
+      - API_TOKEN=${API_TOKEN:-}
+      - CONFIG_FILE=/etc/cloud-phone/config.json
+    command: >
+      bash -c "pip install -q flask requests &&
+               python server.py"
+    depends_on:
+      redroid:
+        condition: service_healthy
+    networks:
+      - cloud-phone-net
+
+  # NGINX RTMP (for streaming)
+  nginx-rtmp:
+    image: tiangolo/nginx-rtmp
+    container_name: nginx-rtmp
+    restart: unless-stopped
+    ports:
+      - "${RTMP_PORT:-1935}:1935"
+      - "${HLS_PORT:-8088}:8080"
+    volumes:
+      - ../config/nginx-rtmp.conf:/etc/nginx/nginx.conf:ro
+    profiles:
+      - streaming
+    networks:
+      - cloud-phone-net
+
+  # Proxy sidecar (tun2socks)
+  proxy-sidecar:
+    image: xjasonlyu/tun2socks
+    container_name: proxy-sidecar
+    restart: unless-stopped
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - PROXY=${PROXY_URL:-socks5://host.docker.internal:1080}
+    profiles:
+      - proxy
+    network_mode: "service:redroid"
+
+volumes:
+  redroid-data:
+    driver: local
+
+networks:
+  cloud-phone-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

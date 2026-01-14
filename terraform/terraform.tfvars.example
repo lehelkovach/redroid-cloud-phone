@@ -1,0 +1,61 @@
+# Example Terraform Variables
+# Copy to terraform.tfvars and fill in your values
+
+# =============================================================================
+# OCI Authentication (Required)
+# =============================================================================
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaa..."
+user_ocid        = "ocid1.user.oc1..aaaa..."
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "us-phoenix-1"
+
+# =============================================================================
+# Instance Configuration (Required)
+# =============================================================================
+compartment_ocid = "ocid1.compartment.oc1..aaaa..."
+subnet_ocid      = "ocid1.subnet.oc1.phx.aaaa..."
+
+# Instance settings
+instance_name      = "cloud-phone"
+instance_count     = 1
+instance_ocpus     = 2
+instance_memory_gb = 8
+ubuntu_version     = "20.04"  # Use 20.04 for virtual device support
+
+# Optional: Use golden image for faster deployment
+# golden_image_ocid = "ocid1.image.oc1.phx.aaaa..."
+
+# =============================================================================
+# SSH Configuration (Required)
+# =============================================================================
+ssh_public_key = "ssh-rsa AAAA... your-key"
+# Or read from file:
+# ssh_public_key = file("~/.ssh/id_rsa.pub")
+
+ssh_private_key_path = "~/.ssh/id_rsa"
+
+# =============================================================================
+# Proxy Configuration (Optional)
+# =============================================================================
+proxy_enabled  = false
+# proxy_type     = "socks5"
+# proxy_host     = "proxy.example.com"
+# proxy_port     = 1080
+# proxy_username = ""
+# proxy_password = ""
+
+# =============================================================================
+# GPS Configuration (Optional)
+# =============================================================================
+gps_enabled   = false
+# gps_latitude  = 37.7749
+# gps_longitude = -122.4194
+
+# =============================================================================
+# Tags (Optional)
+# =============================================================================
+tags = {
+  environment = "development"
+  project     = "cloud-phone"
+}
