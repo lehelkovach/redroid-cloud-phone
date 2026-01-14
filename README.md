@@ -16,16 +16,31 @@
 - SSH key for instance access
 - ADB tools (optional, for Android debugging)
 
-### Install on a fresh instance (recommended)
+### Install on a fresh instance
 
-For a new OCI instance, SSH in and run:
+**Option 1: Full deployment with virtual devices (Ubuntu 20.04 - Recommended)**
+
+Deploy a new instance with kernel 5.x for full virtual camera/audio support:
+
+```bash
+# From your local machine with OCI CLI configured
+./scripts/deploy-ubuntu20-redroid.sh my-cloud-phone
+```
+
+This creates an Ubuntu 20.04 instance and installs everything automatically.
+
+**Option 2: Manual install on existing instance**
+
+SSH into your instance and run:
 
 ```bash
 sudo ./install-redroid.sh
 sudo systemctl start redroid-cloud-phone.target
 ```
 
-Legacy (Waydroid-based) installer:
+Note: On Ubuntu 22.04 (kernel 6.8+), virtual devices won't work. Use Ubuntu 20.04.
+
+**Option 3: Legacy Waydroid installer**
 
 ```bash
 sudo ./install.sh
