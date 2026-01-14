@@ -9,7 +9,7 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
 
 if [ -z "$INSTANCE_IP" ]; then
     echo "Usage: $0 <INSTANCE_IP>"
-    echo "Example: $0 161.153.55.58"
+    echo "Example: $0 137.131.52.69"
     exit 1
 fi
 

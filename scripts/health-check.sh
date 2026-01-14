@@ -1,5 +1,5 @@
 #!/bin/bash
-# Health check script for Waydroid Cloud Phone
+# Health check script for Redroid/Waydroid Cloud Phone
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -29,8 +29,26 @@ check_device() {
 }
 
 echo "========================================"
-echo "  Waydroid Cloud Phone Health Check"
+echo "  Redroid Cloud Phone Health Check"
 echo "========================================"
+echo ""
+
+# Docker/Redroid status
+echo "Docker/Redroid Status:"
+if command -v docker &> /dev/null && systemctl is-active --quiet docker; then
+    echo -e "  ${GREEN}✓${NC} Docker service running"
+    
+    if docker ps --format "{{.Names}}" | grep -q "redroid"; then
+        echo -e "  ${GREEN}✓${NC} Redroid container running"
+        CONTAINER_STATUS=$(docker ps --format "{{.Status}}" --filter "name=redroid" | head -1)
+        echo "      Status: $CONTAINER_STATUS"
+    else
+        echo -e "  ${RED}✗${NC} Redroid container not running"
+    fi
+else
+    echo -e "  ${RED}✗${NC} Docker service not running"
+fi
+
 echo ""
 
 # Kernel modules
@@ -85,10 +103,22 @@ else
     echo -e "  ${YELLOW}○${NC} RTMP (1935) - not listening"
 fi
 
-if ss -tlnp | grep -q ":5901 "; then
-    echo -e "  ${GREEN}✓${NC} VNC (5901)"
+if ss -tlnp | grep -q ":5555 "; then
+    echo -e "  ${GREEN}✓${NC} ADB (5555)"
 else
-    echo -e "  ${YELLOW}○${NC} VNC (5901) - not listening"
+    echo -e "  ${YELLOW}○${NC} ADB (5555) - not listening"
+fi
+
+if ss -tlnp | grep -q ":5900 "; then
+    echo -e "  ${GREEN}✓${NC} VNC (5900)"
+else
+    echo -e "  ${YELLOW}○${NC} VNC (5900) - not listening"
+fi
+
+if ss -tlnp | grep -q ":5901 "; then
+    echo -e "  ${GREEN}✓${NC} VNC Alt (5901)"
+else
+    echo -e "  ${YELLOW}○${NC} VNC Alt (5901) - not listening"
 fi
 
 if ss -tlnp | grep -q ":8080 "; then

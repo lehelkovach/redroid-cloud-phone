@@ -100,7 +100,9 @@ if [ -e /dev/video42 ] && aplay -l 2>/dev/null | grep -q Loopback; then
       androidboot.redroid_gpu_mode=guest \
       androidboot.redroid_width=1280 \
       androidboot.redroid_height=720 \
-      androidboot.redroid_fps=30
+      androidboot.redroid_fps=30 \
+      androidboot.redroid_vnc=1 \
+      androidboot.redroid_vnc_port=5900
     
     echo "✓ Redroid started with virtual devices"
 else
@@ -116,7 +118,9 @@ else
       androidboot.redroid_gpu_mode=guest \
       androidboot.redroid_width=1280 \
       androidboot.redroid_height=720 \
-      androidboot.redroid_fps=30
+      androidboot.redroid_fps=30 \
+      androidboot.redroid_vnc=1 \
+      androidboot.redroid_vnc_port=5900
     
     echo "✓ Redroid started (without virtual devices)"
 fi
