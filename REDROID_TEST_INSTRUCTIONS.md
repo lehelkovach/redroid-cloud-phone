@@ -17,7 +17,7 @@
 
 Or manually:
 ```bash
-ssh -i ~/.ssh/waydroid_oci ubuntu@161.153.55.58 "echo 'Connected'"
+ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69 "echo 'Connected'"
 ```
 
 ### 2. Run Redroid Test
@@ -76,7 +76,7 @@ If the script completes but you want to verify manually:
 ### 1. Check Container Status
 
 ```bash
-ssh -i ~/.ssh/waydroid_oci ubuntu@161.153.55.58
+ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69
 sudo docker ps -a | grep redroid
 sudo docker logs redroid
 ```
@@ -85,7 +85,7 @@ sudo docker logs redroid
 
 From your local machine:
 ```bash
-adb connect 161.153.55.58:5555
+adb connect 137.131.52.69:5555
 adb devices
 adb shell getprop ro.build.version.release
 ```
@@ -93,14 +93,14 @@ adb shell getprop ro.build.version.release
 ### 3. Test VNC Connection
 
 ```bash
-vncviewer 161.153.55.58:5900
+vncviewer 137.131.52.69:5900
 # Password: redroid
 ```
 
 ### 4. Check Virtual Devices in Container
 
 ```bash
-ssh -i ~/.ssh/waydroid_oci ubuntu@161.153.55.58
+ssh -i ~/.ssh/waydroid_oci ubuntu@137.131.52.69
 sudo docker exec redroid ls -la /dev/video*
 sudo docker exec redroid ls -la /dev/snd/
 ```

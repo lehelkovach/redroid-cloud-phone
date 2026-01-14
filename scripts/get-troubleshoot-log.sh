@@ -2,7 +2,7 @@
 # get-troubleshoot-log.sh
 # Retrieves the latest troubleshooting log from the remote instance
 
-INSTANCE_IP="${1:-161.153.55.58}"
+INSTANCE_IP="${1:-137.131.52.69}"
 SSH_KEY="${HOME}/.ssh/waydroid_oci"
 SSH_USER="ubuntu"
 LOG_DIR="${HOME}/waydroid-troubleshoot-logs"
