@@ -31,14 +31,27 @@ MINOR_VERSION=$(echo "$KERNEL_VERSION" | cut -d. -f2)
 if [[ "$MAJOR_VERSION" -lt 5 ]] || [[ "$MAJOR_VERSION" -eq 5 && "$MINOR_VERSION" -lt 4 ]]; then
     echo "⚠ Kernel version may be too old for v4l2loopback"
 elif [[ "$MAJOR_VERSION" -gt 6 ]] || [[ "$MAJOR_VERSION" -eq 6 && "$MINOR_VERSION" -ge 8 ]]; then
-    echo "⚠ Kernel 6.8+ may have compatibility issues"
+    echo "❌ ERROR: Kernel 6.8+ detected ($KERNEL_VERSION)"
+    echo "   v4l2loopback is known to fail on this kernel (Oracle ARM)."
+    echo "   Please use Ubuntu 20.04 (Kernel 5.x) for virtual device support."
+    echo "   See HANDOFF.md for details."
+    exit 1
 else
-    echo "✓ Kernel version should be compatible"
+    echo "✓ Kernel version compatible ($KERNEL_VERSION)"
 fi
 echo ""
 
 echo "=== Installing Required Packages ==="
 sudo apt-get update -qq
+
+# Check and install Docker if missing
+if ! command -v docker &> /dev/null; then
+    echo "Docker not installed. Installing..."
+    sudo apt-get install -y -qq docker.io
+    sudo systemctl enable --now docker
+    sudo usermod -aG docker ubuntu
+fi
+
 sudo apt-get install -y -qq \
     linux-headers-$(uname -r) \
     dkms \
