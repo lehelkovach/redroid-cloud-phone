@@ -1,0 +1,7 @@
+[Unit]
+Description=Redroid Cloud Phone Target
+Wants=redroid-container.service nginx-rtmp.service ffmpeg-bridge.service control-api.service
+After=network.target docker.service
+
+[Install]
+WantedBy=multi-user.target

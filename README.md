@@ -16,6 +16,21 @@
 - SSH key for instance access
 - ADB tools (optional, for Android debugging)
 
+### Install on a fresh instance (recommended)
+
+For a new OCI instance, SSH in and run:
+
+```bash
+sudo ./install-redroid.sh
+sudo systemctl start redroid-cloud-phone.target
+```
+
+Legacy (Waydroid-based) installer:
+
+```bash
+sudo ./install.sh
+```
+
 ### Quick Verification
 
 ```bash

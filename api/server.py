@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Waydroid Control API Server
+Cloud Phone Control API Server
 
 Thin HTTP API wrapping ADB for remote Android automation.
 ADB-first design: all operations go through ADB, not VNC.
+
+Works with both:
+- Redroid: default `ADB_CONNECT=127.0.0.1:5555` (host-mapped ADB)
+- Waydroid (legacy): falls back to `192.168.240.112:5555`
 
 Endpoints:
   GET  /device/info        - Device dimensions and density
@@ -446,7 +450,7 @@ def stop_app(data):
 # ============================================
 
 if __name__ == '__main__':
-    logger.info(f"Starting Waydroid Control API on {API_HOST}:{API_PORT}")
+    logger.info(f"Starting Control API on {API_HOST}:{API_PORT}")
     
     # Initial ADB connection attempt
     try:
