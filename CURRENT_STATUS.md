@@ -1,6 +1,6 @@
 # Current Status Report
 
-**Last Updated:** January 14, 2025
+**Last Updated:** 2026-01-14  
 **Project:** Redroid Cloud Phone on Oracle Cloud ARM
 
 ---
@@ -19,40 +19,47 @@ This project deploys a cloud-based Android phone using Redroid (Docker-based And
 ## ✅ What's Working
 
 ### Core Functionality
-- ✅ **Redroid Container**: Docker-based Android 16 running on ARM64
-- ✅ **ADB Access**: Port 5555 for Android debugging
-- ✅ **VNC Access**: Port 5900 for visual access (password: `redroid`)
-- ✅ **Control API**: Flask-based REST API for automation
-- ✅ **Test Suites**: Comprehensive test scripts created
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Redroid Container | ✅ Working | Docker-based Android 16 on ARM64 |
+| ADB Access | ✅ Working | Port 5555 for Android debugging |
+| VNC Access | ✅ Working | Port 5900 (password: `redroid`) |
+| Control API | ✅ Working | 11 endpoints for automation |
+| Test Suites | ✅ Working | Comprehensive test scripts |
+| Systemd Services | ✅ Working | Redroid target and services |
 
 ### Scripts & Automation
-- ✅ **test-redroid-full.sh**: 10-category comprehensive test suite
-- ✅ **test-system.sh**: System-wide health check (supports both Redroid & Waydroid)
-- ✅ **fix-redroid-vnc.sh**: Fix VNC configuration
-- ✅ **setup-redroid-virtual-devices.sh**: Virtual device setup
-- ✅ **health-check.sh**: Quick health check script
+| Script | Purpose | Status |
+|--------|---------|--------|
+| `install-redroid.sh` | One-command Redroid installation | ✅ Ready |
+| `test-redroid-full.sh` | 10-category comprehensive test suite | ✅ Ready |
+| `health-check.sh` | Quick health check (Redroid + Waydroid) | ✅ Ready |
+| `test-api.sh` | Control API endpoint tests | ✅ Ready |
+| `ffmpeg-bridge.sh` | RTMP to virtual device bridge | ✅ Ready |
+| `redroid-container.sh` | Idempotent container launcher | ✅ Ready |
 
-### Infrastructure
-- ✅ **Oracle Cloud Instance**: ARM-based (Ampere A1 Flex)
-- ✅ **Docker**: Properly configured for Redroid
-- ✅ **systemd Services**: All services defined and ready
+### Systemd Services
+| Service | Purpose | Status |
+|---------|---------|--------|
+| `redroid-container.service` | Manages Redroid container | ✅ Ready |
+| `redroid-cloud-phone.target` | Starts all Redroid services | ✅ Ready |
+| `nginx-rtmp.service` | RTMP server | ✅ Ready |
+| `ffmpeg-bridge.service` | Stream to virtual devices | ✅ Ready |
+| `control-api.service` | REST API server | ✅ Ready |
 
 ---
 
 ## ⚠️ Known Limitations
 
-### Virtual Device Support
-- **Issue**: `v4l2loopback` module has compatibility issues on kernel 6.8+
-- **Impact**: Virtual camera (`/dev/video42`) not available on Ubuntu 22.04 with kernel 6.8
-- **Workaround Options**:
-  1. Use Ubuntu 20.04 instance (kernel 5.x)
-  2. Build v4l2loopback from source using `fix-v4l2loopback.sh`
-  3. Wait for kernel module compatibility update
+### Virtual Device Support (Kernel 6.8+ Incompatibility)
+- **Issue**: `v4l2loopback` module fails to build on kernel 6.8+
+- **Impact**: Virtual camera (`/dev/video42`) and audio not available
+- **Root Cause**: Oracle ARM Ubuntu 22.04 ships with kernel 6.8
+- **Workaround**: Use Ubuntu 20.04 with kernel 5.x
 
-### ALSA Loopback
-- **Issue**: `snd-aloop` module may not load on some kernels
-- **Impact**: Virtual audio input not available
-- **Workaround**: Same as v4l2loopback
+### RTMP Streaming Pipeline
+- **Status**: Scripts ready, but blocked by virtual device issue
+- **When Working**: OBS → nginx-rtmp → FFmpeg → virtual camera → Android
 
 ---
 
@@ -61,117 +68,120 @@ This project deploys a cloud-based Android phone using Redroid (Docker-based And
 ```
 redroid-cloud-phone/
 ├── api/
-│   ├── server.py           # Control API server
+│   ├── server.py           # Control API server (11 endpoints)
 │   └── requirements.txt    # Python dependencies
 ├── config/
-│   ├── nginx-rtmp.conf     # RTMP server configuration
-│   └── xvnc-xstartup       # VNC startup script
+│   └── nginx-rtmp.conf     # RTMP server configuration
 ├── scripts/
-│   ├── test-redroid-full.sh        # Main test suite
-│   ├── test-system.sh              # System tests
-│   ├── health-check.sh             # Quick health check
-│   ├── fix-redroid-vnc.sh          # Fix VNC issues
-│   ├── fix-v4l2loopback.sh         # Fix virtual camera
-│   ├── setup-redroid-virtual-devices.sh  # Setup virtual devices
-│   └── ... (more scripts)
-├── systemd/                # systemd service files
-├── install.sh              # Main installer
-├── HANDOFF.md              # Complete handoff guide
-├── README.md               # Project readme
-└── ... (documentation files)
+│   ├── install-redroid.sh          # Main installer
+│   ├── redroid-container.sh        # Container launcher
+│   ├── test-redroid-full.sh        # Full test suite
+│   ├── health-check.sh             # Health check
+│   ├── ffmpeg-bridge.sh            # RTMP bridge
+│   └── ... (40+ scripts)
+├── systemd/
+│   ├── redroid-container.service   # Container service
+│   ├── redroid-cloud-phone.target  # Service target
+│   └── ... (12 service files)
+└── *.md                            # Documentation
 ```
 
 ---
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Oracle Cloud ARM instance (Ubuntu 22.04)
-- SSH access to instance
-- Docker installed
-
-### Basic Test
+### Fresh Installation
 ```bash
-# Run full test suite
-./scripts/test-redroid-full.sh <INSTANCE_IP>
+# Clone and install
+git clone https://github.com/lehelkovach/redroid-cloud-phone.git
+cd redroid-cloud-phone
+sudo ./install-redroid.sh
 
-# Quick health check
-ssh ubuntu@<INSTANCE_IP> 'sudo /opt/waydroid-scripts/health-check.sh'
+# Start all services
+sudo systemctl start redroid-cloud-phone.target
+```
+
+### Verify Installation
+```bash
+# Health check
+sudo /opt/waydroid-scripts/health-check.sh
+
+# Full test (requires SSH key)
+./scripts/test-redroid-full.sh 137.131.52.69
 ```
 
 ### Connect to Android
 ```bash
-# VNC (create SSH tunnel first)
-ssh -L 5900:localhost:5900 ubuntu@<INSTANCE_IP> -N
-# Then: vncviewer localhost:5900 (password: redroid)
+# VNC (via SSH tunnel)
+ssh -L 5900:localhost:5900 ubuntu@137.131.52.69 -N
+vncviewer localhost:5900  # password: redroid
 
 # ADB
-adb connect <INSTANCE_IP>:5555
+adb connect 137.131.52.69:5555
 adb shell
+```
+
+### Control API
+```bash
+# Via SSH tunnel
+ssh -L 8080:localhost:8080 ubuntu@137.131.52.69 -N
+
+# Test endpoints
+curl http://localhost:8080/health
+curl http://localhost:8080/device/info
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"x":540,"y":960}' http://localhost:8080/device/tap
 ```
 
 ---
 
-## 🔧 Recent Fixes
+## 📊 API Endpoints
 
-### Script Updates (2025-01-14)
-1. **Updated default IP addresses** across all scripts to use current instance
-2. **Added VNC parameters** to Redroid container startup commands
-3. **Fixed image tag** in test-redroid.sh (latest vs latest-arm64)
-4. **Enhanced health-check.sh** with Docker/Redroid status checks
-5. **Updated test-system.sh** to support both Redroid and Waydroid
-
----
-
-## 📋 Next Steps
-
-### Immediate
-1. **Test on remote instance** when SSH access is available
-2. **Verify ADB/VNC** connectivity
-3. **Test virtual device** setup with fix-v4l2loopback.sh
-
-### Medium Priority
-1. **Address virtual device support** (kernel compatibility)
-2. **Complete RTMP streaming** pipeline testing
-3. **Test Control API** endpoints
-
-### Long-term
-1. **Create golden image** once stable
-2. **Multi-instance deployment**
-3. **Monitoring and alerting**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| GET | `/device/info` | Screen dimensions and density |
+| GET | `/device/screenshot` | PNG screenshot |
+| POST | `/device/tap` | Tap at coordinates |
+| POST | `/device/swipe` | Swipe gesture |
+| POST | `/device/press` | Long press |
+| POST | `/device/text` | Input text |
+| POST | `/device/key` | Press key |
+| POST | `/device/shell` | Run shell command |
+| POST | `/device/app/start` | Start app |
+| POST | `/device/app/stop` | Stop app |
 
 ---
 
-## 📊 Test Coverage
+## 📋 Instance Details
 
-| Category | Status | Notes |
-|----------|--------|-------|
-| Instance Connectivity | ✅ Ready | Scripts support SSH testing |
-| Docker Status | ✅ Ready | Service checks included |
-| Redroid Container | ✅ Ready | Container status tests |
-| Port Mappings | ✅ Ready | ADB & VNC port tests |
-| Container Logs | ✅ Ready | Error detection |
-| ADB Connectivity | ✅ Ready | ADB connection tests |
-| Android System Info | ✅ Ready | Property checks |
-| VNC Port | ✅ Ready | Port accessibility tests |
-| Resource Usage | ✅ Ready | CPU/Memory stats |
-| Virtual Devices | ⚠️ Known Issue | Kernel 6.8 compatibility |
-
----
-
-## 📞 Connection Details
-
-| Service | Port | Access |
-|---------|------|--------|
-| ADB | 5555 | Direct or via SSH tunnel |
-| VNC | 5900 | Via SSH tunnel recommended |
-| RTMP | 1935 | External (OBS streaming) |
-| API | 8080 | localhost only |
-
-**Instance IP**: `137.131.52.69` (may change if instance is recreated)
-**SSH Key**: `~/.ssh/waydroid_oci`
-**VNC Password**: `redroid`
+| Item | Value |
+|------|-------|
+| **Instance IP** | 137.131.52.69 |
+| **SSH Key** | ~/.ssh/waydroid_oci |
+| **VNC Port** | 5900 |
+| **VNC Password** | redroid |
+| **ADB Port** | 5555 |
+| **API Port** | 8080 (localhost) |
+| **RTMP Port** | 1935 |
+| **OS** | Ubuntu 22.04.5 LTS |
+| **Kernel** | 6.8.0-1038-oracle |
 
 ---
 
-**Status**: ✅ Scripts Ready | ⏳ Awaiting Remote Testing | ⚠️ Virtual Devices Pending
+## 🔧 Next Steps
+
+### For Full Virtual Device Support
+1. Create Ubuntu 20.04 instance (kernel 5.x)
+2. Run `install-redroid.sh`
+3. Virtual camera and audio will work
+
+### For Current Instance
+1. ✅ Redroid container is operational
+2. ✅ ADB and VNC access working
+3. ✅ Control API functional
+4. ⚠️ Virtual devices blocked by kernel
+
+---
+
+**Status**: ✅ Core Features Operational | ⚠️ Virtual Devices Require Kernel 5.x
