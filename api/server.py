@@ -679,6 +679,340 @@ def update_config():
     return jsonify({"success": True, "config": config})
 
 # =============================================================================
+# Device Spoofing / Anti-Detection Endpoints
+# =============================================================================
+
+# Device profiles directory
+PROFILES_DIR = os.environ.get("PROFILES_DIR", "/opt/cloud-phone/config/device-profiles")
+ANTIDETECT_SCRIPT = "/opt/waydroid-scripts/anti-detection.sh"
+
+# In-memory device state
+_device_state = {
+    "profile": None,
+    "hardware_ids": {},
+    "antidetect_enabled": False
+}
+
+def generate_imei():
+    """Generate valid IMEI with Luhn checksum"""
+    import random
+    tac = f"35{random.randint(1000, 9999)}0"
+    snr = f"{random.randint(0, 999999):06d}"
+    imei_base = tac + snr
+    
+    # Luhn checksum
+    total = 0
+    for i, digit in enumerate(imei_base):
+        d = int(digit)
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    check = (10 - (total % 10)) % 10
+    return imei_base + str(check)
+
+def generate_serial():
+    """Generate realistic serial number"""
+    import random
+    import string
+    chars = string.digits + string.ascii_uppercase.replace('I', '').replace('O', '')
+    return ''.join(random.choice(chars) for _ in range(11))
+
+def generate_mac():
+    """Generate random MAC address"""
+    import random
+    vendors = ["00:1A:2B", "00:1E:C9", "00:26:BB", "D8:FC:93", "F4:F5:D8"]
+    prefix = random.choice(vendors)
+    suffix = ":".join(f"{random.randint(0, 255):02X}" for _ in range(3))
+    return f"{prefix}:{suffix}"
+
+def generate_android_id():
+    """Generate 16-char hex Android ID"""
+    import random
+    return ''.join(random.choice('0123456789abcdef') for _ in range(16))
+
+@app.route("/device/identity", methods=["GET"])
+@require_auth
+def get_device_identity():
+    """Get current device identity/spoofing status"""
+    ensure_adb_connected()
+    
+    # Get current values
+    _, model, _ = run_adb_shell("getprop ro.product.model")
+    _, brand, _ = run_adb_shell("getprop ro.product.brand")
+    _, fingerprint, _ = run_adb_shell("getprop ro.build.fingerprint")
+    _, android_id, _ = run_adb_shell("settings get secure android_id")
+    _, serial, _ = run_adb_shell("getprop ro.serialno")
+    _, debuggable, _ = run_adb_shell("getprop ro.debuggable")
+    _, qemu, _ = run_adb_shell("getprop ro.kernel.qemu")
+    
+    return jsonify({
+        "current": {
+            "model": model,
+            "brand": brand,
+            "fingerprint": fingerprint,
+            "android_id": android_id,
+            "serial": serial,
+            "debuggable": debuggable,
+            "qemu_detected": qemu == "1"
+        },
+        "spoofing": _device_state
+    })
+
+@app.route("/device/identity", methods=["POST"])
+@require_auth
+def set_device_identity():
+    """
+    Set device identity (spoof device properties)
+    
+    Body:
+    {
+        "profile": "samsung-galaxy-s21",  // or "google-pixel-6", "oneplus-9-pro", "random"
+        "generate_ids": true,  // Generate new hardware IDs
+        "custom": {  // Optional custom properties
+            "model": "SM-G991B",
+            "brand": "samsung",
+            "android_id": "abc123...",
+            "serial": "R5CW12345"
+        }
+    }
+    """
+    data = request.get_json() or {}
+    profile = data.get("profile", "samsung-galaxy-s21")
+    generate_ids = data.get("generate_ids", True)
+    custom = data.get("custom", {})
+    
+    ensure_adb_connected()
+    
+    # Generate hardware IDs if requested
+    if generate_ids:
+        _device_state["hardware_ids"] = {
+            "imei": generate_imei(),
+            "imei2": generate_imei(),
+            "serial": generate_serial(),
+            "mac_wifi": generate_mac(),
+            "mac_bt": generate_mac(),
+            "android_id": generate_android_id()
+        }
+    
+    # Apply custom values if provided
+    if custom:
+        _device_state["hardware_ids"].update(custom)
+    
+    # Load and apply profile
+    profile_file = None
+    profiles = {
+        "samsung-galaxy-s21": "samsung-galaxy-s21.prop",
+        "google-pixel-6": "google-pixel-6.prop",
+        "oneplus-9-pro": "oneplus-9-pro.prop"
+    }
+    
+    if profile == "random":
+        import random
+        profile = random.choice(list(profiles.keys()))
+    
+    if profile in profiles:
+        profile_file = os.path.join(PROFILES_DIR, profiles[profile])
+    
+    # Apply profile properties
+    applied_props = []
+    if profile_file and os.path.exists(profile_file):
+        with open(profile_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    run_adb_shell(f"setprop {key} '{value}'")
+                    applied_props.append(key)
+    
+    # Apply hardware IDs
+    ids = _device_state["hardware_ids"]
+    if "android_id" in ids:
+        run_adb_shell(f"settings put secure android_id '{ids['android_id']}'")
+    if "serial" in ids:
+        run_adb_shell(f"setprop ro.serialno '{ids['serial']}'")
+        run_adb_shell(f"setprop ro.boot.serialno '{ids['serial']}'")
+    if "imei" in ids:
+        run_adb_shell(f"setprop gsm.sim.imei '{ids['imei']}'")
+    
+    _device_state["profile"] = profile
+    _device_state["antidetect_enabled"] = True
+    
+    return jsonify({
+        "success": True,
+        "profile": profile,
+        "hardware_ids": _device_state["hardware_ids"],
+        "properties_applied": len(applied_props)
+    })
+
+@app.route("/device/identity/profiles", methods=["GET"])
+@require_auth
+def list_profiles():
+    """List available device profiles"""
+    profiles = []
+    if os.path.exists(PROFILES_DIR):
+        for f in os.listdir(PROFILES_DIR):
+            if f.endswith('.prop'):
+                profiles.append(f.replace('.prop', ''))
+    
+    return jsonify({
+        "profiles": profiles,
+        "current": _device_state.get("profile")
+    })
+
+@app.route("/device/identity/generate", methods=["POST"])
+@require_auth
+def generate_new_ids():
+    """Generate new random hardware identifiers"""
+    _device_state["hardware_ids"] = {
+        "imei": generate_imei(),
+        "imei2": generate_imei(),
+        "serial": generate_serial(),
+        "mac_wifi": generate_mac(),
+        "mac_bt": generate_mac(),
+        "android_id": generate_android_id(),
+        "advertising_id": str(__import__('uuid').uuid4())
+    }
+    
+    return jsonify({
+        "success": True,
+        "hardware_ids": _device_state["hardware_ids"]
+    })
+
+@app.route("/device/antidetect", methods=["POST"])
+@require_auth
+def apply_antidetect():
+    """
+    Apply full anti-detection configuration
+    
+    Body:
+    {
+        "profile": "samsung-galaxy-s21",
+        "hide_root": true,
+        "hide_emulator": true,
+        "spoof_battery": true
+    }
+    """
+    data = request.get_json() or {}
+    profile = data.get("profile", "samsung-galaxy-s21")
+    hide_root = data.get("hide_root", True)
+    hide_emulator = data.get("hide_emulator", True)
+    spoof_battery = data.get("spoof_battery", True)
+    
+    ensure_adb_connected()
+    results = []
+    
+    # Apply device profile
+    if os.path.exists(ANTIDETECT_SCRIPT):
+        result = subprocess.run(
+            [ANTIDETECT_SCRIPT, "apply", profile],
+            capture_output=True, text=True, timeout=60
+        )
+        results.append({"action": "profile", "success": result.returncode == 0})
+    else:
+        # Manual application
+        # Set profile
+        set_result = set_device_identity()
+        results.append({"action": "profile", "success": True})
+    
+    # Hide emulator artifacts
+    if hide_emulator:
+        emulator_props = [
+            ("ro.kernel.qemu", "0"),
+            ("ro.hardware.virtual_device", "0"),
+            ("ro.boot.qemu", "0"),
+            ("qemu.hw.mainkeys", "0")
+        ]
+        for key, value in emulator_props:
+            run_adb_shell(f"setprop {key} '{value}'")
+        results.append({"action": "hide_emulator", "success": True})
+    
+    # Hide root/debug
+    if hide_root:
+        run_adb_shell("setprop ro.debuggable 0")
+        run_adb_shell("setprop ro.secure 1")
+        run_adb_shell("setprop ro.boot.verifiedbootstate green")
+        run_adb_shell("setprop ro.boot.flash.locked 1")
+        results.append({"action": "hide_root", "success": True})
+    
+    # Spoof battery
+    if spoof_battery:
+        import random
+        level = random.randint(45, 85)
+        run_adb_shell(f"dumpsys battery set level {level}")
+        run_adb_shell("dumpsys battery set status 3")  # Not charging
+        run_adb_shell("dumpsys battery set ac 0")
+        run_adb_shell("dumpsys battery set usb 0")
+        results.append({"action": "spoof_battery", "success": True, "level": level})
+    
+    _device_state["antidetect_enabled"] = True
+    
+    return jsonify({
+        "success": True,
+        "profile": profile,
+        "results": results
+    })
+
+@app.route("/device/antidetect/status", methods=["GET"])
+@require_auth
+def antidetect_status():
+    """Check anti-detection status"""
+    ensure_adb_connected()
+    
+    checks = {}
+    
+    # Check debuggable
+    _, val, _ = run_adb_shell("getprop ro.debuggable")
+    checks["debuggable"] = val != "1"
+    
+    # Check qemu
+    _, val, _ = run_adb_shell("getprop ro.kernel.qemu")
+    checks["qemu_hidden"] = val != "1"
+    
+    # Check boot state
+    _, val, _ = run_adb_shell("getprop ro.boot.verifiedbootstate")
+    checks["boot_state_green"] = val == "green"
+    
+    # Check build type
+    _, val, _ = run_adb_shell("getprop ro.build.type")
+    checks["user_build"] = val == "user"
+    
+    # Overall score
+    passed = sum(1 for v in checks.values() if v)
+    total = len(checks)
+    
+    return jsonify({
+        "enabled": _device_state.get("antidetect_enabled", False),
+        "profile": _device_state.get("profile"),
+        "checks": checks,
+        "score": f"{passed}/{total}",
+        "detection_risk": "low" if passed == total else "medium" if passed >= total/2 else "high"
+    })
+
+@app.route("/device/antidetect/reset", methods=["POST"])
+@require_auth  
+def reset_antidetect():
+    """Reset to default (detectable) state"""
+    ensure_adb_connected()
+    
+    # Reset battery
+    run_adb_shell("dumpsys battery reset")
+    
+    # Re-enable debug
+    run_adb_shell("setprop ro.debuggable 1")
+    
+    _device_state["antidetect_enabled"] = False
+    _device_state["profile"] = None
+    
+    return jsonify({
+        "success": True,
+        "message": "Anti-detection reset. Restart container for full reset."
+    })
+
+# =============================================================================
 # Main
 # =============================================================================
 

@@ -1,0 +1,151 @@
+# Anti-Detection Redroid Cloud Phone Image
+#
+# This Dockerfile builds a Redroid image with anti-detection measures
+# pre-configured to appear as a real physical device.
+#
+# Build:
+#   docker build -f Dockerfile.antidetect -t cloud-phone:antidetect .
+#   docker build -f Dockerfile.antidetect --build-arg DEVICE_PROFILE=google-pixel-6 -t cloud-phone:pixel .
+#
+# The image includes:
+# - Realistic device properties (Samsung Galaxy S21 by default)
+# - Hidden emulator artifacts
+# - Debug flags disabled
+# - Verified boot state spoofed
+# - Emulator file paths removed
+
+ARG BASE_IMAGE=redroid/redroid:11.0.0-latest
+FROM ${BASE_IMAGE}
+
+# Build arguments
+ARG DEVICE_PROFILE=samsung-galaxy-s21
+ARG INCLUDE_GAPPS=false
+
+# Labels
+LABEL maintainer="cloud-phone"
+LABEL description="Anti-Detection Redroid Cloud Phone"
+LABEL version="1.0"
+LABEL device.profile="${DEVICE_PROFILE}"
+
+# =============================================================================
+# Base System Modifications
+# =============================================================================
+
+# Remove emulator-specific files and libraries
+RUN rm -f /system/bin/qemu-props 2>/dev/null || true && \
+    rm -f /system/lib/libc_malloc_debug_qemu.so 2>/dev/null || true && \
+    rm -f /system/lib64/libc_malloc_debug_qemu.so 2>/dev/null || true && \
+    rm -rf /system/etc/init/goldfish*.rc 2>/dev/null || true && \
+    rm -rf /system/etc/init/qemu*.rc 2>/dev/null || true && \
+    rm -f /system/bin/goldfish* 2>/dev/null || true
+
+# =============================================================================
+# Device Profile: Samsung Galaxy S21 (Default)
+# =============================================================================
+
+# Apply Samsung Galaxy S21 build properties by default
+RUN echo "" >> /system/build.prop && \
+    echo "# === Cloud Phone Anti-Detection ===" >> /system/build.prop && \
+    echo "# Device Profile: Samsung Galaxy S21 5G" >> /system/build.prop && \
+    echo "" >> /system/build.prop && \
+    # Product Info
+    echo "ro.product.brand=samsung" >> /system/build.prop && \
+    echo "ro.product.device=o1s" >> /system/build.prop && \
+    echo "ro.product.manufacturer=samsung" >> /system/build.prop && \
+    echo "ro.product.model=SM-G991B" >> /system/build.prop && \
+    echo "ro.product.name=o1sxeea" >> /system/build.prop && \
+    echo "ro.product.board=exynos2100" >> /system/build.prop && \
+    # Build Info
+    echo "ro.build.id=SP1A.210812.016" >> /system/build.prop && \
+    echo "ro.build.display.id=SP1A.210812.016.G991BXXS5CVK1" >> /system/build.prop && \
+    echo "ro.build.version.incremental=G991BXXS5CVK1" >> /system/build.prop && \
+    echo "ro.build.version.security_patch=2022-11-01" >> /system/build.prop && \
+    echo "ro.build.type=user" >> /system/build.prop && \
+    echo "ro.build.user=dpi" >> /system/build.prop && \
+    echo "ro.build.host=SWDD6609" >> /system/build.prop && \
+    echo "ro.build.tags=release-keys" >> /system/build.prop && \
+    echo "ro.build.flavor=o1sxeea-user" >> /system/build.prop && \
+    # Fingerprint
+    echo "ro.build.fingerprint=samsung/o1sxeea/o1s:12/SP1A.210812.016/G991BXXS5CVK1:user/release-keys" >> /system/build.prop && \
+    echo "ro.build.description=o1sxeea-user 12 SP1A.210812.016 G991BXXS5CVK1 release-keys" >> /system/build.prop && \
+    # Hardware
+    echo "ro.hardware=exynos2100" >> /system/build.prop && \
+    echo "ro.hardware.chipname=exynos2100" >> /system/build.prop && \
+    echo "ro.board.platform=exynos2100" >> /system/build.prop && \
+    # Samsung Specific
+    echo "ro.com.google.clientidbase=android-samsung-ss" >> /system/build.prop && \
+    echo "ro.com.google.gmsversion=12_202210" >> /system/build.prop
+
+# =============================================================================
+# Security/Anti-Detection Properties
+# =============================================================================
+
+RUN echo "" >> /system/build.prop && \
+    echo "# Security Properties" >> /system/build.prop && \
+    # Disable debug
+    echo "ro.debuggable=0" >> /system/build.prop && \
+    echo "ro.secure=1" >> /system/build.prop && \
+    echo "ro.adb.secure=1" >> /system/build.prop && \
+    echo "ro.allow.mock.location=0" >> /system/build.prop && \
+    # Verified boot
+    echo "ro.boot.flash.locked=1" >> /system/build.prop && \
+    echo "ro.boot.vbmeta.device_state=locked" >> /system/build.prop && \
+    echo "ro.boot.verifiedbootstate=green" >> /system/build.prop && \
+    echo "ro.boot.veritymode=enforcing" >> /system/build.prop && \
+    # Hide emulator
+    echo "ro.kernel.qemu=0" >> /system/build.prop && \
+    echo "ro.kernel.qemu.gles=0" >> /system/build.prop && \
+    echo "ro.hardware.virtual_device=0" >> /system/build.prop && \
+    echo "ro.boot.qemu=0" >> /system/build.prop && \
+    echo "ro.boot.hardware=exynos2100" >> /system/build.prop && \
+    echo "qemu.hw.mainkeys=0" >> /system/build.prop && \
+    # First API level (affects some detection)
+    echo "ro.product.first_api_level=30" >> /system/build.prop && \
+    # Telephony
+    echo "gsm.version.baseband=G991BXXS5CVK1" >> /system/build.prop && \
+    echo "gsm.version.ril-impl=android samsung-ril 1.0" >> /system/build.prop && \
+    # GPU (try to hide swiftshader)
+    echo "ro.hardware.egl=mali" >> /system/build.prop && \
+    echo "ro.hardware.vulkan=mali" >> /system/build.prop && \
+    echo "ro.opengles.version=196610" >> /system/build.prop
+
+# =============================================================================
+# Startup Script for Runtime Spoofing
+# =============================================================================
+
+# Create init script that runs on boot
+RUN mkdir -p /system/etc/init && \
+    echo '#!/system/bin/sh' > /system/etc/init/99-antidetect.sh && \
+    echo '# Anti-detection runtime configuration' >> /system/etc/init/99-antidetect.sh && \
+    echo 'sleep 30' >> /system/etc/init/99-antidetect.sh && \
+    echo '' >> /system/etc/init/99-antidetect.sh && \
+    echo '# Set battery to appear disconnected from charger' >> /system/etc/init/99-antidetect.sh && \
+    echo 'dumpsys battery set level 73' >> /system/etc/init/99-antidetect.sh && \
+    echo 'dumpsys battery set status 3' >> /system/etc/init/99-antidetect.sh && \
+    echo 'dumpsys battery set ac 0' >> /system/etc/init/99-antidetect.sh && \
+    echo 'dumpsys battery set usb 0' >> /system/etc/init/99-antidetect.sh && \
+    echo '' >> /system/etc/init/99-antidetect.sh && \
+    echo '# Disable mock location flag' >> /system/etc/init/99-antidetect.sh && \
+    echo 'settings put secure mock_location 0' >> /system/etc/init/99-antidetect.sh && \
+    echo '' >> /system/etc/init/99-antidetect.sh && \
+    echo '# Set screen timeout' >> /system/etc/init/99-antidetect.sh && \
+    echo 'settings put system screen_off_timeout 300000' >> /system/etc/init/99-antidetect.sh && \
+    echo '' >> /system/etc/init/99-antidetect.sh && \
+    echo 'echo "Anti-detection runtime config applied"' >> /system/etc/init/99-antidetect.sh && \
+    chmod 755 /system/etc/init/99-antidetect.sh
+
+# =============================================================================
+# Environment
+# =============================================================================
+
+ENV REDROID_GPU_MODE=guest
+ENV REDROID_WIDTH=1280
+ENV REDROID_HEIGHT=720
+ENV REDROID_FPS=30
+ENV REDROID_DPI=420
+
+# Samsung Galaxy S21 has a higher DPI
+# 1080x2400 display, ~421 DPI
+
+EXPOSE 5555
+EXPOSE 5900
