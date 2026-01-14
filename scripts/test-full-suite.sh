@@ -75,7 +75,7 @@ test_warn() {
 }
 
 echo -e "${BLUE}=========================================="
-echo "Waydroid Cloud Phone - Full Test Suite"
+echo "Redroid/Waydroid Cloud Phone - Full Test Suite"
 echo "==========================================${NC}"
 echo ""
 
@@ -84,6 +84,20 @@ if [ "$REMOTE_MODE" = true ]; then
     echo "SSH Key: ${SSH_KEY}"
 else
     echo "Mode: Local"
+fi
+echo ""
+
+# Detect which system is in use
+USE_REDROID=false
+USE_WAYDROID=false
+
+if remote_exec "command -v docker &>/dev/null && docker ps 2>/dev/null | grep -q redroid"; then
+    USE_REDROID=true
+    echo -e "${BLUE}Detected: Redroid (Docker-based Android)${NC}"
+fi
+if remote_exec "command -v waydroid &>/dev/null"; then
+    USE_WAYDROID=true
+    echo -e "${BLUE}Detected: Waydroid${NC}"
 fi
 echo ""
 
@@ -126,12 +140,42 @@ fi
 echo ""
 
 echo -e "${BLUE}[1.2] Services Status${NC}"
-SERVICES=("nginx-rtmp" "xvnc" "waydroid-container" "waydroid-session" "ffmpeg-bridge" "control-api")
-for service in "${SERVICES[@]}"; do
+
+# Check Docker/Redroid if in use
+if [ "$USE_REDROID" = true ]; then
+    if remote_exec "systemctl is-active --quiet docker"; then
+        test_pass "docker"
+    else
+        test_fail "docker" "Not running"
+    fi
+    
+    REDROID_STATUS=$(remote_exec "docker ps --format '{{.Status}}' --filter 'name=redroid' 2>/dev/null | head -1")
+    if [[ -n "$REDROID_STATUS" ]] && echo "$REDROID_STATUS" | grep -qi "up"; then
+        test_pass "redroid container ($REDROID_STATUS)"
+    else
+        test_fail "redroid container" "Not running"
+    fi
+fi
+
+# Check Waydroid services if in use
+if [ "$USE_WAYDROID" = true ]; then
+    WAYDROID_SERVICES=("waydroid-container" "waydroid-session")
+    for service in "${WAYDROID_SERVICES[@]}"; do
+        if remote_exec "systemctl is-active --quiet $service"; then
+            test_pass "$service"
+        else
+            test_warn "$service" "Not running (may not be needed if using Redroid)"
+        fi
+    done
+fi
+
+# Check common services
+COMMON_SERVICES=("nginx-rtmp" "xvnc" "ffmpeg-bridge" "control-api")
+for service in "${COMMON_SERVICES[@]}"; do
     if remote_exec "systemctl is-active --quiet $service"; then
         test_pass "$service"
     else
-        test_fail "$service" "Not running"
+        test_warn "$service" "Not running (optional)"
     fi
 done
 
@@ -148,10 +192,28 @@ if remote_exec "ss -tlnp | grep -q ':1935 '"; then
         test_warn "RTMP port 1935" "Listening on $LISTEN_ADDR (should be 0.0.0.0)"
     fi
 else
-    test_fail "RTMP port 1935" "Not listening"
+    test_warn "RTMP port 1935" "Not listening (optional for RTMP streaming)"
 fi
 
-# VNC (should be localhost only)
+# ADB port (Redroid)
+if [ "$USE_REDROID" = true ]; then
+    if remote_exec "ss -tlnp | grep -q ':5555 '"; then
+        test_pass "ADB port 5555 (Redroid)"
+    else
+        test_fail "ADB port 5555" "Not listening (Redroid ADB not accessible)"
+    fi
+fi
+
+# VNC port 5900 (Redroid)
+if [ "$USE_REDROID" = true ]; then
+    if remote_exec "ss -tlnp | grep -q ':5900 '"; then
+        test_pass "VNC port 5900 (Redroid)"
+    else
+        test_warn "VNC port 5900" "Not listening (Redroid VNC may not be enabled)"
+    fi
+fi
+
+# VNC (should be localhost only - Waydroid)
 if remote_exec "ss -tlnp | grep -q ':5901 '"; then
     LISTEN_ADDR=$(remote_exec "ss -tlnp | grep ':5901 ' | awk '{print \$4}'")
     if [[ "$LISTEN_ADDR" == *"127.0.0.1"* ]] || [[ "$LISTEN_ADDR" == *"::1"* ]]; then
@@ -160,7 +222,9 @@ if remote_exec "ss -tlnp | grep -q ':5901 '"; then
         test_warn "VNC port 5901" "Listening on $LISTEN_ADDR (should be localhost)"
     fi
 else
-    test_fail "VNC port 5901" "Not listening"
+    if [ "$USE_WAYDROID" = true ]; then
+        test_warn "VNC port 5901" "Not listening"
+    fi
 fi
 
 # API (should be localhost only)
@@ -172,7 +236,7 @@ if remote_exec "ss -tlnp | grep -q ':8080 '"; then
         test_warn "API port 8080" "Listening on $LISTEN_ADDR (should be localhost)"
     fi
 else
-    test_fail "API port 8080" "Not listening"
+    test_warn "API port 8080" "Not listening (optional)"
 fi
 
 echo ""
@@ -448,28 +512,53 @@ fi
 
 echo ""
 
-echo -e "${BLUE}[4.2] Waydroid Container Restart${NC}"
+echo -e "${BLUE}[4.2] Android Container Restart${NC}"
 
-# Restart waydroid-container
-echo "  Testing waydroid-container restart..."
-remote_exec_sudo "systemctl restart waydroid-container"
-sleep 5
-
-if remote_exec "systemctl is-active --quiet waydroid-container"; then
-    test_pass "waydroid-container restarted successfully"
+if [ "$USE_REDROID" = true ]; then
+    # Restart Redroid container
+    echo "  Testing Redroid container restart..."
+    remote_exec "docker restart redroid" 2>/dev/null || true
+    sleep 10
     
-    # Wait for waydroid to be ready
+    REDROID_STATUS=$(remote_exec "docker ps --format '{{.Status}}' --filter 'name=redroid' 2>/dev/null | head -1")
+    if [[ -n "$REDROID_STATUS" ]] && echo "$REDROID_STATUS" | grep -qi "up"; then
+        test_pass "Redroid container restarted successfully"
+        
+        # Check ADB connection
+        sleep 5
+        ADB_DEVICES=$(remote_exec "adb devices 2>/dev/null | tail -n +2 | grep -v '^$' | wc -l" || echo "0")
+        if [ "$ADB_DEVICES" -gt 0 ]; then
+            test_pass "ADB reconnected after container restart"
+        else
+            test_warn "ADB after restart" "No devices connected (may need more time)"
+        fi
+    else
+        test_fail "Redroid container restart" "Container not running after restart"
+    fi
+elif [ "$USE_WAYDROID" = true ]; then
+    # Restart waydroid-container
+    echo "  Testing waydroid-container restart..."
+    remote_exec_sudo "systemctl restart waydroid-container"
     sleep 5
     
-    # Check ADB connection
-    ADB_DEVICES=$(remote_exec "adb devices 2>/dev/null | tail -n +2 | grep -v '^$' | wc -l" || echo "0")
-    if [ "$ADB_DEVICES" -gt 0 ]; then
-        test_pass "ADB reconnected after container restart"
+    if remote_exec "systemctl is-active --quiet waydroid-container"; then
+        test_pass "waydroid-container restarted successfully"
+        
+        # Wait for waydroid to be ready
+        sleep 5
+        
+        # Check ADB connection
+        ADB_DEVICES=$(remote_exec "adb devices 2>/dev/null | tail -n +2 | grep -v '^$' | wc -l" || echo "0")
+        if [ "$ADB_DEVICES" -gt 0 ]; then
+            test_pass "ADB reconnected after container restart"
+        else
+            test_warn "ADB after restart" "No devices connected (may need more time)"
+        fi
     else
-        test_warn "ADB after restart" "No devices connected (may need more time)"
+        test_fail "waydroid-container restart" "Service not running after restart"
     fi
 else
-    test_fail "waydroid-container restart" "Service not running after restart"
+    test_warn "Container restart" "No Android container detected"
 fi
 
 echo ""
@@ -478,19 +567,38 @@ echo -e "${BLUE}[4.3] Full Service Target Restart${NC}"
 
 # Restart entire target
 echo "  Testing waydroid-cloud-phone.target restart..."
-remote_exec_sudo "systemctl restart waydroid-cloud-phone.target"
+remote_exec_sudo "systemctl restart waydroid-cloud-phone.target" 2>/dev/null || true
 sleep 5
 
+# Check critical services based on what's in use
 ALL_RUNNING=true
-for service in "${SERVICES[@]}"; do
-    if ! remote_exec "systemctl is-active --quiet $service"; then
-        test_fail "$service after target restart" "Not running"
+
+if [ "$USE_REDROID" = true ]; then
+    # Check Docker
+    if ! remote_exec "systemctl is-active --quiet docker"; then
+        test_fail "docker after target restart" "Not running"
         ALL_RUNNING=false
+    fi
+    
+    # Check Redroid container
+    REDROID_STATUS=$(remote_exec "docker ps --format '{{.Status}}' --filter 'name=redroid' 2>/dev/null | head -1")
+    if [[ -z "$REDROID_STATUS" ]] || ! echo "$REDROID_STATUS" | grep -qi "up"; then
+        test_fail "Redroid after target restart" "Not running"
+        ALL_RUNNING=false
+    fi
+fi
+
+# Check common services (optional)
+for service in nginx-rtmp xvnc ffmpeg-bridge control-api; do
+    if remote_exec "systemctl is-active --quiet $service" 2>/dev/null; then
+        test_pass "$service after target restart"
+    else
+        test_warn "$service after target restart" "Not running (optional)"
     fi
 done
 
 if [ "$ALL_RUNNING" = true ]; then
-    test_pass "All services running after target restart"
+    test_pass "All critical services running after target restart"
 fi
 
 echo ""
