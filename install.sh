@@ -189,12 +189,13 @@ chmod +x "$VNC_HOME/.vnc/xstartup"
 chown -R "$VNC_USER:$VNC_USER" "$VNC_HOME/.vnc"
 
 # ============================================
-# Step 7: Install Control API
+# Step 7: Install Control + Agent API
 # ============================================
-log_info "[7/8] Setting up Control API..."
+log_info "[7/8] Setting up Control + Agent API..."
 
 mkdir -p /opt/cloud-phone-api
 cp "$SCRIPT_DIR/api/server.py" /opt/cloud-phone-api/
+cp "$SCRIPT_DIR/api/agent_api.py" /opt/cloud-phone-api/
 cp "$SCRIPT_DIR/api/requirements.txt" /opt/cloud-phone-api/
 
 # Backwards-compatible path (older docs/scripts)
@@ -217,7 +218,8 @@ cp "$SCRIPT_DIR/systemd/"*.target /etc/systemd/system/
 # Copy scripts
 mkdir -p /opt/waydroid-scripts
 cp "$SCRIPT_DIR/scripts/"*.sh /opt/waydroid-scripts/
-chmod +x /opt/waydroid-scripts/*.sh
+cp "$SCRIPT_DIR/scripts/cloud-phone-tool.py" /opt/waydroid-scripts/
+chmod +x /opt/waydroid-scripts/*.sh /opt/waydroid-scripts/cloud-phone-tool.py
 
 # Reload systemd
 systemctl daemon-reload
@@ -228,6 +230,7 @@ systemctl enable xvnc.service
 systemctl enable waydroid-container.service
 systemctl enable waydroid-session.service
 systemctl enable control-api.service
+systemctl enable agent-api.service
 systemctl enable ffmpeg-bridge.service
 systemctl enable waydroid-cloud-phone.target
 
@@ -251,7 +254,7 @@ echo "3. Start all services:"
 echo "   sudo systemctl start waydroid-cloud-phone.target"
 echo ""
 echo "4. Access via SSH tunnel:"
-echo "   ssh -L 5901:localhost:5901 -L 8080:localhost:8080 ubuntu@YOUR_IP"
+echo "   ssh -L 5901:localhost:5901 -L 8080:localhost:8080 -L 8081:localhost:8081 ubuntu@YOUR_IP"
 echo ""
 echo "5. Stream from OBS:"
 echo "   rtmp://YOUR_IP/live/cam"

@@ -1018,7 +1018,7 @@ def index():
 
 if __name__ == "__main__":
     host = os.environ.get("API_HOST", "0.0.0.0")
-    port = int(os.environ.get("API_PORT", "8080"))
+    port = int(os.environ.get("API_PORT", "8081"))
     debug = os.environ.get("DEBUG", "false").lower() == "true"
     
     logger.info(f"Starting Cloud Phone Agent API on {host}:{port}")

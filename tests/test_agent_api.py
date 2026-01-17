@@ -7,7 +7,7 @@ Designed to run against a live Redroid instance.
 
 Usage:
     python test_agent_api.py                    # Run all tests
-    python test_agent_api.py --api-url http://localhost:8080
+    python test_agent_api.py --api-url http://localhost:8081
     python test_agent_api.py --log-file /var/log/test-results.log
     python test_agent_api.py --verbose
 """
@@ -33,7 +33,7 @@ import requests
 
 @dataclass
 class TestConfig:
-    api_url: str = "http://localhost:8080"
+    api_url: str = "http://localhost:8081"
     api_token: str = ""
     timeout: int = 30
     log_file: str = ""

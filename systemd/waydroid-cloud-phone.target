@@ -14,6 +14,7 @@ Wants=waydroid-container.service
 Wants=waydroid-session.service
 Wants=ffmpeg-bridge.service
 Wants=control-api.service
+Wants=agent-api.service
 
 [Install]
 WantedBy=multi-user.target

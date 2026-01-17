@@ -21,7 +21,7 @@ python3 api/agent_api.py
 sudo systemctl start agent-api
 
 # Test health
-curl http://localhost:8080/health
+curl http://localhost:8081/health
 ```
 
 ## API Design Principles
@@ -634,10 +634,12 @@ All API requests are logged to `/var/log/cloud-phone/agent-api.log`:
 | `ADB_HOST` | 127.0.0.1 | ADB host |
 | `ADB_PORT` | 5555 | ADB port |
 | `API_HOST` | 0.0.0.0 | API listen address |
-| `API_PORT` | 8080 | API port |
+| `API_PORT` | 8081 | API port |
 | `API_TOKEN` | (none) | Authentication token |
 | `LOG_DIR` | /var/log/cloud-phone | Log directory |
 | `DEFAULT_TIMEOUT` | 30 | Default timeout in seconds |
+
+Note: `API_PORT` defaults to 8081 to avoid clashing with the legacy Control API on 8080.
 
 ### Authentication
 
@@ -660,11 +662,11 @@ Run the test suite:
 
 ```bash
 # Local testing
-python3 tests/test_agent_api.py --api-url http://localhost:8080
+python3 tests/test_agent_api.py --api-url http://localhost:8081
 
 # With logging
 python3 tests/test_agent_api.py \
-  --api-url http://localhost:8080 \
+  --api-url http://localhost:8081 \
   --log-file /var/log/test-results.log \
   --output-json /var/log/test-results.json \
   --verbose

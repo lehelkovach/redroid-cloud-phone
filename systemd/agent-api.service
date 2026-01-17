@@ -1,0 +1,27 @@
+[Unit]
+Description=Cloud Phone Agent API Server (LLM tool interface)
+Documentation=https://github.com/lehelkovach/redroid-cloud-phone
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cloud-phone-api
+ExecStart=/opt/cloud-phone-api/venv/bin/python agent_api.py
+Restart=on-failure
+RestartSec=5
+
+# Run as root for ADB access
+User=root
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=API_HOST=0.0.0.0
+Environment=API_PORT=8081
+Environment=ADB_HOST=127.0.0.1
+Environment=ADB_PORT=5555
+Environment=LOG_DIR=/var/log/cloud-phone
+
+[Install]
+WantedBy=waydroid-cloud-phone.target
+WantedBy=redroid-cloud-phone.target

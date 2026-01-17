@@ -6,6 +6,7 @@
 # - Docker + Redroid container (ADB 5555, VNC 5900)
 # - Optional RTMP ingest (nginx-rtmp) + FFmpeg bridge (host virtual devices)
 # - Control API (HTTP on 127.0.0.1:8080, ADB-backed)
+# - Agent API (HTTP on 0.0.0.0:8081, LLM tool interface)
 #
 # Notes:
 # - Virtual camera/audio require host kernel module support (v4l2loopback, snd-aloop).
@@ -109,9 +110,10 @@ log_info "[4/7] Configuring nginx-rtmp..."
 cp "$SCRIPT_DIR/config/nginx-rtmp.conf" /etc/nginx/nginx.conf
 systemctl disable nginx.service 2>/dev/null || true
 
-log_info "[5/7] Installing Control API..."
+log_info "[5/7] Installing Control + Agent API..."
 mkdir -p /opt/cloud-phone-api
 cp "$SCRIPT_DIR/api/server.py" /opt/cloud-phone-api/
+cp "$SCRIPT_DIR/api/agent_api.py" /opt/cloud-phone-api/
 cp "$SCRIPT_DIR/api/requirements.txt" /opt/cloud-phone-api/
 ln -sfn /opt/cloud-phone-api /opt/waydroid-api
 
@@ -122,12 +124,14 @@ python3 -m venv /opt/cloud-phone-api/venv
 log_info "[6/7] Installing scripts..."
 mkdir -p /opt/waydroid-scripts
 cp "$SCRIPT_DIR/scripts/"*.sh /opt/waydroid-scripts/
-chmod +x /opt/waydroid-scripts/*.sh
+cp "$SCRIPT_DIR/scripts/cloud-phone-tool.py" /opt/waydroid-scripts/
+chmod +x /opt/waydroid-scripts/*.sh /opt/waydroid-scripts/cloud-phone-tool.py
 
 log_info "[7/7] Installing systemd units..."
 cp "$SCRIPT_DIR/systemd/nginx-rtmp.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/ffmpeg-bridge.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/control-api.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/systemd/agent-api.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/redroid-container.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/redroid-cloud-phone.target" /etc/systemd/system/
 
@@ -136,6 +140,7 @@ systemctl daemon-reload
 systemctl enable nginx-rtmp.service
 systemctl enable ffmpeg-bridge.service
 systemctl enable control-api.service
+systemctl enable agent-api.service
 systemctl enable redroid-container.service
 systemctl enable redroid-cloud-phone.target
 

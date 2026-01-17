@@ -104,6 +104,8 @@ echo ""
 echo "Systemd Services:"
 if [ "$MODE" = "redroid" ]; then
     check_service "docker"
+    check_service "agent-api"
+    check_service "control-api"
     echo "  Redroid container:"
     if docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null | grep -q "^redroid:"; then
         docker ps --format '    {{.Names}}  {{.Status}}  {{.Ports}}' | grep "^redroid" || true
@@ -117,6 +119,7 @@ else
     check_service "waydroid-session"
     check_service "ffmpeg-bridge"
     check_service "control-api"
+    check_service "agent-api"
 fi
 
 echo ""
@@ -141,6 +144,18 @@ if [ "$MODE" = "redroid" ]; then
     else
         echo -e "  ${YELLOW}○${NC} VNC (5900) - not listening"
     fi
+
+    if ss -tlnp | grep -q ":8081 "; then
+        echo -e "  ${GREEN}✓${NC} Agent API (8081)"
+    else
+        echo -e "  ${YELLOW}○${NC} Agent API (8081) - not listening"
+    fi
+
+    if ss -tlnp | grep -q ":8080 "; then
+        echo -e "  ${GREEN}✓${NC} Control API (8080)"
+    else
+        echo -e "  ${YELLOW}○${NC} Control API (8080) - not listening"
+    fi
 else
     if ss -tlnp | grep -q ":5901 "; then
         echo -e "  ${GREEN}✓${NC} VNC (5901)"
@@ -152,6 +167,12 @@ else
         echo -e "  ${GREEN}✓${NC} API (8080)"
     else
         echo -e "  ${YELLOW}○${NC} API (8080) - not listening"
+    fi
+
+    if ss -tlnp | grep -q ":8081 "; then
+        echo -e "  ${GREEN}✓${NC} Agent API (8081)"
+    else
+        echo -e "  ${YELLOW}○${NC} Agent API (8081) - not listening"
     fi
 fi
 
@@ -197,9 +218,15 @@ echo ""
 # Quick API test
 echo "API Health:"
 if curl -s http://127.0.0.1:8080/health 2>/dev/null | grep -q "healthy"; then
-    echo -e "  ${GREEN}✓${NC} API responding"
+    echo -e "  ${GREEN}✓${NC} Control API responding"
 else
-    echo -e "  ${RED}✗${NC} API not responding"
+    echo -e "  ${YELLOW}○${NC} Control API not responding"
+fi
+
+if curl -s http://127.0.0.1:8081/health 2>/dev/null | grep -q "\"success\""; then
+    echo -e "  ${GREEN}✓${NC} Agent API responding"
+else
+    echo -e "  ${YELLOW}○${NC} Agent API not responding"
 fi
 
 echo ""

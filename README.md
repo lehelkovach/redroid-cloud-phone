@@ -120,6 +120,13 @@ adb shell getprop ro.build.version.release
 
 ---
 
+## 🤖 Agent Integration
+
+- Agent API usage: **[AGENT_API.md](AGENT_API.md)**
+- OSL agent integration guide: **[OSL_AGENT_INTEGRATION.md](OSL_AGENT_INTEGRATION.md)**
+
+---
+
 ## 📁 Project Structure
 
 ```
