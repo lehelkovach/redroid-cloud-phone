@@ -2,10 +2,16 @@
 
 Use this checklist to validate a live Cloud Phone instance before integration.
 
+## Where to run
+Run these checks from a local workstation or local agent that has OCI access and
+network reachability to the instance. Avoid running from CI or from this repo
+host where OCI credentials are unavailable.
+
 ## Prerequisites
 - SSH access to the instance
 - ADB installed on the controller
 - VNC client on the controller
+- OCI CLI configured locally (if deploying in the same flow)
 
 ## Core health checks
 1) Services and ports (on instance)

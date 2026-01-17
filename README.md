@@ -124,6 +124,7 @@ adb shell getprop ro.build.version.release
 
 - Agent API usage: **[AGENT_API.md](AGENT_API.md)**
 - OSL agent integration guide: **[OSL_AGENT_INTEGRATION.md](OSL_AGENT_INTEGRATION.md)**
+- Cloud verification checklist (run from local OCI environment): **[CLOUD.md](CLOUD.md)**
 
 ---
 

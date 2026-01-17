@@ -12,7 +12,8 @@ It is designed for LLM tool use and provides consistent JSON responses.
 - Base URL (on host): `http://127.0.0.1:8081`
 
 ## Verification checklist (required before integration)
-Run these checks to confirm the device is usable.
+Run these checks from a local agent in your OCI-enabled dev environment to
+confirm the device is usable before wiring into `osl-agent-prototype`.
 
 ### 1) ADB connectivity
 ```
