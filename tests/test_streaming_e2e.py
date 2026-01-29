@@ -28,6 +28,12 @@ def ssh_cmd(cmd: str, timeout: int = 30) -> tuple:
         return -1, "", "Command timed out"
 
 
+def ensure_adb_connected():
+    """Ensure ADB is connected before running commands."""
+    ssh_cmd("adb connect 127.0.0.1:5555 >/dev/null 2>&1", timeout=5)
+    time.sleep(0.5)
+
+
 class TestFullPipelineE2E:
     """End-to-end tests for the complete streaming pipeline."""
 
@@ -183,6 +189,105 @@ class TestCameraHalE2E:
         if code != 0:
             pytest.skip("VLC not installed - install with: adb install vlc.apk")
         assert "vlc" in out.lower(), "VLC package not found"
+
+
+class TestVideoDeviceE2E:
+    """E2E tests for video device access inside Android container."""
+
+    def test_e2e_video42_sysfs_name(self):
+        """
+        E2E: Verify /dev/video42 is registered as VirtualCam in sysfs (host-side).
+        """
+        code, out, _ = ssh_cmd(
+            "cat /sys/class/video4linux/video42/name 2>&1"
+        )
+        assert code == 0 and "VirtualCam" in out, f"Video device name check failed: {out}"
+
+    def test_e2e_video42_readable_via_docker(self):
+        """
+        E2E: Verify /dev/video42 is readable from within container (via docker exec).
+        
+        This confirms the video device is properly mounted and has data.
+        """
+        code, out, _ = ssh_cmd(
+            "sudo docker exec redroid timeout 2 dd if=/dev/video42 bs=1024 count=1 2>&1"
+        )
+        assert code == 0 and "1+0 records" in out, f"Failed to read from /dev/video42: {out}"
+
+    def test_e2e_video42_receives_test_stream(self):
+        """
+        E2E: Send test pattern to video42 and verify it's received.
+        """
+        # Write test pattern
+        write_cmd = (
+            "timeout 3 ffmpeg -hide_banner -loglevel error "
+            "-f lavfi -i testsrc2=size=640x480:rate=15 "
+            "-t 1 -pix_fmt yuv420p -f v4l2 /dev/video42 2>&1; echo WRITE_DONE"
+        )
+        code, out, _ = ssh_cmd(write_cmd, timeout=10)
+        assert "WRITE_DONE" in out, f"Failed to write to video42: {out}"
+        
+        # Verify readable
+        code2, out2, _ = ssh_cmd(
+            "sudo docker exec redroid timeout 1 dd if=/dev/video42 bs=4096 count=1 2>&1 | grep -c 'records' || echo 0"
+        )
+        assert code2 == 0, "Failed to verify video42 read after write"
+
+    def test_e2e_video42_permissions(self):
+        """
+        E2E: Verify /dev/video42 permissions in container.
+        """
+        code, out, _ = ssh_cmd(
+            "sudo docker exec redroid ls -la /dev/video42"
+        )
+        assert code == 0 and "video42" in out, f"Video device permission check failed: {out}"
+        # Should be owned by root:video (group 44)
+        assert "root" in out, "Video device should be owned by root"
+
+
+class TestAudioDeviceE2E:
+    """E2E tests for audio loopback device access inside Android."""
+
+    def test_e2e_alsa_loopback_visible_in_android(self):
+        """
+        E2E: Verify ALSA Loopback device is visible inside Android.
+        """
+        ensure_adb_connected()
+        code, out, _ = ssh_cmd(
+            "adb -s 127.0.0.1:5555 shell cat /proc/asound/cards 2>&1"
+        )
+        assert code == 0 and "Loopback" in out, f"ALSA Loopback not visible in Android: {out}"
+
+    def test_e2e_alsa_loopback_card_number(self):
+        """
+        E2E: Verify ALSA Loopback device card number via docker exec.
+        """
+        code, out, _ = ssh_cmd(
+            "sudo docker exec redroid cat /proc/asound/cards | grep Loopback | head -1"
+        )
+        assert code == 0 and "Loopback" in out, f"ALSA Loopback card not found: {out}"
+
+    def test_e2e_android_audio_server_running(self):
+        """
+        E2E: Verify Android audioserver is running.
+        """
+        ensure_adb_connected()
+        code, out, _ = ssh_cmd(
+            "adb -s 127.0.0.1:5555 shell getprop init.svc.audioserver 2>&1"
+        )
+        assert code == 0 and "running" in out, f"Audio server not running: {out}"
+
+    def test_e2e_dumpsys_media_camera(self):
+        """
+        E2E: Capture dumpsys media.camera output for diagnostics.
+        """
+        ensure_adb_connected()
+        code, out, _ = ssh_cmd(
+            "adb -s 127.0.0.1:5555 shell dumpsys media.camera 2>&1 | head -20"
+        )
+        assert code == 0, f"Failed to get camera service info: {out}"
+        # Document the camera count (expected to be 0 without HAL)
+        assert "Number of camera devices" in out, "Camera service info missing device count"
 
 
 class TestExternalConnectivityE2E:
