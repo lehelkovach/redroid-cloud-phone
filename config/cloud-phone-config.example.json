@@ -1,11 +1,87 @@
 {
+  "$schema": "./cloud-phone-config.schema.json",
+  
+  "environment": {
+    "CLOUD_PHONE_HOME": "/opt/cloud-phone",
+    "CLOUD_PHONE_CONFIG": "/etc/cloud-phone/config.json",
+    "COMPARTMENT_ID": "",
+    "SUBNET_ID": "",
+    "AVAILABILITY_DOMAIN": "",
+    "SSH_KEY_FILE": "~/.ssh/redroid_oci",
+    "SSH_USER": "ubuntu",
+    "ADB_CONNECT": "127.0.0.1:5555",
+    "API_TOKEN": ""
+  },
+
+  "logging": {
+    "enabled": true,
+    "level": "INFO",
+    "directory": "/var/log/cloud-phone",
+    "max_size_mb": 100,
+    "max_files": 10,
+    "files": {
+      "main": "cloud-phone.log",
+      "redroid": "redroid.log",
+      "adb": "adb.log",
+      "api": "api.log",
+      "streaming": "streaming.log"
+    },
+    "redroid_capture": {
+      "enabled": true,
+      "logcat": true,
+      "logcat_filter": "*:W",
+      "container_logs": true
+    },
+    "remote": {
+      "enabled": false,
+      "method": "ssh",
+      "host": "",
+      "port": 22,
+      "user": "ubuntu",
+      "ssh_key": "~/.ssh/redroid_oci",
+      "remote_log_dir": "/var/log/cloud-phone",
+      "sync_interval_seconds": 60,
+      "stream_realtime": false
+    },
+    "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    "date_format": "%Y-%m-%d %H:%M:%S"
+  },
+
+  "defaults": {
+    "deploy": {
+      "skip_tests": false,
+      "skip_gapps": false,
+      "from_golden": false,
+      "timeout_minutes": 30
+    },
+    "test": {
+      "type": "all",
+      "verbose": false,
+      "timeout_seconds": 300,
+      "retry_count": 2
+    },
+    "tunnel": {
+      "ports": {
+        "adb": 5555,
+        "vnc": 5900,
+        "api": 8080
+      },
+      "keepalive_interval": 60,
+      "auto_reconnect": true
+    }
+  },
+
   "instance": {
     "name": "my-cloud-phone",
     "shape": "VM.Standard.A1.Flex",
     "ocpus": 2,
     "memory_gb": 8,
-    "os_version": "20.04"
+    "os_version": "20.04",
+    "compartment_id": "",
+    "subnet_id": "",
+    "availability_domain": ""
   },
+
   "redroid": {
     "image": "redroid/redroid:11.0.0-latest",
     "width": 1280,
@@ -16,42 +92,63 @@
     "vnc_enabled": true,
     "vnc_port": 5900,
     "adb_port": 5555,
+    "data_dir": "/opt/redroid-data",
     "gapps": {
       "enabled": true,
       "variant": "pico"
     }
   },
+
   "network": {
     "proxy": {
-      "enabled": true,
+      "enabled": false,
       "type": "socks5",
       "host": "proxy.example.com",
       "port": 1080,
       "username": "",
       "password": "",
-      "bypass": ["localhost", "127.0.0.1", "10.0.0.0/8"]
+      "bypass": ["localhost", "127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
     },
     "dns": ["8.8.8.8", "1.1.1.1"]
   },
+
   "location": {
-    "enabled": true,
+    "enabled": false,
     "latitude": 37.7749,
     "longitude": -122.4194,
     "altitude": 10,
     "accuracy": 5
   },
+
   "api": {
     "enabled": true,
     "host": "127.0.0.1",
     "port": 8080,
+    "workers": 4,
+    "timeout": 30,
     "auth": {
-      "enabled": true,
-      "token": "your-secret-token"
+      "enabled": false,
+      "token": ""
     }
   },
+
   "viewing": {
     "method": "vnc",
     "headless": false,
     "vnc_password": "redroid"
+  },
+
+  "streaming": {
+    "rtmp": {
+      "enabled": true,
+      "port": 1935,
+      "stream_key": "cam",
+      "url": "rtmp://127.0.0.1/live/cam"
+    },
+    "ffmpeg_bridge": {
+      "enabled": true,
+      "video_device": "/dev/video42",
+      "audio_device": "hw:Loopback,1,0"
+    }
   }
 }

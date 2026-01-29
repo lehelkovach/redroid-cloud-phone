@@ -27,6 +27,58 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$SCRIPT_DIR/scripts"
 TESTS_DIR="$SCRIPT_DIR/tests"
 DOCKER_DIR="$SCRIPT_DIR/docker"
+CONFIG_DIR="$SCRIPT_DIR/config"
+
+# =============================================================================
+# CONFIGURATION LOADING
+# =============================================================================
+
+# Load .env file if exists
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    set -a
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
+# Config file locations (in order of priority)
+CONFIG_FILE="${CLOUD_PHONE_CONFIG:-}"
+if [[ -z "$CONFIG_FILE" ]]; then
+    if [[ -f "$SCRIPT_DIR/config.json" ]]; then
+        CONFIG_FILE="$SCRIPT_DIR/config.json"
+    elif [[ -f "$CONFIG_DIR/cloud-phone-config.json" ]]; then
+        CONFIG_FILE="$CONFIG_DIR/cloud-phone-config.json"
+    elif [[ -f "/etc/cloud-phone/config.json" ]]; then
+        CONFIG_FILE="/etc/cloud-phone/config.json"
+    else
+        CONFIG_FILE="$CONFIG_DIR/cloud-phone-config.example.json"
+    fi
+fi
+
+# Load config values using jq (if available)
+load_config() {
+    local key="$1"
+    local default="${2:-}"
+    
+    if command -v jq &>/dev/null && [[ -f "$CONFIG_FILE" ]]; then
+        local value
+        value=$(jq -r "$key // empty" "$CONFIG_FILE" 2>/dev/null)
+        if [[ -n "$value" && "$value" != "null" ]]; then
+            echo "$value"
+            return
+        fi
+    fi
+    echo "$default"
+}
+
+# Load commonly used config values
+LOG_DIR="${CLOUD_PHONE_LOG_DIR:-$(load_config '.logging.directory' '/var/log/cloud-phone')}"
+LOG_LEVEL="${CLOUD_PHONE_LOG_LEVEL:-$(load_config '.logging.level' 'INFO')}"
+SSH_KEY="${SSH_KEY_FILE:-$(load_config '.environment.SSH_KEY_FILE' "$HOME/.ssh/redroid_oci")}"
+SSH_KEY="${SSH_KEY/#\~/$HOME}"  # Expand tilde
+SSH_USER="${SSH_USER:-$(load_config '.environment.SSH_USER' 'ubuntu')}"
+ADB_CONNECT="${ADB_CONNECT:-$(load_config '.environment.ADB_CONNECT' '127.0.0.1:5555')}"
+API_URL="${API_URL:-http://localhost:$(load_config '.api.port' '8080')}"
+VM_HOST="${VM_HOST:-$(load_config '.logging.remote.host' '')}"
 
 # Colors
 RED='\033[0;31m'
@@ -82,7 +134,7 @@ run_script_optional() {
 # =============================================================================
 
 show_help() {
-    cat <<'EOF'
+    cat <<EOF
 cloud-phone - Unified CLI for Redroid Cloud Phone
 
 USAGE:
@@ -98,8 +150,15 @@ COMMANDS:
     build           Build custom Docker images
     install         Install on local/remote system
     status          Show system status and health
-    logs            View logs from services
+    logs            View and manage logs (Redroid, ADB, services)
+    config          Show/edit configuration
     help            Show this help
+
+CONFIGURATION:
+    Config file:    $CONFIG_FILE
+    Log directory:  $LOG_DIR
+    SSH key:        $SSH_KEY
+    VM host:        ${VM_HOST:-<not set>}
 
 EXAMPLES:
     # Full deployment (create + deploy + test)
@@ -860,63 +919,295 @@ EOF
 # =============================================================================
 
 cmd_logs() {
-    local service="redroid-container"
+    local action=""
+    local service=""
     local follow=false
     local lines=100
-    local instance_ip=""
-    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    local instance_ip="${VM_HOST:-}"
+    local ssh_key_arg="$SSH_KEY"
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            start|stop|status|sync|fetch|tail) action="$1"; shift ;;
             --service|-s)   service="$2"; shift 2 ;;
             --follow|-f)    follow=true; shift ;;
             --lines|-n)     lines="$2"; shift 2 ;;
             --instance)     instance_ip="$2"; shift 2 ;;
-            --ssh-key)      ssh_key="$2"; shift 2 ;;
+            --ssh-key)      ssh_key_arg="$2"; shift 2 ;;
+            --redroid)      service="redroid"; shift ;;
+            --logcat)       service="logcat"; shift ;;
+            --adb)          service="adb"; shift ;;
+            --all)          service="all"; shift ;;
             --help|-h)      logs_help; exit 0 ;;
             *) die "Unknown logs option: $1" ;;
         esac
     done
     
+    # If action specified, use log-collector
+    if [[ -n "$action" ]]; then
+        case "$action" in
+            start|stop|status|sync)
+                run_script "$SCRIPTS_DIR/log-collector.sh" "$action"
+                ;;
+            fetch)
+                run_script "$SCRIPTS_DIR/log-collector.sh" fetch "$instance_ip" "$ssh_key_arg"
+                ;;
+            tail)
+                run_script "$SCRIPTS_DIR/log-collector.sh" tail "$lines"
+                ;;
+        esac
+        return
+    fi
+    
+    # View specific log files
+    if [[ -n "$service" ]]; then
+        local log_file=""
+        case "$service" in
+            redroid)    log_file="$LOG_DIR/redroid.log" ;;
+            logcat)     log_file="$LOG_DIR/logcat.log" ;;
+            adb)        log_file="$LOG_DIR/adb.log" ;;
+            streaming)  log_file="$LOG_DIR/streaming.log" ;;
+            main)       log_file="$LOG_DIR/cloud-phone.log" ;;
+            all)
+                if [[ "$follow" == true ]]; then
+                    tail -f "$LOG_DIR"/*.log 2>/dev/null || log_warn "No logs found in $LOG_DIR"
+                else
+                    tail -n "$lines" "$LOG_DIR"/*.log 2>/dev/null || log_warn "No logs found in $LOG_DIR"
+                fi
+                return
+                ;;
+            *)          log_file="" ;;  # Use journald
+        esac
+        
+        if [[ -n "$log_file" && -f "$log_file" ]]; then
+            if [[ "$follow" == true ]]; then
+                tail -f "$log_file"
+            else
+                tail -n "$lines" "$log_file"
+            fi
+            return
+        fi
+    fi
+    
+    # Fall back to journald for services
+    service="${service:-redroid-container}"
     local journal_cmd="journalctl -u $service -n $lines"
     [[ "$follow" == true ]] && journal_cmd="$journal_cmd -f"
     
     if [[ -n "$instance_ip" ]]; then
-        ssh -i "$ssh_key" -o StrictHostKeyChecking=no ubuntu@"$instance_ip" "sudo $journal_cmd"
+        ssh -i "$ssh_key_arg" -o StrictHostKeyChecking=no "$SSH_USER@$instance_ip" "sudo $journal_cmd"
     else
         sudo $journal_cmd
     fi
 }
 
 logs_help() {
-    cat <<'EOF'
-cloud-phone logs - View service logs
+    cat <<EOF
+cloud-phone logs - View and manage logs
 
 USAGE:
-    ./cloud-phone logs [options]
+    ./cloud-phone logs [action] [options]
+
+ACTIONS:
+    start           Start log collection (Redroid, logcat, containers)
+    stop            Stop log collection
+    status          Show log collector status
+    sync            Sync logs to remote host
+    fetch [HOST]    Fetch logs from remote VM
+    tail [N]        Tail all log files
 
 OPTIONS:
-    --service, -s NAME  Service name (default: redroid-container)
+    --service, -s NAME  View specific service log
     --follow, -f        Follow log output
     --lines, -n N       Number of lines (default: 100)
-    --instance IP       View logs from remote instance
+    --instance IP       View/fetch from remote instance
     --ssh-key PATH      SSH key for remote access
+    --redroid           View Redroid container logs
+    --logcat            View Android logcat
+    --adb               View ADB logs
+    --all               View all log files
 
-SERVICES:
+LOG FILES (in $LOG_DIR):
+    cloud-phone.log     Main application log
+    redroid.log         Redroid container output
+    logcat.log          Android logcat capture
+    adb.log             ADB command logs
+    streaming.log       RTMP/FFmpeg logs
+
+SYSTEMD SERVICES:
     redroid-container   Main Redroid container
     nginx-rtmp          RTMP streaming server
     ffmpeg-bridge       Video/audio bridge
     control-api         REST API server
 
 EXAMPLES:
-    # View Redroid logs
-    ./cloud-phone logs --service redroid-container
+    # Start log collection
+    ./cloud-phone logs start
 
-    # Follow API logs
+    # Tail Redroid logs
+    ./cloud-phone logs --redroid -f
+
+    # View logcat
+    ./cloud-phone logs --logcat -n 200
+
+    # Fetch logs from remote VM
+    ./cloud-phone logs fetch 129.146.1.2
+
+    # View journald logs for service
     ./cloud-phone logs -s control-api -f
 
-    # View remote logs
-    ./cloud-phone logs --instance 129.146.1.2 -s nginx-rtmp
+    # Sync logs to configured remote
+    ./cloud-phone logs sync
+
+EOF
+}
+
+# =============================================================================
+# CONFIG COMMANDS
+# =============================================================================
+
+cmd_config() {
+    local action=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            show|edit|init|validate|env) action="$1"; shift ;;
+            --help|-h) config_help; exit 0 ;;
+            *) die "Unknown config option: $1" ;;
+        esac
+    done
+    
+    action="${action:-show}"
+    
+    case "$action" in
+        show)
+            log_header "Configuration"
+            echo "Config File: $CONFIG_FILE"
+            echo ""
+            
+            if [[ -f "$CONFIG_FILE" ]]; then
+                if command -v jq &>/dev/null; then
+                    jq '.' "$CONFIG_FILE"
+                else
+                    cat "$CONFIG_FILE"
+                fi
+            else
+                log_warn "Config file not found: $CONFIG_FILE"
+                echo "Using defaults. Run './cloud-phone config init' to create a config file."
+            fi
+            ;;
+            
+        edit)
+            local editor="${EDITOR:-vi}"
+            if [[ ! -f "$CONFIG_FILE" ]]; then
+                log_info "Creating config file from example..."
+                cp "$CONFIG_DIR/cloud-phone-config.example.json" "$SCRIPT_DIR/config.json"
+                CONFIG_FILE="$SCRIPT_DIR/config.json"
+            fi
+            $editor "$CONFIG_FILE"
+            ;;
+            
+        init)
+            local dest="$SCRIPT_DIR/config.json"
+            if [[ -f "$dest" ]]; then
+                log_warn "Config file already exists: $dest"
+                read -p "Overwrite? [y/N] " -n 1 -r
+                echo
+                [[ ! $REPLY =~ ^[Yy]$ ]] && return 0
+            fi
+            cp "$CONFIG_DIR/cloud-phone-config.example.json" "$dest"
+            log_info "Config file created: $dest"
+            log_info "Edit with: ./cloud-phone config edit"
+            ;;
+            
+        validate)
+            if [[ ! -f "$CONFIG_FILE" ]]; then
+                die "Config file not found: $CONFIG_FILE"
+            fi
+            
+            if command -v jq &>/dev/null; then
+                if jq '.' "$CONFIG_FILE" > /dev/null 2>&1; then
+                    log_info "Config file is valid JSON"
+                    
+                    # Check required fields
+                    local errors=0
+                    
+                    if [[ -z "$(jq -r '.redroid.image // empty' "$CONFIG_FILE")" ]]; then
+                        log_warn "Missing: redroid.image"
+                        ((errors++))
+                    fi
+                    
+                    if [[ $errors -eq 0 ]]; then
+                        log_info "All required fields present"
+                    else
+                        log_warn "$errors validation warnings"
+                    fi
+                else
+                    die "Invalid JSON in config file"
+                fi
+            else
+                log_warn "jq not installed, skipping validation"
+            fi
+            ;;
+            
+        env)
+            log_header "Environment Variables"
+            echo ""
+            echo "# Current environment (copy to .env file)"
+            echo ""
+            echo "CLOUD_PHONE_CONFIG=$CONFIG_FILE"
+            echo "CLOUD_PHONE_LOG_DIR=$LOG_DIR"
+            echo "CLOUD_PHONE_LOG_LEVEL=$LOG_LEVEL"
+            echo "SSH_KEY_FILE=$SSH_KEY"
+            echo "SSH_USER=$SSH_USER"
+            echo "ADB_CONNECT=$ADB_CONNECT"
+            echo "API_URL=$API_URL"
+            [[ -n "$VM_HOST" ]] && echo "VM_HOST=$VM_HOST"
+            [[ -n "${COMPARTMENT_ID:-}" ]] && echo "COMPARTMENT_ID=$COMPARTMENT_ID"
+            [[ -n "${SUBNET_ID:-}" ]] && echo "SUBNET_ID=$SUBNET_ID"
+            [[ -n "${AVAILABILITY_DOMAIN:-}" ]] && echo "AVAILABILITY_DOMAIN=$AVAILABILITY_DOMAIN"
+            echo ""
+            ;;
+    esac
+}
+
+config_help() {
+    cat <<EOF
+cloud-phone config - Manage configuration
+
+USAGE:
+    ./cloud-phone config [action]
+
+ACTIONS:
+    show        Show current configuration (default)
+    edit        Open config file in editor
+    init        Create config file from example
+    validate    Validate config file
+    env         Show environment variables
+
+CONFIG LOCATIONS (in order of priority):
+    1. \$CLOUD_PHONE_CONFIG environment variable
+    2. ./config.json (project root)
+    3. ./config/cloud-phone-config.json
+    4. /etc/cloud-phone/config.json
+    5. ./config/cloud-phone-config.example.json (fallback)
+
+CURRENT:
+    Config file: $CONFIG_FILE
+
+EXAMPLES:
+    # Show current config
+    ./cloud-phone config show
+
+    # Create and edit config
+    ./cloud-phone config init
+    ./cloud-phone config edit
+
+    # Export environment
+    ./cloud-phone config env >> .env
+
+    # Validate config
+    ./cloud-phone config validate
 
 EOF
 }
@@ -944,6 +1235,7 @@ main() {
         install)    cmd_install "$@" ;;
         status)     cmd_status "$@" ;;
         logs)       cmd_logs "$@" ;;
+        config)     cmd_config "$@" ;;
         help|--help|-h) show_help ;;
         *) die "Unknown command: $cmd. Run './cloud-phone help' for usage." ;;
     esac

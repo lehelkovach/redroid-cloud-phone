@@ -119,16 +119,31 @@ python3 -m venv /opt/cloud-phone-api/venv
 /opt/cloud-phone-api/venv/bin/pip install --upgrade pip
 /opt/cloud-phone-api/venv/bin/pip install -r /opt/cloud-phone-api/requirements.txt
 
-log_info "[6/7] Installing scripts..."
+log_info "[6/9] Installing scripts..."
 mkdir -p /opt/redroid-scripts
 cp "$SCRIPT_DIR/scripts/"*.sh /opt/redroid-scripts/
 chmod +x /opt/redroid-scripts/*.sh
 
-log_info "[7/7] Installing systemd units..."
+log_info "[7/9] Installing configuration..."
+mkdir -p /etc/cloud-phone
+if [[ ! -f /etc/cloud-phone/config.json ]]; then
+    cp "$SCRIPT_DIR/config/cloud-phone-config.example.json" /etc/cloud-phone/config.json
+    log_info "Created default config at /etc/cloud-phone/config.json"
+fi
+cp "$SCRIPT_DIR/config/cloud-phone-config.schema.json" /etc/cloud-phone/
+
+log_info "[8/9] Setting up logging..."
+mkdir -p /var/log/cloud-phone
+chmod 755 /var/log/cloud-phone
+# Create empty log files
+touch /var/log/cloud-phone/{cloud-phone,redroid,logcat,adb,streaming}.log
+
+log_info "[9/9] Installing systemd units..."
 cp "$SCRIPT_DIR/systemd/nginx-rtmp.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/ffmpeg-bridge.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/control-api.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/redroid-container.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/systemd/log-collector.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/redroid-cloud-phone.target" /etc/systemd/system/
 
 systemctl daemon-reload
@@ -137,6 +152,7 @@ systemctl enable nginx-rtmp.service
 systemctl enable ffmpeg-bridge.service
 systemctl enable control-api.service
 systemctl enable redroid-container.service
+systemctl enable log-collector.service
 systemctl enable redroid-cloud-phone.target
 
 echo ""
@@ -144,11 +160,19 @@ echo "========================================"
 echo "  Installation Complete!"
 echo "========================================"
 echo ""
+echo "Configuration:"
+echo "  Config file:  /etc/cloud-phone/config.json"
+echo "  Log directory: /var/log/cloud-phone/"
+echo ""
 echo "Start everything:"
 echo "  sudo systemctl start redroid-cloud-phone.target"
 echo ""
 echo "Check status:"
 echo "  sudo /opt/redroid-scripts/health-check.sh"
+echo ""
+echo "View logs:"
+echo "  tail -f /var/log/cloud-phone/redroid.log"
+echo "  sudo journalctl -u redroid-container -f"
 echo ""
 echo "VNC (SSH tunnel recommended):"
 echo "  ssh -L 5900:localhost:5900 ubuntu@YOUR_IP -N"

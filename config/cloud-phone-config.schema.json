@@ -1,8 +1,111 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Cloud Phone Configuration",
+  "description": "Configuration schema for Redroid Cloud Phone",
   "type": "object",
   "properties": {
+    "environment": {
+      "type": "object",
+      "description": "Environment variables and paths",
+      "properties": {
+        "CLOUD_PHONE_HOME": { "type": "string", "default": "/opt/cloud-phone", "description": "Installation directory" },
+        "CLOUD_PHONE_CONFIG": { "type": "string", "default": "/etc/cloud-phone/config.json", "description": "Config file path" },
+        "COMPARTMENT_ID": { "type": "string", "description": "OCI compartment OCID" },
+        "SUBNET_ID": { "type": "string", "description": "OCI subnet OCID" },
+        "AVAILABILITY_DOMAIN": { "type": "string", "description": "OCI availability domain" },
+        "SSH_KEY_FILE": { "type": "string", "default": "~/.ssh/redroid_oci", "description": "SSH private key path" },
+        "SSH_USER": { "type": "string", "default": "ubuntu", "description": "SSH user for remote connections" },
+        "ADB_CONNECT": { "type": "string", "default": "127.0.0.1:5555", "description": "ADB connection string" },
+        "API_TOKEN": { "type": "string", "description": "API authentication token" }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "description": "Logging configuration",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "level": { "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], "default": "INFO" },
+        "directory": { "type": "string", "default": "/var/log/cloud-phone" },
+        "max_size_mb": { "type": "integer", "default": 100, "description": "Max log file size before rotation" },
+        "max_files": { "type": "integer", "default": 10, "description": "Number of rotated files to keep" },
+        "files": {
+          "type": "object",
+          "properties": {
+            "main": { "type": "string", "default": "cloud-phone.log" },
+            "redroid": { "type": "string", "default": "redroid.log" },
+            "adb": { "type": "string", "default": "adb.log" },
+            "api": { "type": "string", "default": "api.log" },
+            "streaming": { "type": "string", "default": "streaming.log" }
+          }
+        },
+        "redroid_capture": {
+          "type": "object",
+          "description": "Redroid log capture settings",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "logcat": { "type": "boolean", "default": true, "description": "Capture Android logcat" },
+            "logcat_filter": { "type": "string", "default": "*:W", "description": "Logcat filter expression" },
+            "container_logs": { "type": "boolean", "default": true, "description": "Capture Docker container logs" }
+          }
+        },
+        "remote": {
+          "type": "object",
+          "description": "Remote log streaming/sync",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "method": { "type": "string", "enum": ["ssh", "rsync", "syslog"], "default": "ssh" },
+            "host": { "type": "string", "description": "Remote host IP/hostname" },
+            "port": { "type": "integer", "default": 22 },
+            "user": { "type": "string", "default": "ubuntu" },
+            "ssh_key": { "type": "string", "default": "~/.ssh/redroid_oci" },
+            "remote_log_dir": { "type": "string", "default": "/var/log/cloud-phone" },
+            "sync_interval_seconds": { "type": "integer", "default": 60 },
+            "stream_realtime": { "type": "boolean", "default": false, "description": "Stream logs in realtime via SSH" }
+          }
+        },
+        "format": { "type": "string", "default": "%(asctime)s [%(levelname)s] %(name)s: %(message)s" },
+        "date_format": { "type": "string", "default": "%Y-%m-%d %H:%M:%S" }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Default options for CLI commands",
+      "properties": {
+        "deploy": {
+          "type": "object",
+          "properties": {
+            "skip_tests": { "type": "boolean", "default": false },
+            "skip_gapps": { "type": "boolean", "default": false },
+            "from_golden": { "type": "boolean", "default": false },
+            "timeout_minutes": { "type": "integer", "default": 30 }
+          }
+        },
+        "test": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["all", "unit", "integration", "e2e", "api"], "default": "all" },
+            "verbose": { "type": "boolean", "default": false },
+            "timeout_seconds": { "type": "integer", "default": 300 },
+            "retry_count": { "type": "integer", "default": 2 }
+          }
+        },
+        "tunnel": {
+          "type": "object",
+          "properties": {
+            "ports": {
+              "type": "object",
+              "properties": {
+                "adb": { "type": "integer", "default": 5555 },
+                "vnc": { "type": "integer", "default": 5900 },
+                "api": { "type": "integer", "default": 8080 }
+              }
+            },
+            "keepalive_interval": { "type": "integer", "default": 60 },
+            "auto_reconnect": { "type": "boolean", "default": true }
+          }
+        }
+      }
+    },
     "instance": {
       "type": "object",
       "description": "OCI instance configuration",
@@ -30,6 +133,7 @@
         "vnc_enabled": { "type": "boolean", "default": true },
         "vnc_port": { "type": "integer", "default": 5900 },
         "adb_port": { "type": "integer", "default": 5555 },
+        "data_dir": { "type": "string", "default": "/opt/redroid-data" },
         "gapps": {
           "type": "object",
           "properties": {
@@ -80,6 +184,8 @@
         "enabled": { "type": "boolean", "default": true },
         "host": { "type": "string", "default": "127.0.0.1" },
         "port": { "type": "integer", "default": 8080 },
+        "workers": { "type": "integer", "default": 4 },
+        "timeout": { "type": "integer", "default": 30 },
         "auth": {
           "type": "object",
           "properties": {
@@ -96,6 +202,29 @@
         "method": { "type": "string", "enum": ["vnc", "scrcpy", "webrtc", "none"], "default": "vnc" },
         "headless": { "type": "boolean", "default": false },
         "vnc_password": { "type": "string", "default": "redroid" }
+      }
+    },
+    "streaming": {
+      "type": "object",
+      "description": "RTMP streaming configuration",
+      "properties": {
+        "rtmp": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "port": { "type": "integer", "default": 1935 },
+            "stream_key": { "type": "string", "default": "cam" },
+            "url": { "type": "string", "default": "rtmp://127.0.0.1/live/cam" }
+          }
+        },
+        "ffmpeg_bridge": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "video_device": { "type": "string", "default": "/dev/video42" },
+            "audio_device": { "type": "string", "default": "hw:Loopback,1,0" }
+          }
+        }
       }
     }
   }
