@@ -21,7 +21,7 @@
       "type": "object",
       "description": "Redroid container configuration",
       "properties": {
-        "image": { "type": "string", "default": "redroid/redroid:latest" },
+        "image": { "type": "string", "default": "redroid/redroid:11.0.0-latest" },
         "width": { "type": "integer", "default": 1280 },
         "height": { "type": "integer", "default": 720 },
         "fps": { "type": "integer", "default": 30 },

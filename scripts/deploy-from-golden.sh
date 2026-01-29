@@ -15,6 +15,11 @@
 #   --config FILE         Post-deployment config file
 #   --proxy URL           Set proxy after deployment
 #   --gps LAT,LON         Set GPS after deployment
+#   --wait-check          Wait for instance and run health checks
+#   --run-tests           Run API tests after deploy (requires tests/test_agent_api.py)
+#   --remote-cmd CMD      Run a remote command via SSH after deploy
+#   --remote-cmd-log FILE Remote log file path (default: /tmp/cloud-phone-remote-cmd.log)
+#   --remote-cmd-bg       Run remote command in background and return
 
 set -euo pipefail
 
@@ -28,12 +33,22 @@ MEMORY_GB=8
 CONFIG_FILE=""
 PROXY_URL=""
 GPS_COORDS=""
+WAIT_CHECK=false
+RUN_TESTS=false
+REMOTE_CMD=""
+REMOTE_CMD_LOG="/tmp/cloud-phone-remote-cmd.log"
+REMOTE_CMD_BG=false
 
 # OCI settings
 COMPARTMENT_ID="${COMPARTMENT_ID:-}"
 SUBNET_ID="${SUBNET_ID:-}"
 AVAILABILITY_DOMAIN="${AVAILABILITY_DOMAIN:-}"
-SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/waydroid_oci.pub}"
+SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/redroid_oci.pub}"
+SECURITY_TOKEN_FILE="${SECURITY_TOKEN_FILE:-$HOME/.oci/sessions/DEFAULT/token}"
+OCI_AUTH_ARGS=()
+if [[ -f "$SECURITY_TOKEN_FILE" ]]; then
+    OCI_AUTH_ARGS+=(--auth security_token)
+fi
 
 # Colors
 GREEN='\033[0;32m'
@@ -60,6 +75,11 @@ Options:
   --config FILE         Post-deployment config JSON file
   --proxy URL           Proxy URL (e.g., socks5://host:port)
   --gps LAT,LON         GPS coordinates (e.g., 37.7749,-122.4194)
+  --wait-check          Wait for instance and run health checks
+  --run-tests           Run API tests after deploy
+  --remote-cmd CMD      Run a remote command via SSH after deploy
+  --remote-cmd-log FILE Remote log file path (default: /tmp/cloud-phone-remote-cmd.log)
+  --remote-cmd-bg       Run remote command in background and return
   --list-images         List available golden images
   --help                Show this help
 
@@ -89,7 +109,7 @@ EOF
 
 list_golden_images() {
     log_info "Available golden images:"
-    oci compute image list \
+    oci compute image list "${OCI_AUTH_ARGS[@]}" \
         --compartment-id "$COMPARTMENT_ID" \
         --query 'data[?starts_with("display-name", `cloud-phone`)].[display-name,id,"time-created"]' \
         --output table
@@ -106,6 +126,11 @@ parse_args() {
             --config) CONFIG_FILE="$2"; shift 2 ;;
             --proxy) PROXY_URL="$2"; shift 2 ;;
             --gps) GPS_COORDS="$2"; shift 2 ;;
+            --wait-check) WAIT_CHECK=true; shift ;;
+            --run-tests) RUN_TESTS=true; shift ;;
+            --remote-cmd) REMOTE_CMD="$2"; shift 2 ;;
+            --remote-cmd-log) REMOTE_CMD_LOG="$2"; shift 2 ;;
+            --remote-cmd-bg) REMOTE_CMD_BG=true; shift ;;
             --list-images) list_golden_images ;;
             --help|-h) usage ;;
             *) log_error "Unknown option: $1"; usage ;;
@@ -140,8 +165,90 @@ validate() {
         log_error "SSH key not found: $SSH_KEY_FILE"
         errors=$((errors + 1))
     fi
+
+    if [[ "$OCPUS" -lt 1 ]] || [[ "$OCPUS" -gt 4 ]]; then
+        log_error "OCPUs must be 1-4 (Always Free tier limit)"
+        errors=$((errors + 1))
+    fi
+
+    if [[ "$MEMORY_GB" -lt 1 ]] || [[ "$MEMORY_GB" -gt 24 ]]; then
+        log_error "Memory must be 1-24 GB (Always Free tier limit)"
+        errors=$((errors + 1))
+    fi
     
     return $errors
+}
+
+read_proxy_from_config() {
+    local file="$1"
+    if [[ -z "$file" ]] || [[ ! -f "$file" ]]; then
+        return
+    fi
+
+    local proxy_url=""
+    proxy_url=$(python3 - <<'PY' "$file"
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r") as f:
+    data = json.load(f)
+proxy = data.get("network", {}).get("proxy", {})
+if proxy.get("enabled") is True:
+    ptype = proxy.get("type", "socks5")
+    host = proxy.get("host", "")
+    port = proxy.get("port", "")
+    if host and port:
+        print(f"{ptype}://{host}:{port}")
+PY
+)
+    if [[ -n "$proxy_url" ]]; then
+        PROXY_URL="$proxy_url"
+        log_info "Proxy loaded from config: $PROXY_URL"
+    fi
+}
+
+verify_proxy_live() {
+    local public_ip="$1"
+    local proxy_url="$2"
+    local ssh_cmd="$3"
+    local ssh_key_private="$4"
+
+    if [[ -z "$proxy_url" ]]; then
+        return
+    fi
+
+    local proxy_type="${proxy_url%%://*}"
+    local proxy_rest="${proxy_url#*://}"
+    local proxy_hostport="${proxy_rest#*@}"
+    local proxy_host="${proxy_hostport%%:*}"
+    local proxy_port="${proxy_hostport##*:}"
+
+    log_info "Verifying proxy configuration..."
+    if [[ -n "$proxy_host" && -n "$proxy_port" ]]; then
+        $ssh_cmd ubuntu@$public_ip \
+            "timeout 5 bash -c 'echo > /dev/tcp/$proxy_host/$proxy_port' 2>/dev/null" \
+            && log_info "Proxy host reachable: $proxy_host:$proxy_port" \
+            || log_warn "Proxy host not reachable: $proxy_host:$proxy_port"
+    fi
+
+    $ssh_cmd ubuntu@$public_ip "curl -s http://localhost:8080/proxy" >/tmp/proxy-status.json 2>/dev/null || true
+    if [[ -s /tmp/proxy-status.json ]]; then
+        log_info "API proxy status:"
+        cat /tmp/proxy-status.json | sed 's/^/  /'
+    else
+        log_warn "API proxy status not reachable on localhost:8080"
+    fi
+
+    $ssh_cmd ubuntu@$public_ip "sudo /opt/redroid-scripts/proxy-control.sh status" >/tmp/proxy-service.txt 2>/dev/null || true
+    if [[ -s /tmp/proxy-service.txt ]]; then
+        log_info "Proxy service status:"
+        head -12 /tmp/proxy-service.txt | sed 's/^/  /'
+    else
+        log_warn "Proxy service status not available"
+    fi
+
+    rm -f /tmp/proxy-status.json /tmp/proxy-service.txt 2>/dev/null || true
 }
 
 deploy() {
@@ -152,7 +259,7 @@ deploy() {
     echo ""
     
     # Create instance
-    INSTANCE_OCID=$(oci compute instance launch \
+    INSTANCE_OCID=$(oci compute instance launch "${OCI_AUTH_ARGS[@]}" \
         --compartment-id "$COMPARTMENT_ID" \
         --availability-domain "$AVAILABILITY_DOMAIN" \
         --shape "VM.Standard.A1.Flex" \
@@ -175,7 +282,7 @@ deploy() {
     sleep 5
     PUBLIC_IP=""
     for i in {1..30}; do
-        PUBLIC_IP=$(oci compute instance list-vnics \
+        PUBLIC_IP=$(oci compute instance list-vnics "${OCI_AUTH_ARGS[@]}" \
             --instance-id "$INSTANCE_OCID" \
             --query 'data[0]."public-ip"' \
             --raw-output 2>/dev/null)
@@ -221,6 +328,49 @@ STARTUP_EOF
         $SSH_CMD ubuntu@$PUBLIC_IP \
             'sudo cp /tmp/config.json /etc/cloud-phone/config.json'
     fi
+
+    if [[ -z "$PROXY_URL" ]] && [[ -n "$CONFIG_FILE" ]] && [[ -f "$CONFIG_FILE" ]]; then
+        read_proxy_from_config "$CONFIG_FILE"
+    fi
+
+    if [[ "$WAIT_CHECK" == "true" ]]; then
+        log_info "Running health checks..."
+        $SSH_CMD ubuntu@$PUBLIC_IP 'sudo /opt/redroid-scripts/health-check.sh' || true
+        curl -s --max-time 5 "http://$PUBLIC_IP:8080/health" || true
+    fi
+
+    if [[ "$RUN_TESTS" == "true" ]]; then
+        if [[ -f "$SCRIPT_DIR/../tests/test_connectivity.py" ]]; then
+            log_info "Running connectivity tests..."
+            PUBLIC_IP="$PUBLIC_IP" python3 "$SCRIPT_DIR/../tests/test_connectivity.py" || true
+        else
+            log_warn "tests/test_connectivity.py not found; skipping connectivity tests"
+        fi
+        if [[ -f "$SCRIPT_DIR/../tests/test_agent_api.py" ]]; then
+            log_info "Running API tests..."
+            ADB_CONNECT="$PUBLIC_IP:5555" API_URL="http://$PUBLIC_IP:8080" \
+                python3 "$SCRIPT_DIR/../tests/test_agent_api.py" || true
+        else
+            log_warn "tests/test_agent_api.py not found; skipping tests"
+        fi
+        if [[ -f "$SCRIPT_DIR/../scripts/test-redroid-full.sh" ]]; then
+            log_info "Running full test suite..."
+            PROXY_URL="$PROXY_URL" "$SCRIPT_DIR/../scripts/test-redroid-full.sh" "$PUBLIC_IP" || true
+        else
+            log_warn "scripts/test-redroid-full.sh not found; skipping full tests"
+        fi
+    fi
+
+    if [[ -n "$REMOTE_CMD" ]]; then
+        log_info "Running remote command..."
+        if [[ "$REMOTE_CMD_BG" == "true" ]]; then
+            $SSH_CMD ubuntu@$PUBLIC_IP "nohup bash -lc $(printf %q "$REMOTE_CMD") > '$REMOTE_CMD_LOG' 2>&1 &"
+            log_info "Remote command started in background"
+            log_info "Log: ssh -i $SSH_KEY_PRIVATE ubuntu@$PUBLIC_IP 'tail -f $REMOTE_CMD_LOG'"
+        else
+            $SSH_CMD ubuntu@$PUBLIC_IP "bash -lc $(printf %q "$REMOTE_CMD") | tee '$REMOTE_CMD_LOG'"
+        fi
+    fi
     
     # Configure proxy
     if [[ -n "$PROXY_URL" ]]; then
@@ -231,7 +381,7 @@ STARTUP_EOF
         local port="${hostport##*:}"
         
         $SSH_CMD ubuntu@$PUBLIC_IP \
-            "sudo /opt/waydroid-scripts/proxy-control.sh enable $proxy_type $host $port"
+            "sudo /opt/redroid-scripts/proxy-control.sh enable $proxy_type $host $port"
     fi
     
     # Configure GPS
@@ -248,6 +398,8 @@ curl -s -X POST http://localhost:8080/location \
     -d '{"enabled":true,"latitude":$lat,"longitude":$lon}'
 GPS_EOF
     fi
+
+    verify_proxy_live "$PUBLIC_IP" "$PROXY_URL" "$SSH_CMD" "$SSH_KEY_PRIVATE"
     
     # Verify
     log_info "Verifying deployment..."

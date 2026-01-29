@@ -1,6 +1,6 @@
 #!/bin/bash
 # setup-networking.sh
-# Creates a VCN and subnet for waydroid instances
+# Creates a VCN and subnet for redroid instances
 #
 # Usage: ./setup-networking.sh [vcn-name] [subnet-name]
 
@@ -13,8 +13,8 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-VCN_NAME="${1:-waydroid-vcn}"
-SUBNET_NAME="${2:-waydroid-subnet}"
+VCN_NAME="${1:-redroid-vcn}"
+SUBNET_NAME="${2:-redroid-subnet}"
 
 # Load configuration (only get compartment, don't validate image)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +52,7 @@ else
         --compartment-id "$COMPARTMENT_ID" \
         --display-name "$VCN_NAME" \
         --cidr-block "10.0.0.0/16" \
-        --dns-label "waydroid" \
+        --dns-label "redroid" \
         --wait-for-state AVAILABLE \
         --query 'data.id' \
         --raw-output)
@@ -139,7 +139,7 @@ else
         --display-name "$SUBNET_NAME" \
         --cidr-block "10.0.1.0/24" \
         --availability-domain "$AD" \
-        --dns-label "waydroid" \
+        --dns-label "redroid" \
         --wait-for-state AVAILABLE \
         --query 'data.id' \
         --raw-output)

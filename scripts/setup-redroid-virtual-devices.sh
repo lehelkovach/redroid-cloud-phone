@@ -5,7 +5,7 @@
 set -euo pipefail
 
 INSTANCE_IP="${1:-}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 
 if [[ -z "$INSTANCE_IP" ]]; then
     echo "Usage: $0 <INSTANCE_IP>"
@@ -109,7 +109,7 @@ if [ -e /dev/video42 ] && aplay -l 2>/dev/null | grep -q Loopback; then
       -p 5555:5555 \
       -p 5900:5900 \
       -v /opt/redroid-data:/data \
-      redroid/redroid:latest \
+      redroid/redroid:11.0.0-latest \
       androidboot.redroid_gpu_mode=guest \
       androidboot.redroid_width=1280 \
       androidboot.redroid_height=720 \
@@ -127,7 +127,7 @@ else
       -p 5555:5555 \
       -p 5900:5900 \
       -v /opt/redroid-data:/data \
-      redroid/redroid:latest \
+      redroid/redroid:11.0.0-latest \
       androidboot.redroid_gpu_mode=guest \
       androidboot.redroid_width=1280 \
       androidboot.redroid_height=720 \

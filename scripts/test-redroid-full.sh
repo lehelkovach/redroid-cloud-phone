@@ -5,7 +5,8 @@
 set -euo pipefail
 
 INSTANCE_IP="${1:-137.131.52.69}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+PROXY_URL="${PROXY_URL:-}"
 
 # Colors
 GREEN='\033[0;32m'
@@ -47,7 +48,7 @@ echo "Instance: $INSTANCE_IP"
 echo ""
 
 # Test 1: Instance Connectivity
-echo -e "${BLUE}[1/10] Instance Connectivity${NC}"
+echo -e "${BLUE}[1/11] Instance Connectivity${NC}"
 if timeout 5 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@$INSTANCE_IP 'echo "connected"' &>/dev/null; then
     test_pass "SSH connection to instance"
 else
@@ -58,7 +59,7 @@ else
 fi
 
 # Test 2: Docker Status
-echo -e "${BLUE}[2/10] Docker Status${NC}"
+echo -e "${BLUE}[2/11] Docker Status${NC}"
 DOCKER_STATUS=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP 'sudo systemctl is-active docker 2>&1' || echo "inactive")
 if [[ "$DOCKER_STATUS" == "active" ]]; then
     test_pass "Docker service is running"
@@ -74,7 +75,7 @@ else
 fi
 
 # Test 3: Redroid Container Status
-echo -e "${BLUE}[3/10] Redroid Container Status${NC}"
+echo -e "${BLUE}[3/11] Redroid Container Status${NC}"
 CONTAINER_STATUS=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP 'sudo docker ps -a --format "{{.Names}}:{{.Status}}" | grep redroid || echo "not found"')
 if echo "$CONTAINER_STATUS" | grep -q "Up\|running"; then
     test_pass "Redroid container is running"
@@ -91,7 +92,7 @@ else
 fi
 
 # Test 4: Container Ports
-echo -e "${BLUE}[4/10] Container Port Mappings${NC}"
+echo -e "${BLUE}[4/11] Container Port Mappings${NC}"
 PORTS=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP 'sudo docker port redroid 2>&1' || echo "")
 if echo "$PORTS" | grep -q "5555"; then
     test_pass "ADB port 5555 mapped"
@@ -108,7 +109,7 @@ else
 fi
 
 # Test 5: Container Logs Health
-echo -e "${BLUE}[5/10] Container Logs Health${NC}"
+echo -e "${BLUE}[5/11] Container Logs Health${NC}"
 LOG_ERRORS=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP 'sudo docker logs redroid 2>&1 | tail -50 | grep -i "error\|fatal\|panic\|crash" | head -5' || echo "")
 if [[ -z "$LOG_ERRORS" ]]; then
     test_pass "No critical errors in container logs"
@@ -124,7 +125,7 @@ if [[ -n "$LOG_LAST" ]]; then
 fi
 
 # Test 6: ADB Connectivity
-echo -e "${BLUE}[6/10] ADB Connectivity${NC}"
+echo -e "${BLUE}[6/11] ADB Connectivity${NC}"
 ADB_AVAILABLE=true
 if ! command -v adb &> /dev/null; then
     echo "  ADB not installed. Attempting install..."
@@ -163,7 +164,7 @@ if [ "$ADB_AVAILABLE" = true ]; then
 fi
 
 # Test 7: Android System Information
-echo -e "${BLUE}[7/10] Android System Information${NC}"
+echo -e "${BLUE}[7/11] Android System Information${NC}"
 if [ "$ADB_AVAILABLE" = true ]; then
     ANDROID_VERSION=$(adb shell getprop ro.build.version.release 2>&1 | head -1 || echo "")
     if [[ -n "$ANDROID_VERSION" ]] && [[ "$ANDROID_VERSION" =~ ^[0-9] ]]; then
@@ -197,8 +198,63 @@ else
     test_warn "Android system info" "Skipped (adb not available locally)"
 fi
 
-# Test 8: VNC Port Accessibility
-echo -e "${BLUE}[8/10] VNC Port Accessibility${NC}"
+# Test 8: Proxy Configuration (Live)
+echo -e "${BLUE}[8/11] Proxy Configuration (Live)${NC}"
+if [[ -n "$PROXY_URL" ]]; then
+    proxy_type="${PROXY_URL%%://*}"
+    proxy_rest="${PROXY_URL#*://}"
+    proxy_hostport="${proxy_rest#*@}"
+    proxy_host="${proxy_hostport%%:*}"
+    proxy_port="${proxy_hostport##*:}"
+
+    if [[ -n "$proxy_host" && -n "$proxy_port" ]]; then
+        PROXY_REACH=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP \
+          "timeout 5 bash -c 'echo > /dev/tcp/$proxy_host/$proxy_port' 2>/dev/null && echo ok || echo fail" || echo fail)
+        if [[ "$PROXY_REACH" == "ok" ]]; then
+            test_pass "Proxy host reachable ($proxy_host:$proxy_port)"
+        else
+            test_fail "Proxy host reachability" "Cannot reach $proxy_host:$proxy_port from VM"
+        fi
+    fi
+
+    PROXY_JSON=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP \
+      "curl -s http://localhost:8080/proxy" 2>/dev/null || echo "")
+    if [[ -n "$PROXY_JSON" ]]; then
+        if python3 - <<'PY' "$PROXY_JSON" "$proxy_type" "$proxy_host" "$proxy_port"; then
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+ptype, host, port = sys.argv[2], sys.argv[3], sys.argv[4]
+enabled = data.get("enabled", False)
+ok = enabled and data.get("type") == ptype and data.get("host") == host and str(data.get("port")) == str(port)
+if ok:
+    sys.exit(0)
+sys.exit(1)
+PY
+        then
+            test_pass "Control API proxy config matches $PROXY_URL"
+        else
+            test_fail "Control API proxy config" "Expected $PROXY_URL, got: $PROXY_JSON"
+        fi
+    else
+        test_warn "Control API proxy config" "API not reachable on localhost:8080"
+    fi
+
+    PROXY_STATUS=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP \
+      "sudo /opt/redroid-scripts/proxy-control.sh status" 2>/dev/null || echo "")
+    if echo "$PROXY_STATUS" | grep -qi "tun2socks:\|redsocks:"; then
+        test_pass "Proxy service status retrieved"
+        echo "$PROXY_STATUS" | sed 's/^/      /' | head -12
+    else
+        test_warn "Proxy service status" "Could not read proxy status"
+    fi
+else
+    test_warn "Proxy configuration" "PROXY_URL not set; skipping live proxy checks"
+fi
+
+# Test 9: VNC Port Accessibility
+echo -e "${BLUE}[9/11] VNC Port Accessibility${NC}"
 VNC_PORT_CHECK=$(timeout 5 bash -c "echo > /dev/tcp/$INSTANCE_IP/5900" 2>&1 || echo "failed")
 if [[ "$VNC_PORT_CHECK" != "failed" ]]; then
     test_pass "VNC port 5900 is accessible"
@@ -215,8 +271,8 @@ else
     test_fail "VNC port 5900" "Not listening on host"
 fi
 
-# Test 9: Container Resource Usage
-echo -e "${BLUE}[9/10] Container Resource Usage${NC}"
+# Test 10: Container Resource Usage
+echo -e "${BLUE}[10/11] Container Resource Usage${NC}"
 CONTAINER_STATS=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP 'sudo docker stats redroid --no-stream --format "CPU: {{.CPUPerc}} | Memory: {{.MemUsage}}" 2>&1' || echo "")
 if [[ -n "$CONTAINER_STATS" ]]; then
     test_pass "Container resource stats retrieved"
@@ -225,8 +281,8 @@ else
     test_warn "Container stats" "Could not retrieve"
 fi
 
-# Test 10: Virtual Device Support (if available)
-echo -e "${BLUE}[10/10] Virtual Device Support${NC}"
+# Test 11: Virtual Device Support (if available)
+echo -e "${BLUE}[11/11] Virtual Device Support${NC}"
 V4L2_MODULE=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ubuntu@$INSTANCE_IP 'lsmod | grep v4l2loopback || echo "not loaded"')
 if [[ "$V4L2_MODULE" != "not loaded" ]]; then
     test_pass "v4l2loopback module loaded on host"

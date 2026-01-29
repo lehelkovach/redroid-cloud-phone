@@ -17,15 +17,15 @@ echo ""
 mkdir -p ~/.config/systemd/user
 
 # Create service file
-cat > ~/.config/systemd/user/waydroid-tunnel.service << EOF
+cat > ~/.config/systemd/user/redroid-tunnel.service << EOF
 [Unit]
-Description=SSH Tunnel for Waydroid VNC and API
+Description=SSH Tunnel for Redroid VNC and API
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ssh -i $HOME/.ssh/waydroid_oci -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -N -L 5901:localhost:5901 -L 8080:localhost:8080 ubuntu@${INSTANCE_IP}
+ExecStart=/usr/bin/ssh -i $HOME/.ssh/redroid_oci -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -N -L 5900:localhost:5900 -L 8080:localhost:8080 ubuntu@${INSTANCE_IP}
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -38,17 +38,17 @@ EOF
 # Reload systemd
 systemctl --user daemon-reload
 
-echo "Service created: ~/.config/systemd/user/waydroid-tunnel.service"
+echo "Service created: ~/.config/systemd/user/redroid-tunnel.service"
 echo ""
 echo "To enable (start on login):"
-echo "  systemctl --user enable waydroid-tunnel.service"
+echo "  systemctl --user enable redroid-tunnel.service"
 echo ""
 echo "To start now:"
-echo "  systemctl --user start waydroid-tunnel.service"
+echo "  systemctl --user start redroid-tunnel.service"
 echo ""
 echo "To check status:"
-echo "  systemctl --user status waydroid-tunnel.service"
+echo "  systemctl --user status redroid-tunnel.service"
 echo ""
 echo "To view logs:"
-echo "  journalctl --user -u waydroid-tunnel.service -f"
+echo "  journalctl --user -u redroid-tunnel.service -f"
 

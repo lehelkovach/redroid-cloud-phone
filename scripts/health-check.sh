@@ -1,5 +1,5 @@
 #!/bin/bash
-# Health check script for Cloud Phone (Redroid or Waydroid)
+# Health check script for Cloud Phone (Redroid or Redroid)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -32,15 +32,7 @@ check_device() {
     fi
 }
 
-MODE="unknown"
-if have_cmd docker; then
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "redroid"; then
-        MODE="redroid"
-    fi
-fi
-if [ "$MODE" = "unknown" ] && have_cmd waydroid; then
-    MODE="waydroid"
-fi
+MODE="redroid"
 
 echo "========================================"
 echo "  Cloud Phone Health Check"
@@ -102,21 +94,12 @@ echo ""
 
 # Services
 echo "Systemd Services:"
-if [ "$MODE" = "redroid" ]; then
-    check_service "docker"
-    echo "  Redroid container:"
-    if docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null | grep -q "^redroid:"; then
-        docker ps --format '    {{.Names}}  {{.Status}}  {{.Ports}}' | grep "^redroid" || true
-    else
-        echo -e "    ${RED}✗${NC} redroid (not running)"
-    fi
+check_service "docker"
+echo "  Redroid container:"
+if docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null | grep -q "^redroid:"; then
+    docker ps --format '    {{.Names}}  {{.Status}}  {{.Ports}}' | grep "^redroid" || true
 else
-    check_service "nginx-rtmp"
-    check_service "xvnc"
-    check_service "waydroid-container"
-    check_service "waydroid-session"
-    check_service "ffmpeg-bridge"
-    check_service "control-api"
+    echo -e "    ${RED}✗${NC} redroid (not running)"
 fi
 
 echo ""
@@ -129,46 +112,27 @@ else
     echo -e "  ${YELLOW}○${NC} RTMP (1935) - not listening"
 fi
 
-if [ "$MODE" = "redroid" ]; then
-    if ss -tlnp | grep -q ":5555 "; then
-        echo -e "  ${GREEN}✓${NC} ADB (5555)"
-    else
-        echo -e "  ${YELLOW}○${NC} ADB (5555) - not listening"
-    fi
-
-    if ss -tlnp | grep -q ":5900 "; then
-        echo -e "  ${GREEN}✓${NC} VNC (5900)"
-    else
-        echo -e "  ${YELLOW}○${NC} VNC (5900) - not listening"
-    fi
+if ss -tlnp | grep -q ":5555 "; then
+    echo -e "  ${GREEN}✓${NC} ADB (5555)"
 else
-    if ss -tlnp | grep -q ":5901 "; then
-        echo -e "  ${GREEN}✓${NC} VNC (5901)"
-    else
-        echo -e "  ${YELLOW}○${NC} VNC (5901) - not listening"
-    fi
+    echo -e "  ${YELLOW}○${NC} ADB (5555) - not listening"
+fi
 
-    if ss -tlnp | grep -q ":8080 "; then
-        echo -e "  ${GREEN}✓${NC} API (8080)"
-    else
-        echo -e "  ${YELLOW}○${NC} API (8080) - not listening"
-    fi
+if ss -tlnp | grep -q ":5900 "; then
+    echo -e "  ${GREEN}✓${NC} VNC (5900)"
+else
+    echo -e "  ${YELLOW}○${NC} VNC (5900) - not listening"
+fi
+
+if ss -tlnp | grep -q ":8080 "; then
+    echo -e "  ${GREEN}✓${NC} API (8080)"
+else
+    echo -e "  ${YELLOW}○${NC} API (8080) - not listening"
 fi
 
 echo ""
 
-# Waydroid status
-if [ "$MODE" = "waydroid" ]; then
-    echo "Waydroid Status:"
-    if have_cmd waydroid; then
-        waydroid status 2>/dev/null | sed 's/^/  /'
-    else
-        echo -e "  ${RED}✗${NC} waydroid not installed"
-    fi
-    echo ""
-fi
-
-echo ""
+# Redroid status is covered by Docker/container checks above
 
 # ADB status
 echo "ADB Devices:"

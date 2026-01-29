@@ -1,8 +1,8 @@
 [Unit]
 Description=Cloud Phone Control API Server (ADB wrapper)
 Documentation=https://github.com/lehelkovach/redroid-cloud-phone
-After=network.target docker.service waydroid-session.service
-Wants=docker.service waydroid-session.service
+After=network.target docker.service redroid-container.service
+Wants=docker.service redroid-container.service
 
 [Service]
 Type=simple
@@ -21,5 +21,4 @@ Environment=API_PORT=8080
 Environment=ADB_CONNECT=127.0.0.1:5555
 
 [Install]
-WantedBy=waydroid-cloud-phone.target
 WantedBy=redroid-cloud-phone.target

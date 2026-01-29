@@ -140,7 +140,7 @@ locals {
 
   proxy_config = var.proxy_enabled ? <<-EOF
     # Configure proxy
-    /opt/waydroid-scripts/proxy-control.sh enable ${var.proxy_type} ${var.proxy_host} ${var.proxy_port} ${var.proxy_username} ${var.proxy_password}
+    /opt/redroid-scripts/proxy-control.sh enable ${var.proxy_type} ${var.proxy_host} ${var.proxy_port} ${var.proxy_username} ${var.proxy_password}
   EOF : ""
 
   gps_config = var.gps_enabled ? <<-EOF

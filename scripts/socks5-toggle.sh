@@ -11,7 +11,7 @@ SOCKS5_USER="${4:-}"
 SOCKS5_PASS="${5:-}"
 
 CONFIG_FILE="/etc/tun2socks.env"
-ROUTING_SCRIPT="/opt/waydroid-scripts/socks5-routing.sh"
+ROUTING_SCRIPT="/opt/redroid-scripts/socks5-routing.sh"
 
 usage() {
     echo "Usage: $0 <command> [options]"

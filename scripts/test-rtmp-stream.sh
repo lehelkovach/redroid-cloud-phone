@@ -175,5 +175,5 @@ echo "RTMP Pipeline Test Passed!"
 echo "==========================================${NC}"
 echo ""
 echo "The RTMP -> Virtual Camera pipeline is working."
-echo "You can now use /dev/video42 as a camera in Waydroid."
+echo "You can now use /dev/video42 as a camera in Redroid."
 

@@ -28,7 +28,7 @@ INSTANCE_NAME="cloud-phone-$(date +%Y%m%d-%H%M%S)"
 OCPUS=2
 MEMORY_GB=8
 OS_VERSION="20.04"
-REDROID_IMAGE="redroid/redroid:latest"
+REDROID_IMAGE="redroid/redroid:11.0.0-latest"
 REDROID_WIDTH=1280
 REDROID_HEIGHT=720
 REDROID_FPS=30
@@ -82,7 +82,7 @@ Instance Options:
   --os-version VER      Ubuntu version: 20.04 or 22.04 (default: 20.04)
 
 Redroid Options:
-  --image IMAGE         Docker image (default: redroid/redroid:latest)
+  --image IMAGE         Docker image (default: redroid/redroid:11.0.0-latest)
   --width W             Screen width (default: 1280)
   --height H            Screen height (default: 720)
   --fps N               Frames per second (default: 30)
@@ -500,7 +500,7 @@ EOF2
 # Install GApps if enabled
 if [ "$GAPPS_ENABLED" = "true" ]; then
     echo "Installing Google Play Store (GApps $GAPPS_VARIANT)..."
-    sudo /opt/waydroid-scripts/install-gapps.sh "$GAPPS_VARIANT" || echo "GApps installation may require manual setup"
+    sudo /opt/redroid-scripts/install-gapps.sh "$GAPPS_VARIANT" || echo "GApps installation may require manual setup"
 fi
 
 # Start services
@@ -514,7 +514,7 @@ sleep 30
 # Configure proxy if enabled
 if [ "$PROXY_ENABLED" = "true" ]; then
     echo "Configuring proxy..."
-    sudo /opt/waydroid-scripts/proxy-control.sh enable "$PROXY_TYPE" "$PROXY_HOST" "$PROXY_PORT" "$PROXY_USER" "$PROXY_PASS" || true
+    sudo /opt/redroid-scripts/proxy-control.sh enable "$PROXY_TYPE" "$PROXY_HOST" "$PROXY_PORT" "$PROXY_USER" "$PROXY_PASS" || true
 fi
 
 # Configure GPS if enabled
@@ -547,7 +547,7 @@ ENDSSH
     echo "        curl http://localhost:8080/health"
     echo ""
     echo "Health Check:"
-    echo "  ssh -i $ssh_key ubuntu@$public_ip 'sudo /opt/waydroid-scripts/health-check.sh'"
+    echo "  ssh -i $ssh_key ubuntu@$public_ip 'sudo /opt/redroid-scripts/health-check.sh'"
     echo ""
     
     # Save instance info

@@ -17,7 +17,7 @@ set -euo pipefail
 INSTANCE_IP="${1:-}"
 IMAGE_NAME="${2:-cloud-phone-golden-$(date +%Y%m%d)}"
 
-SSH_KEY="${SSH_KEY_FILE:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY_FILE:-$HOME/.ssh/redroid_oci}"
 COMPARTMENT_ID="${COMPARTMENT_ID:-}"
 
 # Colors
@@ -43,7 +43,7 @@ Arguments:
   image-name      Name for the golden image (default: cloud-phone-golden-YYYYMMDD)
 
 Environment Variables:
-  SSH_KEY_FILE    Path to SSH private key (default: ~/.ssh/waydroid_oci)
+  SSH_KEY_FILE    Path to SSH private key (default: ~/.ssh/redroid_oci)
   COMPARTMENT_ID  OCI compartment ID for the image
 
 Examples:

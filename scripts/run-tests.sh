@@ -17,7 +17,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Configuration
 API_URL="${API_URL:-http://localhost:8080}"
 INSTANCE_IP="${INSTANCE_IP:-}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 LOG_DIR="${LOG_DIR:-$PROJECT_ROOT/test-logs}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 TEST_RUN_ID="test-run-$TIMESTAMP"

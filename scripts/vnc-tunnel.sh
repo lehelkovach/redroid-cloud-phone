@@ -11,10 +11,10 @@
 set -euo pipefail
 
 INSTANCE_IP="${2:-137.131.52.69}"
-SSH_KEY="${HOME}/.ssh/waydroid_oci"
+SSH_KEY="${HOME}/.ssh/redroid_oci"
 SSH_USER="ubuntu"
-PID_FILE="${HOME}/.waydroid-tunnel.pid"
-LOG_FILE="${HOME}/.waydroid-tunnel.log"
+PID_FILE="${HOME}/.redroid-tunnel.pid"
+LOG_FILE="${HOME}/.redroid-tunnel.log"
 
 start_tunnel() {
     if [ -f "$PID_FILE" ]; then
@@ -34,7 +34,7 @@ start_tunnel() {
         -o ServerAliveCountMax=3 \
         -o ExitOnForwardFailure=yes \
         -f -N \
-        -L 5901:localhost:5901 \
+        -L 5900:localhost:5900 \
         -L 8080:localhost:8080 \
         "$SSH_USER@$INSTANCE_IP" \
         > "$LOG_FILE" 2>&1
@@ -42,12 +42,12 @@ start_tunnel() {
     sleep 1
     
     # Find the PID
-    PID=$(ps aux | grep "ssh.*5901.*$INSTANCE_IP" | grep -v grep | awk '{print $2}' | head -1)
+    PID=$(ps aux | grep "ssh.*5900.*$INSTANCE_IP" | grep -v grep | awk '{print $2}' | head -1)
     
     if [ -n "$PID" ]; then
         echo "$PID" > "$PID_FILE"
         echo "SSH tunnel started (PID: $PID)"
-        echo "VNC: localhost:5901"
+        echo "VNC: localhost:5900"
         echo "API: localhost:8080"
         return 0
     else
@@ -59,7 +59,7 @@ start_tunnel() {
 stop_tunnel() {
     if [ ! -f "$PID_FILE" ]; then
         echo "No tunnel PID file found. Trying to find and kill tunnel..."
-        pkill -f "ssh.*5901.*$INSTANCE_IP" || echo "No tunnel process found"
+        pkill -f "ssh.*5900.*$INSTANCE_IP" || echo "No tunnel process found"
         return 0
     fi
     

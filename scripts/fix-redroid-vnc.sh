@@ -4,7 +4,7 @@
 set -euo pipefail
 
 INSTANCE_IP="${1:-137.131.52.69}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 
 echo "=========================================="
 echo "  Fix Redroid VNC"
@@ -27,7 +27,7 @@ docker run -itd \
   -p 5555:5555 \
   -p 5900:5900 \
   -v /opt/redroid-data:/data \
-  redroid/redroid:latest \
+  redroid/redroid:11.0.0-latest \
   androidboot.redroid_gpu_mode=guest \
   androidboot.redroid_width=1280 \
   androidboot.redroid_height=720 \

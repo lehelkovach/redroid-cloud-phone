@@ -1,9 +1,9 @@
 #!/bin/bash
 # create-instance.sh
-# Creates a new OCI instance for waydroid deployment
+# Creates a new OCI instance for redroid deployment
 #
 # Usage: ./create-instance.sh [instance-name]
-# Example: ./create-instance.sh waydroid-test-1
+# Example: ./create-instance.sh redroid-test-1
 
 set -euo pipefail
 
@@ -14,7 +14,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-INSTANCE_NAME="${1:-waydroid-test-$(date +%s)}"
+INSTANCE_NAME="${1:-redroid-test-$(date +%s)}"
 
 # Load configuration from launch-fleet.sh (but skip validation)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,9 +39,9 @@ COMPARTMENT_ID="${COMPARTMENT_ID:-ocid1.tenancy.oc1..aaaaaaaak44wevthunqrdp6h6no
 SUBNET_ID="${SUBNET_ID:-ocid1.subnet.oc1.phx.aaaaaaaalpdm6cgqxuairct2uzbn74p7u5x4dqqvfleqoxhjcy6pn6fzeh2q}"
 # Expand ${HOME} if present
 if [[ "$SSH_KEY_FILE" == *'${HOME}'* ]]; then
-    SSH_KEY_FILE="${HOME}/.ssh/waydroid_oci.pub"
+    SSH_KEY_FILE="${HOME}/.ssh/redroid_oci.pub"
 fi
-SSH_KEY_FILE="${SSH_KEY_FILE:-${HOME}/.ssh/waydroid_oci.pub}"
+SSH_KEY_FILE="${SSH_KEY_FILE:-${HOME}/.ssh/redroid_oci.pub}"
 SHAPE="${SHAPE:-VM.Standard.A1.Flex}"
 OCPUS="${OCPUS:-2}"
 MEMORY_GB="${MEMORY_GB:-8}"
@@ -168,11 +168,11 @@ echo ""
 echo "Wait 30-60 seconds for SSH to be ready, then:"
 echo "  ssh -i ${SSH_KEY_FILE%.pub} ubuntu@${PUBLIC_IP:-YOUR_IP}"
 echo ""
-echo "To deploy waydroid:"
+echo "To deploy redroid:"
 echo "  ./scripts/deploy-to-instance.sh ${PUBLIC_IP:-YOUR_IP}"
 echo ""
 
 # Save instance info
-echo "$INSTANCE_OCID|$PUBLIC_IP|$INSTANCE_NAME" > /tmp/waydroid-instance-info.txt
-echo -e "${GREEN}Instance info saved to /tmp/waydroid-instance-info.txt${NC}"
+echo "$INSTANCE_OCID|$PUBLIC_IP|$INSTANCE_NAME" > /tmp/redroid-instance-info.txt
+echo -e "${GREEN}Instance info saved to /tmp/redroid-instance-info.txt${NC}"
 

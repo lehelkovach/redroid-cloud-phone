@@ -9,7 +9,7 @@
 #
 # Environment overrides:
 #   REDROID_CONTAINER_NAME   (default: redroid)
-#   REDROID_IMAGE            (default: redroid/redroid:latest)
+#   REDROID_IMAGE            (default: redroid/redroid:11.0.0-latest)
 #   REDROID_DATA_DIR         (default: /opt/redroid-data)
 #   REDROID_ADB_PORT         (default: 5555)
 #   REDROID_VNC_PORT         (default: 5900)
@@ -43,7 +43,7 @@ fi
 
 # Apply defaults
 NAME="${REDROID_CONTAINER_NAME:-redroid}"
-IMAGE="${REDROID_IMAGE:-redroid/redroid:latest}"
+IMAGE="${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}"
 DATA_DIR="${REDROID_DATA_DIR:-/opt/redroid-data}"
 ADB_PORT="${REDROID_ADB_PORT:-5555}"
 VNC_PORT="${REDROID_VNC_PORT:-5900}"

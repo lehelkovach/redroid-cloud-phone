@@ -35,7 +35,7 @@ if [[ -z "$PUBLIC_IP" ]] || [[ "$PUBLIC_IP" == "null" ]]; then
 fi
 
 echo "Testing SSH connection..."
-if timeout 10 ssh -i ~/.ssh/waydroid_oci -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@$PUBLIC_IP 'echo "SSH OK"' 2>&1; then
+if timeout 10 ssh -i ~/.ssh/redroid_oci -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@$PUBLIC_IP 'echo "SSH OK"' 2>&1; then
     echo "✓ SSH is working!"
     echo ""
     echo "=== Testing VNC Port ==="
@@ -48,7 +48,7 @@ if timeout 10 ssh -i ~/.ssh/waydroid_oci -o StrictHostKeyChecking=no -o ConnectT
         echo "✗ VNC port 5900 not directly accessible"
         echo ""
         echo "Use SSH tunnel:"
-        echo "  ssh -i ~/.ssh/waydroid_oci -L 5900:localhost:5900 ubuntu@$PUBLIC_IP -N"
+        echo "  ssh -i ~/.ssh/redroid_oci -L 5900:localhost:5900 ubuntu@$PUBLIC_IP -N"
         echo "  Then: vncviewer localhost:5900"
     fi
 else
@@ -63,7 +63,7 @@ else
     sleep 60
     echo ""
     echo "Try connecting again:"
-    echo "  ssh -i ~/.ssh/waydroid_oci ubuntu@$PUBLIC_IP"
+    echo "  ssh -i ~/.ssh/redroid_oci ubuntu@$PUBLIC_IP"
 fi
 
 echo ""

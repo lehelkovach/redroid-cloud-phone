@@ -51,6 +51,11 @@ export SSH_KEY_FILE="~/.ssh/id_rsa.pub"
 ./scripts/deploy-cloud-phone.sh --name my-phone
 ```
 
+### Single-Command OCI Deployment (Ubuntu 20.04, kernel 5.x)
+```bash
+./scripts/deploy-ubuntu20-redroid.sh my-cloud-phone
+```
+
 ### Full-Featured Deployment
 
 ```bash
@@ -73,7 +78,7 @@ export SSH_KEY_FILE="~/.ssh/id_rsa.pub"
 cat > my-phone.json <<EOF
 {
   "instance": {"name": "my-phone", "ocpus": 2, "memory_gb": 8},
-  "redroid": {"image": "redroid/redroid:latest", "gapps": {"enabled": true}},
+  "redroid": {"image": "redroid/redroid:11.0.0-latest", "gapps": {"enabled": true}},
   "network": {"proxy": {"enabled": true, "type": "socks5", "host": "proxy", "port": 1080}},
   "location": {"enabled": true, "latitude": 37.7749, "longitude": -122.4194}
 }
@@ -197,6 +202,31 @@ terraform apply -var="instance_count=5"
 terraform destroy
 ```
 
+---
+
+## Golden Image Deploy with Health/Test Flags
+
+```bash
+GOLDEN_IMAGE_ID="<ocid>" \
+COMPARTMENT_ID="<ocid>" \
+SUBNET_ID="<ocid>" \
+AVAILABILITY_DOMAIN="ABpi:PHX-AD-1" \
+./scripts/deploy-from-golden.sh \
+  --name phone-1 \
+  --wait-check \
+  --run-tests \
+  --remote-cmd "sudo systemctl start redroid-cloud-phone.target"
+```
+
+To run a remote command in the background and watch logs:
+```bash
+./scripts/deploy-from-golden.sh \
+  --name phone-1 \
+  --remote-cmd "sudo journalctl -u ffmpeg-bridge.service -f" \
+  --remote-cmd-log /tmp/ffmpeg-bridge.log \
+  --remote-cmd-bg
+```
+
 ### Outputs
 
 ```bash
@@ -282,7 +312,7 @@ Edit environment variables in docker-compose.yml or use .env file:
 
 ```bash
 cat > .env <<EOF
-REDROID_IMAGE=redroid/redroid:latest
+REDROID_IMAGE=redroid/redroid:11.0.0-latest
 REDROID_WIDTH=1920
 REDROID_HEIGHT=1080
 ADB_PORT=5555
@@ -388,7 +418,7 @@ wait
 # Check all instances
 for ip in $(cat instance-ips.txt); do
   echo "=== $ip ==="
-  ssh -i key ubuntu@$ip 'sudo /opt/waydroid-scripts/health-check.sh'
+  ssh -i key ubuntu@$ip 'sudo /opt/redroid-scripts/health-check.sh'
 done
 ```
 
@@ -405,7 +435,7 @@ curl -X POST http://localhost:8080/proxy \
   -d '{"enabled":true,"type":"socks5","host":"proxy","port":1080}'
 
 # Via script
-ssh ubuntu@IP 'sudo /opt/waydroid-scripts/proxy-control.sh enable socks5 proxy 1080'
+ssh ubuntu@IP 'sudo /opt/redroid-scripts/proxy-control.sh enable socks5 proxy 1080'
 ```
 
 ### Set GPS
@@ -417,6 +447,71 @@ curl -X POST http://localhost:8080/location \
 ```
 
 ### Install Apps
+---
+
+## Google Play (GApps) + Golden Image
+
+### Install GApps (manual zip)
+```bash
+# Place gapps.zip on the instance first:
+sudo mkdir -p /opt/gapps
+sudo mv /path/to/gapps.zip /opt/gapps/gapps.zip
+
+# Install into Redroid and restart
+sudo bash scripts/install-gapps.sh --install-local
+sudo systemctl restart redroid-container.service
+```
+
+### Create a Golden Image (after Play Store works)
+```bash
+COMPARTMENT_ID="<ocid>" ./scripts/create-golden-image.sh <INSTANCE_IP> cloud-phone-gapps-v1
+```
+
+### Deploy from Golden Image
+```bash
+GOLDEN_IMAGE_ID="<ocid>" ./scripts/deploy-from-golden.sh --name phone-1
+```
+
+---
+
+## Remote Control (API + Scrcpy)
+
+```bash
+# ADB + scrcpy
+adb connect <INSTANCE_IP>:5555
+scrcpy -s <INSTANCE_IP>:5555
+
+# Control API
+curl http://<INSTANCE_IP>:8080/health
+```
+
+If the API is bound to localhost, expose it:
+```bash
+sudo sed -i 's/^Environment=API_HOST=.*/Environment=API_HOST=0.0.0.0/' /etc/systemd/system/control-api.service
+sudo systemctl daemon-reload
+sudo systemctl restart control-api.service
+```
+
+---
+
+## OBS → Virtual Camera/Audio
+
+```bash
+# On the VM
+sudo systemctl start nginx-rtmp.service
+sudo systemctl start ffmpeg-bridge.service
+
+# OBS (Custom RTMP)
+# Server: rtmp://<INSTANCE_IP>/live
+# Key: cam
+```
+
+**Auto‑start & recovery:** These services are installed as systemd units
+with restart policies and are enabled by `install-redroid.sh`.
+```bash
+sudo systemctl enable nginx-rtmp.service ffmpeg-bridge.service
+sudo systemctl start redroid-cloud-phone.target
+```
 
 ```bash
 # Via API
@@ -441,7 +536,7 @@ ssh ubuntu@IP 'tail -f /var/log/cloud-phone-setup.log'
 ssh ubuntu@IP 'ls /var/log/cloud-phone-setup-complete'
 
 # Health check
-ssh ubuntu@IP 'sudo /opt/waydroid-scripts/health-check.sh'
+ssh ubuntu@IP 'sudo /opt/redroid-scripts/health-check.sh'
 ```
 
 ### Container Not Starting

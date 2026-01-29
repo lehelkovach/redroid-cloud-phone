@@ -5,7 +5,7 @@
 set -euo pipefail
 
 INSTANCE_IP="${1:-137.131.52.69}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 
 echo "=========================================="
 echo "  Complete Redroid Test"
@@ -89,7 +89,7 @@ sudo chmod 777 /opt/redroid-data
 echo ""
 
 echo "=== Pulling Redroid Image ==="
-sudo docker pull redroid/redroid:latest
+sudo docker pull redroid/redroid:11.0.0-latest
 echo ""
 
 echo "=== Starting Redroid with Device Passthrough ==="
@@ -104,7 +104,7 @@ sudo docker run -itd \
   -p 5555:5555 \
   -p 5900:5900 \
   -v /opt/redroid-data:/data \
-  redroid/redroid:latest \
+  redroid/redroid:11.0.0-latest \
   androidboot.redroid_gpu_mode=guest \
   androidboot.redroid_width=1280 \
   androidboot.redroid_height=720 \
@@ -119,7 +119,7 @@ sudo docker run -itd \
       -p 5555:5555 \
       -p 5900:5900 \
       -v /opt/redroid-data:/data \
-      redroid/redroid:latest \
+      redroid/redroid:11.0.0-latest \
       androidboot.redroid_gpu_mode=guest \
       androidboot.redroid_width=1280 \
       androidboot.redroid_height=720 \

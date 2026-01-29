@@ -6,7 +6,7 @@
 #   docker-compose up -d --scale redroid=3  # Start 3 instances
 #
 # Environment variables:
-#   REDROID_IMAGE         - Base image (default: redroid/redroid:latest)
+#   REDROID_IMAGE         - Base image (default: redroid/redroid:11.0.0-latest)
 #   REDROID_WIDTH         - Screen width (default: 1280)
 #   REDROID_HEIGHT        - Screen height (default: 720)
 #   PROXY_ENABLED         - Enable proxy (true/false)
@@ -18,7 +18,7 @@ version: '3.8'
 services:
   # Main Redroid container
   redroid:
-    image: ${REDROID_IMAGE:-redroid/redroid:latest}
+    image: ${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}
     container_name: redroid
     privileged: true
     restart: unless-stopped

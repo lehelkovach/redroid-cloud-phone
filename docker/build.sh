@@ -15,7 +15,7 @@ cd "$SCRIPT_DIR"
 # Defaults
 IMAGE_NAME="cloud-phone"
 IMAGE_TAG="latest"
-BASE_IMAGE="redroid/redroid:latest"
+BASE_IMAGE="redroid/redroid:11.0.0-latest"
 INCLUDE_GAPPS=false
 PUSH_TO=""
 ANDROID_VERSION=""
@@ -39,7 +39,7 @@ Usage: $0 [OPTIONS]
 Options:
   --name NAME           Image name (default: cloud-phone)
   --tag TAG             Image tag (default: latest)
-  --base IMAGE          Base Redroid image (default: redroid/redroid:latest)
+  --base IMAGE          Base Redroid image (default: redroid/redroid:11.0.0-latest)
   --android VERSION     Android version (11, 12, 13)
   --gapps               Include Google Apps (requires gapps/ directory)
   --push REGISTRY       Push to registry after build

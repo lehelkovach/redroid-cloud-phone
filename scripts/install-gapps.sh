@@ -120,30 +120,40 @@ install_gapps() {
     
     log_info "Installing GApps to Redroid..."
     
-    # Method 1: Copy directly to container
-    if docker exec "$CONTAINER" test -d /system/priv-app; then
+    # Method 1: Copy directly to container (best effort; may fail on read-only /system)
+    local direct_copy_ok=true
+    if ! docker exec "$CONTAINER" sh -c "mount -o remount,rw /system" >/dev/null 2>&1; then
+        log_warn "Unable to remount /system as rw; skipping direct copy"
+        direct_copy_ok=false
+    fi
+
+    if [[ "$direct_copy_ok" == "true" ]] && docker exec "$CONTAINER" test -d /system/priv-app; then
         # Find and copy priv-app APKs
-        find extracted -name "*.apk" -path "*priv-app*" | while read apk; do
-            local app_name=$(basename "$(dirname "$apk")")
+        find extracted -name "*.apk" -path "*priv-app*" | while read -r apk; do
+            local app_name
+            app_name=$(basename "$(dirname "$apk")")
             log_info "  Installing (priv): $app_name"
-            docker cp "$apk" "$CONTAINER:/system/priv-app/$app_name/"
+            docker exec "$CONTAINER" mkdir -p "/system/priv-app/$app_name" || true
+            docker cp "$apk" "$CONTAINER:/system/priv-app/$app_name/" || true
         done
         
         # Find and copy app APKs
-        find extracted -name "*.apk" -path "*app/*" | while read apk; do
-            local app_name=$(basename "$(dirname "$apk")")
+        find extracted -name "*.apk" -path "*app/*" | while read -r apk; do
+            local app_name
+            app_name=$(basename "$(dirname "$apk")")
             log_info "  Installing (app): $app_name"
-            docker cp "$apk" "$CONTAINER:/system/app/$app_name/"
+            docker exec "$CONTAINER" mkdir -p "/system/app/$app_name" || true
+            docker cp "$apk" "$CONTAINER:/system/app/$app_name/" || true
         done
         
         # Copy libs if present
         if [[ -d "extracted/system/lib64" ]]; then
-            docker cp extracted/system/lib64/. "$CONTAINER:/system/lib64/"
+            docker cp extracted/system/lib64/. "$CONTAINER:/system/lib64/" || true
         fi
         
         # Copy framework files
         if [[ -d "extracted/system/framework" ]]; then
-            docker cp extracted/system/framework/. "$CONTAINER:/system/framework/"
+            docker cp extracted/system/framework/. "$CONTAINER:/system/framework/" || true
         fi
     fi
     

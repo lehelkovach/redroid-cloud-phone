@@ -80,24 +80,33 @@ while true; do
         sleep 2
     done
     
-    # Build FFmpeg command
-    FFMPEG_CMD="ffmpeg -hide_banner -loglevel warning"
-    FFMPEG_CMD+=" -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2"
-    FFMPEG_CMD+=" -i $RTMP_URL"
-    
-    # Video output to v4l2loopback
-    FFMPEG_CMD+=" -map 0:v:0 -vf scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
-    FFMPEG_CMD+=" -r $VIDEO_FPS -f v4l2 $VIDEO_DEVICE"
+    # Build FFmpeg command as an array to avoid eval/quoting issues
+    FFMPEG_ARGS=(
+        -hide_banner -loglevel warning
+    )
+
+    # Add reconnect flags only if supported by this ffmpeg build
+    if ! ffmpeg -hide_banner -reconnect 1 -f lavfi -i anullsrc -t 0.1 -f null - 2>&1 | grep -qi "Option reconnect not found"; then
+        FFMPEG_ARGS+=(-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2)
+    fi
+
+    FFMPEG_ARGS+=(
+        -i "$RTMP_URL"
+        -map 0:v:0
+        -vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
+        -r "$VIDEO_FPS"
+        -f v4l2 "$VIDEO_DEVICE"
+    )
     
     # Audio output to ALSA loopback (if available)
     if [ -n "$AUDIO_OUTPUT" ]; then
-        FFMPEG_CMD+=" -map 0:a:0 -ar $AUDIO_RATE -ac $AUDIO_CHANNELS $AUDIO_OUTPUT"
+        FFMPEG_ARGS+=(-map 0:a:0 -ar "$AUDIO_RATE" -ac "$AUDIO_CHANNELS" -f alsa "$AUDIO_DEVICE")
     fi
     
-    log "Starting FFmpeg: $FFMPEG_CMD"
+    log "Starting FFmpeg: ffmpeg ${FFMPEG_ARGS[*]}"
     
     # Run FFmpeg
-    eval $FFMPEG_CMD &
+    ffmpeg "${FFMPEG_ARGS[@]}" &
     FFMPEG_PID=$!
     
     log "FFmpeg started (PID: $FFMPEG_PID)"

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Test Waydroid on Ubuntu 20.04 (older kernel 5.x) on Oracle Cloud ARM
-# This tests if older kernel avoids binder VMA errors
+# Test Redroid on Ubuntu 20.04 (older kernel 5.x) on Oracle Cloud ARM
+# This tests if older kernel avoids binder/VMA issues for container Android
 
 set -euo pipefail
 
 INSTANCE_IP="${1:-}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 
 if [ -z "$INSTANCE_IP" ]; then
     echo "Usage: $0 <INSTANCE_IP>"
@@ -14,7 +14,7 @@ if [ -z "$INSTANCE_IP" ]; then
 fi
 
 echo "=========================================="
-echo "  Testing Waydroid on Ubuntu 20.04"
+echo "  Testing Redroid on Ubuntu 20.04"
 echo "  Oracle Cloud ARM Instance"
 echo "=========================================="
 echo ""
@@ -34,9 +34,9 @@ echo "=== Checking Kernel Version ==="
 KERNEL_VERSION=$(uname -r | cut -d. -f1-2)
 echo "Kernel version: $KERNEL_VERSION"
 if [[ "$KERNEL_VERSION" == "5."* ]]; then
-    echo "✓ Using kernel 5.x (should work better with Waydroid)"
+    echo "✓ Using kernel 5.x (recommended for virtual devices)"
 elif [[ "$KERNEL_VERSION" == "6."* ]]; then
-    echo "⚠ Using kernel 6.x (may have binder issues)"
+    echo "⚠ Using kernel 6.x (virtual devices may be limited)"
 else
     echo "? Unknown kernel version"
 fi
@@ -61,68 +61,27 @@ else
 fi
 echo ""
 
-echo "=== Checking Waydroid Installation ==="
-if command -v waydroid &> /dev/null; then
-    echo "✓ Waydroid installed"
-    waydroid --version || echo "Could not get version"
+echo "=== Checking Docker ==="
+if command -v docker &>/dev/null; then
+    echo "✓ docker installed"
+    sudo systemctl is-active --quiet docker && echo "✓ docker running" || echo "⚠ docker not running"
 else
-    echo "⚠ Waydroid not installed"
-    echo "Installing Waydroid..."
-    curl -s https://repo.waydro.id/waydroid.gpg | sudo gpg --dearmor -o /usr/share/keyrings/waydroid.gpg
-    echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] https://repo.waydro.id/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/waydroid.list
-    sudo apt update
-    sudo apt install -y waydroid
+    echo "⚠ docker not installed"
 fi
 echo ""
 
-echo "=== Checking Waydroid Status ==="
-if [ -f /var/lib/waydroid/waydroid.cfg ]; then
-    echo "✓ Waydroid initialized"
-    waydroid status || echo "Waydroid not running"
+echo "=== Checking Redroid Container ==="
+if docker ps --format '{{.Names}}:{{.Status}}' | grep -q '^redroid:'; then
+    docker ps --format '  {{.Names}}  {{.Status}}  {{.Ports}}' | grep '^redroid' || true
 else
-    echo "⚠ Waydroid not initialized"
-    echo "Would need to run: sudo waydroid init"
+    echo "⚠ redroid container not running"
 fi
 echo ""
 
-echo "=== Testing Container Start ==="
-echo "Stopping any running containers..."
-sudo waydroid container stop 2>/dev/null || true
-sleep 2
-
-echo "Starting container..."
-sudo waydroid container start 2>&1 | tee /tmp/waydroid-start.log || {
-    echo "Container start failed. Checking logs..."
-    cat /tmp/waydroid-start.log
-    echo ""
-    echo "Checking for binder errors..."
-    grep -i "binder\|vma\|zygote" /tmp/waydroid-start.log || echo "No binder errors found in output"
-}
-
-sleep 5
-
+echo "=== Recent Redroid Logs ==="
+docker logs --tail 50 redroid 2>/dev/null || echo "No redroid logs available"
 echo ""
-echo "=== Container Status ==="
-waydroid status || echo "Waydroid not running"
 
-echo ""
-echo "=== Checking for Binder Errors ==="
-if sudo journalctl -u waydroid-container --no-pager -n 50 2>/dev/null | grep -i "binder.*vma\|binder_alloc\|no vma"; then
-    echo "⚠ Binder VMA errors found"
-else
-    echo "✓ No binder VMA errors in recent logs"
-fi
-
-echo ""
-echo "=== Checking Zygote ==="
-if sudo journalctl -u waydroid-container --no-pager -n 50 2>/dev/null | grep -i "zygote"; then
-    echo "Zygote activity found in logs"
-    sudo journalctl -u waydroid-container --no-pager -n 50 | grep -i "zygote" | tail -5
-else
-    echo "No zygote activity found"
-fi
-
-echo ""
 echo "=== Kernel Binder Support ==="
 if [ -d /sys/module/binder_linux ]; then
     echo "✓ binder_linux module available"
@@ -130,8 +89,8 @@ if [ -d /sys/module/binder_linux ]; then
 else
     echo "⚠ binder_linux module not available"
 fi
-
 echo ""
+
 echo "=========================================="
 echo "  Test Complete"
 echo "=========================================="
@@ -139,8 +98,7 @@ echo ""
 echo "Summary:"
 echo "  Kernel: $(uname -r)"
 echo "  OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
-echo "  Waydroid: $(waydroid --version 2>/dev/null || echo 'Not installed')"
-echo "  Container Status: $(waydroid status 2>/dev/null || echo 'Not running')"
+echo "  Redroid Container: $(docker ps --format '{{.Names}}' | grep -q '^redroid$' && echo 'running' || echo 'not running')"
 echo ""
 
 ENDSSH
@@ -150,13 +108,5 @@ echo "Test completed!"
 echo ""
 echo "If kernel 5.x works better, consider:"
 echo "  1. Creating new instance with Ubuntu 20.04"
-echo "  2. Deploying Waydroid on Ubuntu 20.04"
+echo "  2. Deploying Redroid on Ubuntu 20.04"
 echo "  3. Testing if binder issues are resolved"
-
-
-
-
-
-
-
-

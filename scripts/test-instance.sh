@@ -1,6 +1,6 @@
 #!/bin/bash
 # test-instance.sh
-# Quick test of a deployed waydroid instance
+# Quick test of a deployed redroid instance
 # For comprehensive tests, use: ./test-full-suite.sh <PUBLIC_IP>
 #
 # Usage: ./test-instance.sh <PUBLIC_IP> [SSH_KEY]
@@ -23,7 +23,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 PUBLIC_IP="$1"
-SSH_KEY="${2:-${HOME}/.ssh/waydroid_oci}"
+SSH_KEY="${2:-${HOME}/.ssh/redroid_oci}"
 SSH_USER="ubuntu"
 
 echo -e "${BLUE}=========================================="
@@ -37,14 +37,14 @@ echo ""
 
 # Run system tests remotely
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" "[ -f /opt/waydroid-scripts/test-system.sh ]"; then
+if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" "[ -f /opt/redroid-scripts/test-system.sh ]"; then
     echo -e "${BLUE}Running system tests on instance...${NC}"
-    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" "sudo /opt/waydroid-scripts/test-system.sh"
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" "sudo /opt/redroid-scripts/test-system.sh"
 else
     echo -e "${YELLOW}System test script not found on instance, running basic checks...${NC}"
     
     # Basic service checks
-    SERVICES=("nginx-rtmp" "xvnc" "waydroid-container" "waydroid-session" "ffmpeg-bridge" "control-api")
+    SERVICES=("docker" "redroid-container" "nginx-rtmp" "ffmpeg-bridge" "control-api")
     FAILED=0
     
     for service in "${SERVICES[@]}"; do

@@ -6,7 +6,7 @@ Wants=docker.service network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/waydroid-scripts/redroid-container.sh
+ExecStart=/opt/redroid-scripts/redroid-container.sh
 ExecStop=/usr/bin/docker stop redroid
 TimeoutStartSec=0
 

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 INSTANCE_IP="${1:-137.131.52.69}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 
 echo "=========================================="
 echo "  Redroid VNC Status Check"

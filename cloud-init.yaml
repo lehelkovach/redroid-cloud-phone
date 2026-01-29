@@ -4,10 +4,10 @@
 # Use this as User Data when creating an OCI instance.
 # It will automatically install and configure everything.
 #
-# Supports both Redroid (recommended) and legacy Waydroid.
+# Supports both Redroid (recommended) and legacy Redroid.
 #
 # Configuration via environment variables in instance metadata:
-#   CLOUD_PHONE_MODE=redroid|waydroid (default: redroid)
+#   CLOUD_PHONE_MODE=redroid|redroid (default: redroid)
 #   CLOUD_PHONE_REPO=github-repo (default: lehelkovach/redroid-cloud-phone)
 #   PROXY_URL=socks5://host:port (optional)
 #   GPS_COORDS=lat,lon (optional)
@@ -65,7 +65,7 @@ write_files:
       GPS_COORDS="${GPS_COORDS:-$(get_metadata gps_coords)}"
       API_TOKEN="${API_TOKEN:-$(get_metadata api_token)}"
       REDROID_IMAGE="${REDROID_IMAGE:-$(get_metadata redroid_image)}"
-      REDROID_IMAGE="${REDROID_IMAGE:-redroid/redroid:latest}"
+      REDROID_IMAGE="${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}"
       
       echo "Configuration:"
       echo "  Mode: $CLOUD_PHONE_MODE"
@@ -128,7 +128,7 @@ write_files:
       if [[ "$CLOUD_PHONE_MODE" == "redroid" ]]; then
         systemctl start redroid-cloud-phone.target
       else
-        systemctl start waydroid-cloud-phone.target
+        systemctl start redroid-cloud-phone.target
       fi
       
       # Wait for Android to boot
@@ -144,7 +144,7 @@ write_files:
         hostport="${PROXY_URL#*://}"
         host="${hostport%%:*}"
         port="${hostport##*:}"
-        /opt/waydroid-scripts/proxy-control.sh enable "$proxy_type" "$host" "$port" || true
+        /opt/redroid-scripts/proxy-control.sh enable "$proxy_type" "$host" "$port" || true
       fi
       
       if [[ -n "$GPS_COORDS" ]]; then
@@ -178,7 +178,7 @@ write_files:
     content: |
       #!/bin/bash
       if [[ -f /var/log/cloud-phone-setup-complete ]]; then
-        /opt/waydroid-scripts/health-check.sh
+        /opt/redroid-scripts/health-check.sh
       else
         echo "Cloud Phone setup still in progress..."
         echo "Check /var/log/cloud-phone-setup.log for details"

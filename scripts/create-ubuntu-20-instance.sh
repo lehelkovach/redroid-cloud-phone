@@ -1,16 +1,16 @@
 #!/bin/bash
-# Create Oracle Cloud instance with Ubuntu 20.04 (older kernel for Waydroid testing)
+# Create Oracle Cloud instance with Ubuntu 20.04 (older kernel for Redroid testing)
 
 set -euo pipefail
 
-INSTANCE_NAME="${1:-waydroid-ubuntu20-test}"
+INSTANCE_NAME="${1:-redroid-ubuntu20-test}"
 COMPARTMENT_ID="${COMPARTMENT_ID:-ocid1.tenancy.oc1..aaaaaaaak44wevthunqrdp6h6noor4o5t34a7jqejla6wd22v47admhyzoca}"
 SUBNET_ID="${SUBNET_ID:-ocid1.subnet.oc1.phx.aaaaaaaalpdm6cgqxuairct2uzbn74p7u5x4dqqvfleqoxhjcy6pn6fzeh2q}"
-SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/waydroid_oci.pub}"
+SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/redroid_oci.pub}"
 
 echo "=========================================="
 echo "  Create Ubuntu 20.04 Instance"
-echo "  For Waydroid Testing (Kernel 5.x)"
+echo "  For Redroid Testing (Kernel 5.x)"
 echo "=========================================="
 echo ""
 
@@ -105,9 +105,9 @@ echo "Next Steps:"
 echo "  1. Wait for SSH to be ready (~30 seconds)"
 echo "  2. Test kernel version:"
 echo "     ssh -i $SSH_KEY_FILE ubuntu@${PUBLIC_IP:-<IP>} 'uname -r'"
-echo "  3. Run Waydroid test:"
+echo "  3. Run Redroid test:"
 echo "     ./scripts/test-ubuntu-20.04.sh ${PUBLIC_IP:-<IP>}"
-echo "  4. Deploy Waydroid:"
+echo "  4. Deploy Redroid:"
 echo "     ./scripts/deploy-to-instance.sh ${PUBLIC_IP:-<IP>}"
 echo ""
 

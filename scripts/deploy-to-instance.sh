@@ -1,9 +1,9 @@
 #!/bin/bash
 # deploy-to-instance.sh
-# Deploys waydroid to a remote OCI instance
+# Deploys redroid to a remote OCI instance
 #
 # Usage: ./deploy-to-instance.sh <PUBLIC_IP> [SSH_KEY]
-# Example: ./deploy-to-instance.sh 123.45.67.89 ~/.ssh/waydroid_oci
+# Example: ./deploy-to-instance.sh 123.45.67.89 ~/.ssh/redroid_oci
 
 set -euo pipefail
 
@@ -16,12 +16,12 @@ NC='\033[0m'
 
 if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <PUBLIC_IP> [SSH_KEY]"
-    echo "Example: $0 123.45.67.89 ~/.ssh/waydroid_oci"
+    echo "Example: $0 123.45.67.89 ~/.ssh/redroid_oci"
     exit 1
 fi
 
 PUBLIC_IP="$1"
-SSH_KEY="${2:-${HOME}/.ssh/waydroid_oci}"
+SSH_KEY="${2:-${HOME}/.ssh/redroid_oci}"
 SSH_USER="ubuntu"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -32,7 +32,7 @@ if [[ ! -f "$SSH_KEY" ]]; then
 fi
 
 echo -e "${BLUE}=========================================="
-echo "Deploying Waydroid to Instance"
+echo "Deploying Redroid to Instance"
 echo "==========================================${NC}"
 echo "IP: $PUBLIC_IP"
 echo "User: $SSH_USER"
@@ -57,7 +57,7 @@ echo -e "${GREEN}✓ SSH connection successful${NC}"
 # Create tarball of project
 echo -e "${BLUE}[2/6] Creating deployment package...${NC}"
 TEMP_DIR=$(mktemp -d)
-TARBALL="$TEMP_DIR/waydroid-cloud-phone.tar.gz"
+TARBALL="$TEMP_DIR/redroid-cloud-phone.tar.gz"
 cd "$PROJECT_ROOT"
 tar czf "$TARBALL" \
     --exclude='.git' \
@@ -82,7 +82,7 @@ echo -e "${GREEN}✓ Package created: $(du -h "$TARBALL" | cut -f1)${NC}"
 
 # Upload tarball
 echo -e "${BLUE}[3/6] Uploading to instance...${NC}"
-scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "$TARBALL" "$SSH_USER@$PUBLIC_IP:/tmp/waydroid-cloud-phone.tar.gz"
+scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "$TARBALL" "$SSH_USER@$PUBLIC_IP:/tmp/redroid-cloud-phone.tar.gz"
 echo -e "${GREEN}✓ Upload complete${NC}"
 
 # Extract and install
@@ -90,16 +90,16 @@ echo -e "${BLUE}[4/6] Extracting and installing on instance...${NC}"
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" << 'ENDSSH'
 set -e
 cd /tmp
-rm -rf waydroid-cloud-phone
-tar xzf waydroid-cloud-phone.tar.gz
+rm -rf redroid-cloud-phone
+tar xzf redroid-cloud-phone.tar.gz
 # Check if extraction created a subdirectory or extracted directly
-if [ -d waydroid-cloud-phone ]; then
-    cd waydroid-cloud-phone
+if [ -d redroid-cloud-phone ]; then
+    cd redroid-cloud-phone
 elif [ -f install.sh ]; then
     # Files extracted directly to /tmp
     cd /tmp
 else
-    echo "Error: Could not find waydroid-cloud-phone directory or install.sh"
+    echo "Error: Could not find redroid-cloud-phone directory or install.sh"
     ls -la /tmp/
     exit 1
 fi
@@ -132,11 +132,10 @@ echo -e "${BLUE}[6/7] Fixing v4l2loopback (if needed)...${NC}"
 scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SCRIPT_DIR/../scripts/fix-v4l2loopback.sh" "$SSH_USER@$PUBLIC_IP:/tmp/fix-v4l2loopback.sh"
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" "sudo bash /tmp/fix-v4l2loopback.sh" || echo -e "${YELLOW}Note: v4l2loopback fix may have failed, but continuing...${NC}"
 
-# Initialize waydroid
-echo -e "${BLUE}[7/7] Initializing Waydroid...${NC}"
-echo -e "${YELLOW}Note: This will download ~1GB and take 5-10 minutes${NC}"
+# Start Redroid services
+echo -e "${BLUE}[7/7] Starting Redroid services...${NC}"
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$SSH_USER@$PUBLIC_IP" << 'ENDSSH'
-sudo /opt/waydroid-scripts/init-waydroid.sh <<< "1"
+sudo systemctl start redroid-cloud-phone.target
 ENDSSH
 
 echo ""
@@ -146,7 +145,7 @@ echo "=========================================="
 echo ""
 echo "Next steps:"
 echo "  1. Start services:"
-echo "     ssh -i $SSH_KEY $SSH_USER@$PUBLIC_IP 'sudo systemctl start waydroid-cloud-phone.target'"
+echo "     ssh -i $SSH_KEY $SSH_USER@$PUBLIC_IP 'sudo systemctl start redroid-cloud-phone.target'"
 echo ""
 echo "  2. Run comprehensive tests:"
 echo "     ./scripts/test-full-suite.sh $PUBLIC_IP"
@@ -159,10 +158,10 @@ echo "     - Service recovery (restart tests)"
 echo "     - Network connectivity"
 echo ""
 echo "  3. Quick health check:"
-echo "     ssh -i $SSH_KEY $SSH_USER@$PUBLIC_IP 'sudo /opt/waydroid-scripts/health-check.sh'"
+echo "     ssh -i $SSH_KEY $SSH_USER@$PUBLIC_IP 'sudo /opt/redroid-scripts/health-check.sh'"
 echo ""
 echo "  4. Create golden image (after tests pass):"
-echo "     ./scripts/create-golden-image.sh $PUBLIC_IP waydroid-cloud-phone-v1"
+echo "     ./scripts/create-golden-image.sh $PUBLIC_IP redroid-cloud-phone-v1"
 echo ""
 
 # Cleanup

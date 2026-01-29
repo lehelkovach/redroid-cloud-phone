@@ -53,7 +53,7 @@ Create a JSON configuration file (see `config/cloud-phone-config.example.json`):
     "os_version": "20.04"
   },
   "redroid": {
-    "image": "redroid/redroid:latest",
+    "image": "redroid/redroid:11.0.0-latest",
     "width": 1280,
     "height": 720,
     "gapps": { "enabled": true, "variant": "pico" }
@@ -125,16 +125,16 @@ curl -X DELETE http://localhost:8080/proxy
 
 ```bash
 # Enable SOCKS5 proxy
-sudo /opt/waydroid-scripts/proxy-control.sh enable socks5 host 1080
+sudo /opt/redroid-scripts/proxy-control.sh enable socks5 host 1080
 
 # Enable HTTP proxy
-sudo /opt/waydroid-scripts/proxy-control.sh enable http host 8080
+sudo /opt/redroid-scripts/proxy-control.sh enable http host 8080
 
 # Disable
-sudo /opt/waydroid-scripts/proxy-control.sh disable
+sudo /opt/redroid-scripts/proxy-control.sh disable
 
 # Check status
-sudo /opt/waydroid-scripts/proxy-control.sh status
+sudo /opt/redroid-scripts/proxy-control.sh status
 ```
 
 ---
@@ -201,12 +201,12 @@ Install Google Play Store and Google services.
 
 ```bash
 # Install GApps (pico variant)
-sudo /opt/waydroid-scripts/install-gapps.sh pico
+sudo /opt/redroid-scripts/install-gapps.sh pico
 
 # Available variants: pico, nano, micro, mini, full
 
 # Use pre-built image instead
-sudo /opt/waydroid-scripts/install-gapps.sh --use-image
+sudo /opt/redroid-scripts/install-gapps.sh --use-image
 ```
 
 ### Pre-built Images with GApps
@@ -231,6 +231,13 @@ If Play Store shows "Device not certified":
    ```
 
 2. Register at: https://www.google.com/android/uncertified/
+
+### Sign‑In Troubleshooting
+
+If Play Store won't sign in or Play Services errors:
+```bash
+sudo /opt/redroid-scripts/fix-play-services.sh
+```
 
 ---
 
@@ -257,7 +264,7 @@ Best for interactive use with lower latency than VNC.
 
 ```bash
 # Start scrcpy server
-sudo /opt/waydroid-scripts/viewing-control.sh scrcpy start
+sudo /opt/redroid-scripts/viewing-control.sh scrcpy start
 
 # On local machine (with SSH tunnel)
 scrcpy -s localhost:5555
@@ -269,7 +276,7 @@ View in browser without native client.
 
 ```bash
 # Start WebRTC server
-sudo /opt/waydroid-scripts/viewing-control.sh webrtc start
+sudo /opt/redroid-scripts/viewing-control.sh webrtc start
 
 # Access via browser
 # http://localhost:8188
@@ -308,6 +315,8 @@ Full REST API for programmatic control.
 | `/device/screen` | POST | Control screen |
 | `/device/input` | POST | Send input events |
 | `/device/screenshot` | GET | Capture screenshot |
+| `/jobs` | POST | Create async job |
+| `/jobs/<id>` | GET | Poll job status/result |
 | `/apps` | GET | List installed apps |
 | `/apps/<pkg>/start` | POST | Launch app |
 | `/apps/<pkg>/stop` | POST | Force stop app |
@@ -336,6 +345,14 @@ curl -o screen.png http://localhost:8080/device/screenshot
 curl -X POST http://localhost:8080/device/input \
   -H "Content-Type: application/json" \
   -d '{"type": "tap", "x": 500, "y": 500}'
+
+# Create async ADB job
+curl -X POST http://localhost:8080/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"type":"adb_shell","payload":{"command":"getprop ro.build.version.release"}}'
+
+# Poll job
+curl http://localhost:8080/jobs/<JOB_ID>
 
 # Type text
 curl -X POST http://localhost:8080/device/input \
@@ -424,8 +441,8 @@ Use custom or forked Redroid images.
 
 | Image | Description |
 |-------|-------------|
-| `redroid/redroid:latest` | Latest Android (default) |
-| `redroid/redroid:11.0.0-latest` | Android 11 |
+| `redroid/redroid:11.0.0-latest` | Android 11 (default, stable) |
+| `redroid/redroid:latest` | Latest Android |
 | `redroid/redroid:12.0.0-latest` | Android 12 |
 | `redroid/redroid:13.0.0-latest` | Android 13 |
 | `redroid/redroid:11.0.0-gapps` | Android 11 with GApps |
@@ -460,7 +477,7 @@ docker push myregistry.com/my-redroid:custom
   --ocpus 2 \
   --memory 8 \
   --os-version 20.04 \
-  --image redroid/redroid:latest \
+  --image redroid/redroid:11.0.0-latest \
   --width 1280 \
   --height 720 \
   --fps 30 \

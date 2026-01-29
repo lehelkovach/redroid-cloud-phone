@@ -1,4 +1,4 @@
-# Waydroid Troubleshooting Guide
+# Redroid Troubleshooting Guide
 
 ## Commands to Run in Weston Console
 
@@ -7,8 +7,8 @@ When you're connected via VNC and see the Weston desktop, you can open the conso
 ### Basic Status Checks
 
 ```bash
-# Check Waydroid status
-waydroid status
+# Check Redroid status
+redroid status
 
 # Check if Android is accessible via ADB
 adb devices
@@ -17,7 +17,7 @@ adb devices
  
 
 # Check session service
-sudo systemctl status waydroid-session
+sudo systemctl status redroid-session
 ```
 
 ### Container Diagnostics
@@ -27,13 +27,13 @@ sudo systemctl status waydroid-session
 sudo lxc-ls -f
 
 # Check container logs
-sudo journalctl -u waydroid-container -n 50 --no-pager
+sudo journalctl -u redroid-container -n 50 --no-pager
 
 # Check if container images exist
-sudo ls -lh /var/lib/waydroid/images/
+sudo ls -lh /var/lib/redroid/images/
 
 # Check container config
-sudo cat /var/lib/waydroid/waydroid.cfg
+sudo cat /var/lib/redroid/redroid.cfg
 ```
 
 ### Kernel Module Checks
@@ -53,34 +53,34 @@ ls -la /dev/binderfs/
 
 ```bash
 # Try starting container manually
-sudo waydroid container stop
-sudo waydroid container start
+sudo redroid container stop
+sudo redroid container start
 
 # Try starting session manually (after container is running)
 export DISPLAY=:1
 export XDG_RUNTIME_DIR=/run/user/1002
 export WAYLAND_DISPLAY=wayland-0
-waydroid session start
+redroid session start
 ```
 
 ### System Logs
 
 ```bash
 # Check kernel logs for errors
-sudo journalctl -k -n 50 | grep -i "lxc\|waydroid\|binder"
+sudo journalctl -k -n 50 | grep -i "lxc\|redroid\|binder"
 
-# Check all Waydroid-related logs
-sudo journalctl -u waydroid-container --since "10 minutes ago" --no-pager
+# Check all Redroid-related logs
+sudo journalctl -u redroid-container --since "10 minutes ago" --no-pager
 ```
 
 ### Process Checks
 
 ```bash
 # See what's running
-ps aux | grep -E "waydroid|weston|lxc"
+ps aux | grep -E "redroid|weston|lxc"
 
 # Check network interfaces
-ip addr show | grep waydroid
+ip addr show | grep redroid
 ```
 
 ### Common Issues and Fixes
@@ -89,7 +89,7 @@ ip addr show | grep waydroid
 
 1. **Check if images are corrupted:**
    ```bash
-   sudo ls -lh /var/lib/waydroid/images/
+   sudo ls -lh /var/lib/redroid/images/
    ```
    Should show `system.img` (~2.8GB) and `vendor.img` (~355MB)
 
@@ -102,8 +102,8 @@ ip addr show | grep waydroid
 
 3. **Try reinitializing (WARNING: This will delete Android data):**
    ```bash
-   sudo systemctl stop waydroid-container waydroid-session
-   sudo waydroid init -s GAPPS
+   sudo systemctl stop redroid-container redroid-session
+   sudo redroid init -s GAPPS
    ```
 
 #### Session Won't Start
@@ -135,14 +135,14 @@ ip addr show | grep waydroid
 Run this to get a full status report:
 
 ```bash
-echo "=== Waydroid Status ==="
-waydroid status
+echo "=== Redroid Status ==="
+redroid status
 echo ""
 echo "=== ADB Devices ==="
 adb devices
 echo ""
 echo "=== Container Service ==="
-sudo systemctl status waydroid-container --no-pager | head -10
+sudo systemctl status redroid-container --no-pager | head -10
 echo ""
 echo "=== Binder Modules ==="
 lsmod | grep binder
@@ -151,7 +151,7 @@ echo "=== Binderfs Mount ==="
 mount | grep binder
 echo ""
 echo "=== Images ==="
-sudo ls -lh /var/lib/waydroid/images/
+sudo ls -lh /var/lib/redroid/images/
 echo ""
 echo "=== LXC Containers ==="
 sudo lxc-ls -f

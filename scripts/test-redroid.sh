@@ -5,7 +5,7 @@
 set -euo pipefail
 
 INSTANCE_IP="${1:-137.131.52.69}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 
 echo "========================================"
 echo "  Testing Redroid on Oracle Cloud ARM"
@@ -43,7 +43,7 @@ fi
 
 echo ""
 echo "=== Pulling Redroid image ==="
-docker pull redroid/redroid:latest || {
+docker pull redroid/redroid:11.0.0-latest || {
     echo "Failed to pull image. Trying alternative tag..."
     docker pull redroid/redroid:11.0.0-arm64 || {
         echo "Failed to pull ARM64 image. Available tags:"
@@ -71,7 +71,7 @@ docker run -itd \
   -p 5555:5555 \
   -p 5900:5900 \
   -v /opt/redroid-data:/data \
-  redroid/redroid:latest \
+  redroid/redroid:11.0.0-latest \
   androidboot.redroid_gpu_mode=guest \
   androidboot.redroid_width=1280 \
   androidboot.redroid_height=720 \

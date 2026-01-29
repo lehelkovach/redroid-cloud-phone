@@ -17,12 +17,9 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo "[1/7] Stopping all waydroid/redroid services..."
-systemctl stop waydroid-cloud-phone.target || true
-systemctl stop waydroid-container.service || true
-systemctl stop waydroid-session.service || true
+echo "[1/7] Stopping all redroid services..."
+systemctl stop redroid-cloud-phone.target || true
 docker stop redroid || true
-systemctl stop xvnc.service || true
 systemctl stop ffmpeg-bridge.service || true
 systemctl stop nginx-rtmp.service || true
 systemctl stop control-api.service || true
@@ -69,7 +66,7 @@ echo "Next steps:"
 echo "1. Review the cleanup above"
 echo "2. Shutdown the instance: sudo shutdown -h now"
 echo "3. In OCI Console: Compute → Instances → [Your Instance] → More Actions → Create Custom Image"
-echo "4. Name it: waydroid-cloud-phone-v1"
+echo "4. Name it: redroid-cloud-phone-v1"
 echo "5. Wait 10-20 minutes for image to be available"
 echo ""
 echo "After creating the image, you can launch new instances using:"

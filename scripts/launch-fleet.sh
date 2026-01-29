@@ -34,7 +34,7 @@ COMPARTMENT_ID="ocid1.tenancy.oc1..aaaaaaaak44wevthunqrdp6h6noor4o5t34a7jqejla6w
 SUBNET_ID="ocid1.subnet.oc1.phx.aaaaaaaalpdm6cgqxuairct2uzbn74p7u5x4dqqvfleqoxhjcy6pn6fzeh2q"
 
 # SSH public key file path
-SSH_KEY_FILE="${HOME}/.ssh/waydroid_oci.pub"
+SSH_KEY_FILE="${HOME}/.ssh/redroid_oci.pub"
 
 # Instance shape configuration
 SHAPE="VM.Standard.A1.Flex"
@@ -95,7 +95,7 @@ echo ""
 
 # Launch instances
 for i in $(seq 1 "$INSTANCE_COUNT"); do
-    INSTANCE_NAME="waydroid-phone-$i"
+    INSTANCE_NAME="redroid-phone-$i"
     
     # Rotate through availability domains
     AD_INDEX=$(( (i - 1) % ${#AVAILABILITY_DOMAINS[@]} ))
@@ -143,11 +143,11 @@ echo "Launch complete!"
 echo "=========================================="
 echo ""
 echo "Next steps for each instance:"
-echo "1. SSH in: ssh -i ~/.ssh/waydroid_oci ubuntu@<PUBLIC_IP>"
-echo "2. Start services: sudo systemctl start waydroid-cloud-phone.target"
-echo "3. Check status: sudo /opt/waydroid-scripts/health-check.sh"
+echo "1. SSH in: ssh -i ~/.ssh/redroid_oci ubuntu@<PUBLIC_IP>"
+echo "2. Start services: sudo systemctl start redroid-cloud-phone.target"
+echo "3. Check status: sudo /opt/redroid-scripts/health-check.sh"
 echo ""
 echo "To list all instances:"
-echo "  oci compute instance list --compartment-id $COMPARTMENT_ID --display-name waydroid-phone"
+echo "  oci compute instance list --compartment-id $COMPARTMENT_ID --display-name redroid-phone"
 echo ""
 

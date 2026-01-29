@@ -21,9 +21,14 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Configuration - Update these for your OCI account
 COMPARTMENT_ID="${COMPARTMENT_ID:-ocid1.tenancy.oc1..aaaaaaaak44wevthunqrdp6h6noor4o5t34a7jqejla6wd22v47admhyzoca}"
 SUBNET_ID="${SUBNET_ID:-ocid1.subnet.oc1.phx.aaaaaaaalpdm6cgqxuairct2uzbn74p7u5x4dqqvfleqoxhjcy6pn6fzeh2q}"
-SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/waydroid_oci.pub}"
+SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/redroid_oci.pub}"
 SSH_PRIVATE_KEY="${SSH_KEY_FILE%.pub}"
 AVAILABILITY_DOMAIN="${AVAILABILITY_DOMAIN:-ABpi:PHX-AD-1}"
+SECURITY_TOKEN_FILE="${SECURITY_TOKEN_FILE:-$HOME/.oci/sessions/DEFAULT/token}"
+OCI_AUTH_ARGS=()
+if [[ -f "$SECURITY_TOKEN_FILE" ]]; then
+    OCI_AUTH_ARGS+=(--auth security_token)
+fi
 
 echo -e "${BLUE}=========================================="
 echo "  Redroid Cloud Phone Deployment"
@@ -61,7 +66,7 @@ echo -e "${GREEN}✓${NC} SSH private key found"
 echo ""
 echo -e "${BLUE}[1/5] Finding Ubuntu 20.04 ARM image...${NC}"
 
-UBUNTU_IMAGE=$(oci compute image list \
+UBUNTU_IMAGE=$(oci compute image list "${OCI_AUTH_ARGS[@]}" \
     --compartment-id "$COMPARTMENT_ID" \
     --operating-system "Canonical Ubuntu" \
     --operating-system-version "20.04" \
@@ -72,7 +77,7 @@ UBUNTU_IMAGE=$(oci compute image list \
 if [[ -z "$UBUNTU_IMAGE" ]]; then
     echo -e "${RED}Error: Ubuntu 20.04 ARM image not found${NC}"
     echo "Available images:"
-    oci compute image list \
+    oci compute image list "${OCI_AUTH_ARGS[@]}" \
         --compartment-id "$COMPARTMENT_ID" \
         --operating-system "Canonical Ubuntu" \
         --shape "VM.Standard.A1.Flex" \
@@ -92,7 +97,7 @@ echo "  Shape: VM.Standard.A1.Flex (2 OCPU, 8GB RAM)"
 echo "  OS: Ubuntu 20.04 (Kernel 5.x)"
 echo ""
 
-INSTANCE_OCID=$(oci compute instance launch \
+INSTANCE_OCID=$(oci compute instance launch "${OCI_AUTH_ARGS[@]}" \
     --compartment-id "$COMPARTMENT_ID" \
     --availability-domain "$AVAILABILITY_DOMAIN" \
     --shape "VM.Standard.A1.Flex" \
@@ -114,7 +119,7 @@ echo -e "${GREEN}✓${NC} Instance created: ${INSTANCE_OCID:0:50}..."
 
 # Get public IP
 sleep 5
-PUBLIC_IP=$(oci compute instance list-vnics \
+PUBLIC_IP=$(oci compute instance list-vnics "${OCI_AUTH_ARGS[@]}" \
     --instance-id "$INSTANCE_OCID" \
     --query 'data[0]."public-ip"' \
     --raw-output 2>/dev/null || echo "")
@@ -123,7 +128,7 @@ if [[ -z "$PUBLIC_IP" ]] || [[ "$PUBLIC_IP" == "null" ]]; then
     echo -e "${YELLOW}Waiting for public IP...${NC}"
     for i in {1..30}; do
         sleep 2
-        PUBLIC_IP=$(oci compute instance list-vnics \
+        PUBLIC_IP=$(oci compute instance list-vnics "${OCI_AUTH_ARGS[@]}" \
             --instance-id "$INSTANCE_OCID" \
             --query 'data[0]."public-ip"' \
             --raw-output 2>/dev/null || echo "")
@@ -283,7 +288,7 @@ echo "Connect via ADB:"
 echo "  adb connect $PUBLIC_IP:5555"
 echo ""
 echo "Health check:"
-echo "  ssh -i $SSH_PRIVATE_KEY ubuntu@$PUBLIC_IP 'sudo /opt/waydroid-scripts/health-check.sh'"
+echo "  ssh -i $SSH_PRIVATE_KEY ubuntu@$PUBLIC_IP 'sudo /opt/redroid-scripts/health-check.sh'"
 echo ""
 echo "Run full test:"
 echo "  ./scripts/test-redroid-full.sh $PUBLIC_IP"

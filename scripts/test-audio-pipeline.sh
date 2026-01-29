@@ -89,22 +89,21 @@ fi
 
 echo ""
 
-# Check Waydroid audio access
-echo -e "${BLUE}[5/5] Checking Waydroid Audio Access${NC}"
-if command -v waydroid &>/dev/null; then
-    WAYDROID_STATUS=$(waydroid status 2>/dev/null || echo "")
-    if echo "$WAYDROID_STATUS" | grep -q "RUNNING"; then
-        echo -e "  ${GREEN}✓${NC} Waydroid is running"
+# Check Redroid audio access
+echo -e "${BLUE}[5/5] Checking Redroid Audio Access${NC}"
+if command -v docker &>/dev/null; then
+    if docker ps --format '{{.Names}}' | grep -q "^redroid$"; then
+        echo -e "  ${GREEN}✓${NC} Redroid is running"
         echo ""
-        echo "  To use Loopback as microphone in Waydroid:"
-        echo "  1. Open an audio recording app in Waydroid"
+        echo "  To use Loopback as microphone in Redroid:"
+        echo "  1. Open an audio recording app in Redroid"
         echo "  2. Select 'Loopback' or 'hw:Loopback,0,0' as input source"
         echo "  3. Audio from OBS stream will be available"
     else
-        echo -e "  ${YELLOW}○${NC} Waydroid is not running"
+        echo -e "  ${YELLOW}○${NC} Redroid is not running"
     fi
 else
-    echo -e "  ${YELLOW}○${NC} Waydroid not installed"
+    echo -e "  ${YELLOW}○${NC} Docker not installed"
 fi
 
 echo ""
@@ -114,13 +113,13 @@ echo "==========================================${NC}"
 echo ""
 echo "ALSA Loopback Device:"
 echo "  Playback: hw:Loopback,0,0 (what FFmpeg writes to)"
-echo "  Recording: hw:Loopback,1,0 (what Waydroid reads from)"
+echo "  Recording: hw:Loopback,1,0 (what Redroid reads from)"
 echo ""
 echo "When OBS streams audio:"
 echo "  1. OBS → RTMP (port 1935)"
 echo "  2. nginx-rtmp receives stream"
 echo "  3. FFmpeg extracts audio → hw:Loopback,0,0"
-echo "  4. Waydroid reads from hw:Loopback,1,0 (microphone)"
+echo "  4. Redroid reads from hw:Loopback,1,0 (microphone)"
 echo ""
 
 

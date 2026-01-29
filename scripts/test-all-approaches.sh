@@ -1,11 +1,11 @@
 #!/bin/bash
 # Comprehensive test script - tests all approaches
-# Waydroid, Redroid, different kernels, etc.
+# Redroid, Redroid, different kernels, etc.
 
 set -euo pipefail
 
 INSTANCE_IP="${1:-137.131.52.69}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 
 echo "=========================================="
 echo "  Comprehensive Android Container Test"
@@ -42,7 +42,7 @@ echo ""
 # Menu
 echo "What would you like to test?"
 echo ""
-echo "1. Test Waydroid (current setup)"
+echo "1. Test Redroid (current setup)"
 echo "2. Test Redroid (Docker-based)"
 echo "3. Test Kernel/Binder compatibility"
 echo "4. Test Virtual Devices (v4l2loopback, ALSA)"
@@ -54,8 +54,8 @@ choice="${choice:-5}"
 case "$choice" in
     1)
         echo ""
-        echo "=== Testing Waydroid ==="
-        ./scripts/test-ubuntu-20.04.sh "$INSTANCE_IP" || echo "Waydroid test failed"
+        echo "=== Testing Redroid ==="
+        ./scripts/test-ubuntu-20.04.sh "$INSTANCE_IP" || echo "Redroid test failed"
         ;;
     2)
         echo ""
@@ -132,8 +132,8 @@ ENDSSH
 ENDSSH
         echo ""
         
-        echo "[3/4] Testing Waydroid..."
-        ./scripts/test-ubuntu-20.04.sh "$INSTANCE_IP" 2>&1 | tail -20 || echo "Waydroid test incomplete"
+        echo "[3/4] Testing Redroid..."
+        ./scripts/test-ubuntu-20.04.sh "$INSTANCE_IP" 2>&1 | tail -20 || echo "Redroid test incomplete"
         echo ""
         
         echo "[4/4] Testing Redroid..."
@@ -154,7 +154,7 @@ echo ""
 echo "Review the output above to determine:"
 echo "  1. Which kernel version is running"
 echo "  2. If binder modules are working"
-echo "  3. If Waydroid/Redroid can start"
+echo "  3. If Redroid/Redroid can start"
 echo "  4. If virtual devices are available"
 echo ""
 

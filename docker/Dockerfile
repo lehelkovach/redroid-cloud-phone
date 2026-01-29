@@ -15,7 +15,7 @@
 #   docker tag my-cloud-phone:latest myregistry.com/cloud-phone:latest
 #   docker push myregistry.com/cloud-phone:latest
 
-ARG BASE_IMAGE=redroid/redroid:latest
+ARG BASE_IMAGE=redroid/redroid:11.0.0-latest
 FROM ${BASE_IMAGE}
 
 # Build arguments

@@ -15,5 +15,5 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=waydroid-cloud-phone.target
+WantedBy=redroid-cloud-phone.target
 WantedBy=redroid-cloud-phone.target

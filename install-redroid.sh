@@ -113,16 +113,16 @@ log_info "[5/7] Installing Control API..."
 mkdir -p /opt/cloud-phone-api
 cp "$SCRIPT_DIR/api/server.py" /opt/cloud-phone-api/
 cp "$SCRIPT_DIR/api/requirements.txt" /opt/cloud-phone-api/
-ln -sfn /opt/cloud-phone-api /opt/waydroid-api
+ln -sfn /opt/cloud-phone-api /opt/redroid-api
 
 python3 -m venv /opt/cloud-phone-api/venv
 /opt/cloud-phone-api/venv/bin/pip install --upgrade pip
 /opt/cloud-phone-api/venv/bin/pip install -r /opt/cloud-phone-api/requirements.txt
 
 log_info "[6/7] Installing scripts..."
-mkdir -p /opt/waydroid-scripts
-cp "$SCRIPT_DIR/scripts/"*.sh /opt/waydroid-scripts/
-chmod +x /opt/waydroid-scripts/*.sh
+mkdir -p /opt/redroid-scripts
+cp "$SCRIPT_DIR/scripts/"*.sh /opt/redroid-scripts/
+chmod +x /opt/redroid-scripts/*.sh
 
 log_info "[7/7] Installing systemd units..."
 cp "$SCRIPT_DIR/systemd/nginx-rtmp.service" /etc/systemd/system/
@@ -148,7 +148,7 @@ echo "Start everything:"
 echo "  sudo systemctl start redroid-cloud-phone.target"
 echo ""
 echo "Check status:"
-echo "  sudo /opt/waydroid-scripts/health-check.sh"
+echo "  sudo /opt/redroid-scripts/health-check.sh"
 echo ""
 echo "VNC (SSH tunnel recommended):"
 echo "  ssh -L 5900:localhost:5900 ubuntu@YOUR_IP -N"

@@ -2,7 +2,7 @@
 # Quick instance connectivity check
 
 INSTANCE_IP="${1:-137.131.52.69}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/waydroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
 
 echo "Checking instance connectivity: $INSTANCE_IP"
 echo ""
