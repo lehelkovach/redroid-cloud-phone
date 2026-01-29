@@ -144,6 +144,7 @@ COMMANDS:
     deploy          Deploy new instance or to existing instance
     test            Run tests (unit, integration, e2e, api)
     manage          Manage running instances (start, stop, restart, status)
+    services        Orchestrate services with dependency ordering
     fix             Apply hotfixes and repairs
     tunnel          Manage SSH tunnels for remote access
     proxy           Configure proxy settings
@@ -1253,6 +1254,107 @@ EOF
 }
 
 # =============================================================================
+# SERVICES COMMANDS
+# =============================================================================
+
+cmd_services() {
+    local action=""
+    local instance_ip="${VM_HOST:-}"
+    local ssh_key_arg="$SSH_KEY"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            start|stop|restart|status|health|deps) action="$1"; shift ;;
+            --instance)     instance_ip="$2"; shift 2 ;;
+            --ssh-key)      ssh_key_arg="$2"; shift 2 ;;
+            --help|-h)      services_help; exit 0 ;;
+            *) die "Unknown services option: $1" ;;
+        esac
+    done
+    
+    [[ -z "$action" ]] && action="status"
+    
+    if [[ -n "$instance_ip" ]]; then
+        # Remote execution
+        ssh -i "$ssh_key_arg" -o StrictHostKeyChecking=no "$SSH_USER@$instance_ip" \
+            "sudo /opt/redroid-scripts/service-orchestrator.sh $action"
+    else
+        # Local execution
+        run_script "$SCRIPTS_DIR/service-orchestrator.sh" "$action"
+    fi
+}
+
+services_help() {
+    cat <<EOF
+cloud-phone services - Orchestrate services with dependency ordering
+
+USAGE:
+    ./cloud-phone services [action] [options]
+
+ACTIONS:
+    start       Start all services in dependency order
+    stop        Stop all services in reverse order
+    restart     Restart all services
+    status      Show detailed service status (default)
+    health      Run health checks on all services
+    deps        Show service dependencies
+
+OPTIONS:
+    --instance IP   Run on remote instance
+    --ssh-key PATH  SSH key for remote access
+
+SERVICES (in start order):
+    1. redroid-container  - Core Android VM (Requires: docker)
+    2. nginx-rtmp         - RTMP streaming server
+    3. ffmpeg-bridge      - Video/audio bridge (Requires: nginx-rtmp)
+    4. control-api        - REST API server (Requires: redroid-container)
+    5. log-collector      - Log aggregation (After: redroid-container)
+
+DEPENDENCY DIAGRAM:
+
+    docker.service
+         │
+         ▼
+    ┌────────────────────┐
+    │ redroid-container  │ ◄── Core Android VM
+    └────────┬───────────┘
+             │
+    ┌────────┴────────┐
+    │                 │
+    ▼                 ▼
+┌───────────┐   ┌─────────────┐
+│control-api│   │log-collector│
+└───────────┘   └─────────────┘
+
+    network.target
+         │
+         ▼
+    ┌───────────┐
+    │nginx-rtmp │ ◄── RTMP Server
+    └─────┬─────┘
+          │
+          ▼
+    ┌─────────────┐
+    │ffmpeg-bridge│ ◄── Video/Audio Bridge
+    └─────────────┘
+
+EXAMPLES:
+    # Show status
+    ./cloud-phone services status
+
+    # Start all services in order
+    ./cloud-phone services start
+
+    # Run health checks
+    ./cloud-phone services health
+
+    # Remote instance
+    ./cloud-phone services status --instance 129.146.1.2
+
+EOF
+}
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -1276,6 +1378,7 @@ main() {
         status)     cmd_status "$@" ;;
         logs)       cmd_logs "$@" ;;
         config)     cmd_config "$@" ;;
+        services)   cmd_services "$@" ;;
         help|--help|-h) show_help ;;
         *) die "Unknown command: $cmd. Run './cloud-phone help' for usage." ;;
     esac

@@ -2,11 +2,14 @@
 Description=Cloud Phone Control API Server (ADB wrapper)
 Documentation=https://github.com/lehelkovach/redroid-cloud-phone
 After=network.target docker.service redroid-container.service
-Wants=docker.service redroid-container.service
+Requires=redroid-container.service
+Wants=docker.service
+PartOf=redroid-cloud-phone.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/cloud-phone-api
+ExecStartPre=/bin/bash -c 'until adb connect 127.0.0.1:5555 2>/dev/null | grep -q connected; do sleep 2; done'
 ExecStart=/opt/cloud-phone-api/venv/bin/python server.py
 Restart=on-failure
 RestartSec=5
@@ -19,6 +22,10 @@ Environment=PYTHONUNBUFFERED=1
 Environment=API_HOST=127.0.0.1
 Environment=API_PORT=8080
 Environment=ADB_CONNECT=127.0.0.1:5555
+Environment=CLOUD_PHONE_CONFIG=/etc/cloud-phone/config.json
+
+# Health check endpoint
+ExecStartPost=/bin/bash -c 'for i in {1..10}; do curl -sf http://127.0.0.1:8080/health && exit 0; sleep 2; done; exit 1'
 
 [Install]
 WantedBy=redroid-cloud-phone.target

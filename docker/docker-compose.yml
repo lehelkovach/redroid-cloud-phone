@@ -1,22 +1,33 @@
 # Docker Compose for Cloud Phone
 #
-# Usage:
-#   docker-compose up -d                    # Start with defaults
-#   docker-compose --profile gapps up -d    # Start with GApps
-#   docker-compose up -d --scale redroid=3  # Start 3 instances
+# This mirrors the systemd service architecture for local development.
 #
-# Environment variables:
-#   REDROID_IMAGE         - Base image (default: redroid/redroid:11.0.0-latest)
-#   REDROID_WIDTH         - Screen width (default: 1280)
-#   REDROID_HEIGHT        - Screen height (default: 720)
-#   PROXY_ENABLED         - Enable proxy (true/false)
-#   PROXY_HOST            - Proxy host
-#   PROXY_PORT            - Proxy port
+# Usage:
+#   docker-compose up -d                         # Start core services
+#   docker-compose --profile streaming up -d     # Include RTMP streaming
+#   docker-compose --profile all up -d           # All services
+#   docker-compose logs -f                       # View logs
+#
+# Dependency Order:
+#   1. redroid        - Core Android VM (must start first)
+#   2. nginx-rtmp     - RTMP streaming server (parallel)
+#   3. ffmpeg-bridge  - Video/audio bridge (after nginx-rtmp)
+#   4. control-api    - REST API (after redroid healthy)
+#   5. log-collector  - Log aggregation (after redroid)
+#
+# Environment variables (see .env.example):
+#   REDROID_IMAGE, REDROID_WIDTH, REDROID_HEIGHT, REDROID_FPS
+#   API_PORT, ADB_PORT, VNC_PORT, RTMP_PORT
+#   PROXY_URL (for proxy profile)
 
 version: '3.8'
 
 services:
-  # Main Redroid container
+  # ==========================================================================
+  # CORE SERVICES
+  # ==========================================================================
+  
+  # 1. Redroid Android Container (REQUIRED)
   redroid:
     image: ${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}
     container_name: redroid
@@ -28,6 +39,11 @@ services:
     volumes:
       - redroid-data:/data
       - ./config:/etc/cloud-phone:ro
+      # Virtual devices (if host has v4l2loopback)
+      - /dev/video42:/dev/video42:rw
+      - /dev/snd:/dev/snd:rw
+    devices:
+      - /dev/video42:/dev/video42
     command:
       - androidboot.redroid_gpu_mode=${GPU_MODE:-guest}
       - androidboot.redroid_width=${REDROID_WIDTH:-1280}
@@ -37,56 +53,159 @@ services:
       - androidboot.redroid_vnc=1
       - androidboot.redroid_vnc_port=5900
     healthcheck:
-      test: ["CMD", "sh", "-c", "getprop sys.boot_completed | grep -q 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
+      test: ["CMD", "sh", "-c", "getprop sys.boot_completed 2>/dev/null | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
       start_period: 60s
     networks:
       - cloud-phone-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+        labels: "service=redroid,type=container"
 
-  # Control API
+  # 2. Control API (REQUIRED - depends on redroid)
   control-api:
-    image: python:3.11-slim
+    build:
+      context: ../api
+      dockerfile: Dockerfile
+    image: cloud-phone-api:latest
     container_name: control-api
     restart: unless-stopped
     ports:
       - "${API_PORT:-8080}:8080"
     volumes:
       - ../api:/app:ro
-      - ./config:/etc/cloud-phone:ro
+      - ../config:/etc/cloud-phone:ro
+      - logs:/var/log/cloud-phone
     working_dir: /app
     environment:
       - ADB_CONNECT=redroid:5555
       - API_HOST=0.0.0.0
       - API_PORT=8080
       - API_TOKEN=${API_TOKEN:-}
-      - CONFIG_FILE=/etc/cloud-phone/config.json
+      - CLOUD_PHONE_CONFIG=/etc/cloud-phone/cloud-phone-config.example.json
+      - PYTHONUNBUFFERED=1
     command: >
-      bash -c "pip install -q flask requests &&
+      bash -c "pip install -q -r requirements.txt &&
+               until adb connect redroid:5555 2>/dev/null | grep -q connected; do echo 'Waiting for ADB...'; sleep 2; done &&
                python server.py"
     depends_on:
       redroid:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - cloud-phone-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+        labels: "service=control-api,type=api"
 
-  # NGINX RTMP (for streaming)
+  # ==========================================================================
+  # STREAMING SERVICES (--profile streaming)
+  # ==========================================================================
+  
+  # 3. NGINX RTMP Server
   nginx-rtmp:
     image: tiangolo/nginx-rtmp
     container_name: nginx-rtmp
     restart: unless-stopped
     ports:
       - "${RTMP_PORT:-1935}:1935"
-      - "${HLS_PORT:-8088}:8080"
+      - "${RTMP_STAT_PORT:-8081}:8080"
     volumes:
       - ../config/nginx-rtmp.conf:/etc/nginx/nginx.conf:ro
     profiles:
       - streaming
+      - all
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/stat"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - cloud-phone-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+        labels: "service=nginx-rtmp,type=streaming"
 
-  # Proxy sidecar (tun2socks)
+  # 4. FFmpeg Bridge (RTMP -> Virtual Devices)
+  ffmpeg-bridge:
+    image: linuxserver/ffmpeg:latest
+    container_name: ffmpeg-bridge
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - ../scripts/ffmpeg-bridge.sh:/ffmpeg-bridge.sh:ro
+      - /dev/video42:/dev/video42:rw
+      - /dev/snd:/dev/snd:rw
+    environment:
+      - RTMP_URL=rtmp://nginx-rtmp/live/cam
+      - VIDEO_DEVICE=/dev/video42
+      - AUDIO_DEVICE=hw:Loopback,1,0
+    entrypoint: ["/bin/bash", "/ffmpeg-bridge.sh"]
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    profiles:
+      - streaming
+      - all
+    networks:
+      - cloud-phone-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+        labels: "service=ffmpeg-bridge,type=streaming"
+
+  # ==========================================================================
+  # OPTIONAL SERVICES
+  # ==========================================================================
+  
+  # Log Collector (--profile logging or --profile all)
+  log-collector:
+    image: alpine:latest
+    container_name: log-collector
+    restart: unless-stopped
+    volumes:
+      - ../scripts/log-collector.sh:/log-collector.sh:ro
+      - ../config:/etc/cloud-phone:ro
+      - logs:/var/log/cloud-phone
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - CLOUD_PHONE_CONFIG=/etc/cloud-phone/cloud-phone-config.example.json
+      - ADB_CONNECT=redroid:5555
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["apk add --no-cache bash jq docker-cli && /bin/bash /log-collector.sh start && tail -f /var/log/cloud-phone/unified.log"]
+    depends_on:
+      - redroid
+    profiles:
+      - logging
+      - all
+    networks:
+      - cloud-phone-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+        labels: "service=log-collector,type=system"
+
+  # Proxy Sidecar (--profile proxy)
   proxy-sidecar:
     image: xjasonlyu/tun2socks
     container_name: proxy-sidecar
@@ -98,15 +217,29 @@ services:
       - PROXY=${PROXY_URL:-socks5://host.docker.internal:1080}
     profiles:
       - proxy
+      - all
     network_mode: "service:redroid"
+
+# ==========================================================================
+# VOLUMES
+# ==========================================================================
 
 volumes:
   redroid-data:
     driver: local
+    name: cloud-phone-redroid-data
+  logs:
+    driver: local
+    name: cloud-phone-logs
+
+# ==========================================================================
+# NETWORKS
+# ==========================================================================
 
 networks:
   cloud-phone-net:
     driver: bridge
+    name: cloud-phone-network
     ipam:
       config:
         - subnet: 172.28.0.0/16

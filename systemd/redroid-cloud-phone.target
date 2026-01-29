@@ -1,7 +1,22 @@
 [Unit]
 Description=Redroid Cloud Phone Target
-Wants=redroid-container.service nginx-rtmp.service ffmpeg-bridge.service control-api.service
-After=network.target docker.service
+Documentation=https://github.com/lehelkovach/redroid-cloud-phone
+
+# Core dependencies
+Requires=docker.service
+After=docker.service network-online.target
+
+# Services managed by this target (in dependency order)
+# 1. redroid-container - Core Android VM (must start first)
+# 2. nginx-rtmp       - RTMP streaming server (parallel with redroid)
+# 3. ffmpeg-bridge    - Video/audio bridge (after nginx-rtmp)
+# 4. control-api      - REST API (after redroid-container)
+# 5. log-collector    - Log aggregation (after redroid-container)
+Wants=redroid-container.service
+Wants=nginx-rtmp.service
+Wants=ffmpeg-bridge.service
+Wants=control-api.service
+Wants=log-collector.service
 
 [Install]
 WantedBy=multi-user.target

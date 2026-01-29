@@ -3,6 +3,7 @@ Description=Cloud Phone Log Collector
 Documentation=https://github.com/lehelkovach/redroid-cloud-phone
 After=docker.service redroid-container.service
 Wants=redroid-container.service
+PartOf=redroid-cloud-phone.target
 
 [Service]
 Type=forking
@@ -12,6 +13,9 @@ ExecStop=/opt/redroid-scripts/log-collector.sh stop
 ExecReload=/opt/redroid-scripts/log-collector.sh stop && /opt/redroid-scripts/log-collector.sh start
 Restart=on-failure
 RestartSec=10
+
+# Run as root for Docker/ADB access
+User=root
 
 [Install]
 WantedBy=redroid-cloud-phone.target

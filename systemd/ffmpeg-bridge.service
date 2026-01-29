@@ -3,6 +3,8 @@ Description=FFmpeg RTMP to Virtual Devices Bridge
 Documentation=https://ffmpeg.org
 After=nginx-rtmp.service
 Wants=nginx-rtmp.service
+BindsTo=nginx-rtmp.service
+PartOf=redroid-cloud-phone.target
 
 [Service]
 Type=simple
@@ -18,5 +20,4 @@ CPUQuota=50%
 MemoryMax=512M
 
 [Install]
-WantedBy=redroid-cloud-phone.target
 WantedBy=redroid-cloud-phone.target

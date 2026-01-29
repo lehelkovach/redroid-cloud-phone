@@ -1,14 +1,22 @@
 [Unit]
 Description=Redroid Android Container
+Documentation=https://github.com/remote-android/redroid-doc
 After=docker.service network-online.target
-Wants=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+PartOf=redroid-cloud-phone.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/redroid-scripts/redroid-container.sh
 ExecStop=/usr/bin/docker stop redroid
-TimeoutStartSec=0
+ExecStopPost=/usr/bin/docker rm -f redroid
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+# Health check
+ExecStartPost=/bin/bash -c 'for i in {1..30}; do docker exec redroid getprop sys.boot_completed 2>/dev/null | grep -q 1 && exit 0; sleep 2; done; exit 1'
 
 [Install]
 WantedBy=redroid-cloud-phone.target
