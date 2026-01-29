@@ -2,7 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-01-22
+
+### Added
+- **Service Orchestration**: New `service-orchestrator.sh` for managing services with dependency ordering
+- **Services Command**: `./cloud-phone services` with start/stop/restart/status/health/deps actions
+- **Service Tests**: Comprehensive test coverage in `tests/test_services.py`
+  - Service file existence and validation
+  - Dependency ordering verification
+  - Health checks for all services
+  - Restart and recovery tests
+  - Inter-service communication tests
+- **Log Type Labels**: Structured logging with source labels (RDR, LCT, API, NGX, FFM, etc.)
+- **Unified Log**: Combined `unified.log` with all sources and type labels
+- **Log Filtering**: Filter logs by type, level, and search patterns
+- **API Dockerfile**: Container build for control-api service
+
+### Changed
+- **Systemd Services**: Fixed dependency order, added PartOf/BindsTo relationships
+  - `redroid-container.service`: Added health check, proper cleanup
+  - `nginx-rtmp.service`: Fixed duplicate WantedBy
+  - `ffmpeg-bridge.service`: Added BindsTo nginx-rtmp
+  - `control-api.service`: Added ADB pre-check, health endpoint check
+  - `log-collector.service`: Proper forking service setup
+- **Docker Compose**: Updated with health checks, profiles (streaming, logging, proxy, all)
+- **Config Schema**: Added `unified.log` to logging.files
+
+### Fixed
+- Duplicate WantedBy in nginx-rtmp and ffmpeg-bridge services
+- Target file not including log-collector.service
+
+## [0.2.0] - 2026-01-21
 
 ### Added
 - Comprehensive test suite (75 tests across unit, integration, E2E)
@@ -20,48 +50,25 @@ All notable changes to this project are documented in this file.
 - Screenshot API endpoint ADB connection issue
 - Test stream key collision in E2E tests
 
-## [2026-01-29] Documentation Consolidation
-
-### Changed
-- Moved all documentation to `docs/` folder
-- Created comprehensive README.md with TOC
-- Added Mermaid diagrams to ARCHITECTURE.md
-- Consolidated 41 markdown files into organized structure
-
-### Removed
-- Redundant status/progress files
-- Outdated handoff documents
-- Duplicate research documents
-
-## [2026-01-14] Streaming Pipeline
+## [0.1.0] - 2026-01-09 - Initial Release
 
 ### Added
+- Redroid Docker container configuration
+- Control API with 11+ endpoints (server.py)
+- Agent API for LLM automation (agent_api.py)
+- VNC access (port 5900)
+- ADB access (port 5555)
 - nginx-rtmp service for RTMP ingest
 - ffmpeg-bridge service for video/audio conversion
 - v4l2loopback virtual camera support
 - ALSA loopback virtual microphone support
 - OBS streaming support
-
-### Changed
-- Updated systemd services for auto-recovery
-- Improved health check script
-
-## [2026-01-11] Test Coverage
-
-### Added
 - Full test coverage for API endpoints
 - Streaming pipeline tests
 - Connectivity tests
-- Orchestrator tests
-
-## [2026-01-09] Initial Redroid Setup
-
-### Added
-- Redroid Docker container configuration
-- Control API with 11+ endpoints
-- VNC access (port 5900)
-- ADB access (port 5555)
-- Basic deployment scripts
+- Orchestrator service for multi-instance management
+- Terraform configuration for OCI deployment
+- Docker build scripts and Dockerfiles
 
 ### Technical Decisions
 - Chose Redroid over Waydroid for Docker compatibility
@@ -72,12 +79,11 @@ All notable changes to this project are documented in this file.
 
 ## Version History
 
-| Date | Version | Highlights |
-|------|---------|------------|
-| 2026-01-29 | - | Documentation consolidation, test suite |
-| 2026-01-14 | - | Streaming pipeline, ffmpeg bridge |
-| 2026-01-11 | - | Test coverage, API testing |
-| 2026-01-09 | - | Initial Redroid setup |
+| Version | Date | Highlights |
+|---------|------|------------|
+| 0.3.0 | 2026-01-22 | Service orchestration, log labels, services tests |
+| 0.2.0 | 2026-01-21 | Documentation consolidation, test suite |
+| 0.1.0 | 2026-01-09 | Initial release with Redroid, API, streaming |
 
 ## Known Issues
 

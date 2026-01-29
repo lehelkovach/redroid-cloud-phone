@@ -21,6 +21,7 @@
     "max_files": 10,
     "files": {
       "main": "cloud-phone.log",
+      "unified": "unified.log",
       "redroid": "redroid.log",
       "adb": "adb.log",
       "api": "api.log",

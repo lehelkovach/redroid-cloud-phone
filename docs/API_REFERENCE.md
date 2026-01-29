@@ -669,3 +669,57 @@ python3 tests/test_agent_api.py \
   --output-json /var/log/test-results.json \
   --verbose
 ```
+
+---
+
+## API Change Synchronization
+
+When making changes to API functionality, follow this process to keep documentation and tests in sync:
+
+### 1. Update the API Code
+
+Edit `api/server.py` or `api/agent_api.py` with your changes.
+
+### 2. Update API Documentation
+
+Edit `docs/API_REFERENCE.md`:
+- Add/update endpoint documentation
+- Update request/response examples
+- Add to the Agent Tool Definitions if applicable
+
+### 3. Update Tests
+
+Edit `tests/test_agent_api.py`:
+- Add tests for new endpoints
+- Update existing tests if behavior changed
+- Ensure tests cover edge cases
+
+### 4. Update Schema (if config changes)
+
+Edit `config/cloud-phone-config.schema.json` and `config/cloud-phone-config.example.json` if:
+- New configuration options are added
+- Default values change
+- New environment variables are introduced
+
+### 5. Run Full Test Suite
+
+```bash
+# Run all tests
+VM_HOST=<IP> pytest tests/ -v
+
+# Run API tests specifically
+python3 tests/test_agent_api.py --api-url http://<IP>:8080 -v
+```
+
+### 6. Update Changelog
+
+Add changes to `docs/CHANGELOG.md` under the `[Unreleased]` section.
+
+### Checklist
+
+- [ ] API code updated
+- [ ] API documentation updated
+- [ ] Tests added/updated
+- [ ] Tests pass locally
+- [ ] Tests pass against live instance
+- [ ] Changelog updated

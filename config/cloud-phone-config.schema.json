@@ -32,6 +32,7 @@
           "type": "object",
           "properties": {
             "main": { "type": "string", "default": "cloud-phone.log" },
+            "unified": { "type": "string", "default": "unified.log", "description": "Combined log from all sources with type labels" },
             "redroid": { "type": "string", "default": "redroid.log" },
             "adb": { "type": "string", "default": "adb.log" },
             "api": { "type": "string", "default": "api.log" },

@@ -17,13 +17,14 @@ The `cloud-phone` script in the project root provides a single entry point for a
 | `deploy` | Deploy new instance or to existing instance |
 | `test` | Run tests (unit, integration, e2e, api) |
 | `manage` | Manage running instances (start, stop, restart, status) |
+| `services` | Orchestrate services with dependency ordering |
 | `fix` | Apply hotfixes and repairs |
 | `tunnel` | Manage SSH tunnels for remote access |
 | `proxy` | Configure proxy settings |
 | `build` | Build custom Docker images |
 | `install` | Install on local/remote system |
 | `status` | Show system status and health |
-| `logs` | View logs from services |
+| `logs` | View and filter logs (with type labels) |
 
 ### Quick Examples
 
@@ -48,6 +49,56 @@ The `cloud-phone` script in the project root provides a single entry point for a
 ```
 
 Run `./cloud-phone <command> --help` for command-specific options.
+
+### Service Orchestration
+
+Manage services with proper dependency ordering:
+
+```bash
+# Show service status
+./cloud-phone services status
+
+# Start all services in dependency order
+./cloud-phone services start
+
+# Stop all services in reverse order
+./cloud-phone services stop
+
+# Run health checks
+./cloud-phone services health
+
+# Show dependency tree
+./cloud-phone services deps
+
+# Remote instance
+./cloud-phone services status --instance 129.146.x.x
+```
+
+Service dependency order:
+1. `redroid-container` - Core Android VM (requires docker)
+2. `nginx-rtmp` - RTMP streaming server
+3. `ffmpeg-bridge` - Video/audio bridge (requires nginx-rtmp)
+4. `control-api` - REST API (requires redroid-container)
+5. `log-collector` - Log aggregation (after redroid-container)
+
+### Orchestrator API
+
+The orchestrator (`orchestrator/server.py`) provides multi-instance management:
+
+```bash
+# Start orchestrator
+cd orchestrator && python server.py
+
+# Create operation (login flow)
+curl -X POST http://localhost:8090/operations -H "Content-Type: application/json" \
+  -d '{"operation": "login", "app_package": "com.example", "login": {"username": "user", "password": "pass"}}'
+
+# Check operation status
+curl http://localhost:8090/operations/<op_id>
+
+# List instances
+curl http://localhost:8090/instances
+```
 
 ## Development Workflow
 
