@@ -18,23 +18,41 @@ import shlex
 import time
 import base64
 import tempfile
+import logging
+import threading
+import uuid
 from functools import wraps
 from flask import Flask, request, jsonify, Response
 
 app = Flask(__name__)
 
+# Logging
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger("control_api")
+
 # Configuration
 ADB_CONNECT = os.environ.get("ADB_CONNECT", "127.0.0.1:5555")
 API_TOKEN = os.environ.get("API_TOKEN", "")
 CONFIG_FILE = os.environ.get("CONFIG_FILE", "/etc/cloud-phone/config.json")
-PROXY_SCRIPT = "/opt/waydroid-scripts/proxy-control.sh"
+PROXY_SCRIPT = "/opt/redroid-scripts/proxy-control.sh"
+JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", "3600"))
+JOB_MAX = int(os.environ.get("JOB_MAX", "500"))
 
 # In-memory state
 _state = {
     "proxy": {"enabled": False, "type": None, "host": None, "port": None},
     "location": {"enabled": False, "latitude": 0, "longitude": 0},
-    "connected": False
+    "connected": False,
+    "last_adb_error": ""
 }
+
+# In-memory job queue
+_jobs = {}
+_jobs_lock = threading.Lock()
 
 # =============================================================================
 # Helpers
@@ -45,10 +63,20 @@ def run_adb(*args, timeout=30):
     cmd = ["adb", "-s", ADB_CONNECT] + list(args)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
+        success = result.returncode == 0
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        if not success:
+            _state["last_adb_error"] = stderr or stdout or "adb command failed"
+            logger.warning("ADB command failed: %s | stderr=%s", " ".join(cmd), _state["last_adb_error"])
+        return success, stdout, stderr
     except subprocess.TimeoutExpired:
+        _state["last_adb_error"] = "adb command timed out"
+        logger.warning("ADB command timed out: %s", " ".join(cmd))
         return False, "", "Command timed out"
     except Exception as e:
+        _state["last_adb_error"] = str(e)
+        logger.exception("ADB command exception: %s", " ".join(cmd))
         return False, "", str(e)
 
 def run_adb_shell(command, timeout=30):
@@ -69,6 +97,9 @@ def ensure_adb_connected():
         return True
     
     _state["connected"] = False
+    if err or out:
+        _state["last_adb_error"] = err or out
+        logger.warning("ADB connect failed: %s", _state["last_adb_error"])
     return False
 
 def require_auth(f):
@@ -94,6 +125,125 @@ def save_config(config):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
+
+
+def _prune_jobs(now=None):
+    now = now or time.time()
+    with _jobs_lock:
+        expired = [job_id for job_id, job in _jobs.items()
+                   if now - job["created_at"] > JOB_TTL_SECONDS]
+        for job_id in expired:
+            _jobs.pop(job_id, None)
+        if len(_jobs) > JOB_MAX:
+            oldest = sorted(_jobs.items(), key=lambda item: item[1]["created_at"])
+            for job_id, _ in oldest[: max(0, len(_jobs) - JOB_MAX)]:
+                _jobs.pop(job_id, None)
+
+
+def _update_job(job_id, **updates):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+        job["updated_at"] = time.time()
+
+
+def _do_screen_action(action):
+    if action == "on":
+        run_adb_shell("input keyevent KEYCODE_WAKEUP")
+    elif action == "off":
+        run_adb_shell("input keyevent KEYCODE_SLEEP")
+    elif action == "toggle":
+        run_adb_shell("input keyevent KEYCODE_POWER")
+    elif action == "unlock":
+        run_adb_shell("input keyevent KEYCODE_WAKEUP")
+        time.sleep(0.5)
+        run_adb_shell("input swipe 500 1500 500 500")
+    return {"success": True, "action": action}
+
+
+def _do_device_input(data):
+    input_type = data.get("type", "tap")
+    if input_type == "tap":
+        x, y = data.get("x", 500), data.get("y", 500)
+        run_adb_shell(f"input tap {x} {y}")
+    elif input_type == "swipe":
+        x1, y1 = data.get("x1", 100), data.get("y1", 100)
+        x2, y2 = data.get("x2", 500), data.get("y2", 500)
+        duration = data.get("duration", 300)
+        run_adb_shell(f"input swipe {x1} {y1} {x2} {y2} {duration}")
+    elif input_type == "text":
+        text = data.get("text", "")
+        text = text.replace(" ", "%s").replace("'", "\\'")
+        run_adb_shell(f"input text '{text}'")
+    elif input_type == "key":
+        keycode = data.get("keycode", 4)
+        run_adb_shell(f"input keyevent {keycode}")
+    return {"success": True, "type": input_type}
+
+
+def _do_screenshot_base64():
+    result = subprocess.run(
+        ["adb", "-s", ADB_CONNECT, "exec-out", "screencap", "-p"],
+        capture_output=True, timeout=30
+    )
+    if result.returncode == 0 and result.stdout:
+        return {"success": True, "image_base64": base64.b64encode(result.stdout).decode()}
+    return {"success": False, "error": "Failed to capture screenshot"}
+
+
+def _handle_job(job_type, payload):
+    ensure_adb_connected()
+    if job_type == "adb_shell":
+        command = payload.get("command", "")
+        timeout = payload.get("timeout", 30)
+        if not command:
+            return {"success": False, "error": "command required"}
+        success, stdout, stderr = run_adb_shell(command, timeout=timeout)
+        return {"success": success, "stdout": stdout, "stderr": stderr}
+    if job_type == "device_input":
+        return _do_device_input(payload or {})
+    if job_type == "screen":
+        return _do_screen_action(payload.get("action", "toggle"))
+    if job_type == "screenshot":
+        return _do_screenshot_base64()
+    if job_type == "app_start":
+        package = payload.get("package", "")
+        if not package:
+            return {"success": False, "error": "package required"}
+        success, out, err = run_adb_shell(f"monkey -p {package} -c android.intent.category.LAUNCHER 1")
+        return {"success": success, "message": out or err}
+    if job_type == "app_stop":
+        package = payload.get("package", "")
+        if not package:
+            return {"success": False, "error": "package required"}
+        success, out, err = run_adb_shell(f"am force-stop {package}")
+        return {"success": success, "message": out or err}
+    if job_type == "app_clear":
+        package = payload.get("package", "")
+        if not package:
+            return {"success": False, "error": "package required"}
+        success, out, err = run_adb_shell(f"pm clear {package}")
+        return {"success": success, "message": out or err}
+    if job_type == "app_uninstall":
+        package = payload.get("package", "")
+        if not package:
+            return {"success": False, "error": "package required"}
+        success, out, err = run_adb_shell(f"pm uninstall {package}")
+        return {"success": success, "message": out or err}
+    return {"success": False, "error": f"unsupported job type: {job_type}"}
+
+
+def _run_job(job_id, job_type, payload):
+    _update_job(job_id, status="running")
+    try:
+        result = _handle_job(job_type, payload or {})
+        _update_job(job_id, status="done", result=result)
+    except Exception as exc:
+        logger.exception("Job failed: %s", job_id)
+        _update_job(job_id, status="failed", error=str(exc))
+    _prune_jobs()
 
 # =============================================================================
 # Health & Status Endpoints
@@ -466,19 +616,7 @@ def control_screen():
     """
     data = request.get_json() or {}
     action = data.get("action", "toggle")
-    
-    if action == "on":
-        run_adb_shell("input keyevent KEYCODE_WAKEUP")
-    elif action == "off":
-        run_adb_shell("input keyevent KEYCODE_SLEEP")
-    elif action == "toggle":
-        run_adb_shell("input keyevent KEYCODE_POWER")
-    elif action == "unlock":
-        run_adb_shell("input keyevent KEYCODE_WAKEUP")
-        time.sleep(0.5)
-        run_adb_shell("input swipe 500 1500 500 500")
-    
-    return jsonify({"success": True, "action": action})
+    return jsonify(_do_screen_action(action))
 
 @app.route("/device/input", methods=["POST"])
 @require_auth
@@ -501,67 +639,28 @@ def device_input():
     }
     """
     data = request.get_json() or {}
-    input_type = data.get("type", "tap")
-    
-    if input_type == "tap":
-        x, y = data.get("x", 500), data.get("y", 500)
-        run_adb_shell(f"input tap {x} {y}")
-    
-    elif input_type == "swipe":
-        x1, y1 = data.get("x1", 100), data.get("y1", 100)
-        x2, y2 = data.get("x2", 500), data.get("y2", 500)
-        duration = data.get("duration", 300)
-        run_adb_shell(f"input swipe {x1} {y1} {x2} {y2} {duration}")
-    
-    elif input_type == "text":
-        text = data.get("text", "")
-        # Escape special characters
-        text = text.replace(" ", "%s").replace("'", "\\'")
-        run_adb_shell(f"input text '{text}'")
-    
-    elif input_type == "key":
-        keycode = data.get("keycode", 4)
-        run_adb_shell(f"input keyevent {keycode}")
-    
-    return jsonify({"success": True, "type": input_type})
+    return jsonify(_do_device_input(data))
 
 @app.route("/device/screenshot", methods=["GET"])
 @require_auth
 def screenshot():
     """Take screenshot and return as PNG"""
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        run_adb_shell(f"screencap -p > {tmp.name}")
-        run_adb("pull", "/sdcard/screenshot.png", tmp.name)
-        
-        # Alternative: direct screencap
-        success, _, _ = run_adb("exec-out", "screencap", "-p", ">", tmp.name)
-        
-        if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 0:
-            with open(tmp.name, "rb") as f:
-                data = f.read()
-            os.unlink(tmp.name)
-            return Response(data, mimetype="image/png")
-        
-        os.unlink(tmp.name)
-    
+    ensure_adb_connected()
+    result = subprocess.run(
+        ["adb", "-s", ADB_CONNECT, "exec-out", "screencap", "-p"],
+        capture_output=True, timeout=30
+    )
+    if result.returncode == 0 and result.stdout:
+        return Response(result.stdout, mimetype="image/png")
     return jsonify({"error": "Failed to capture screenshot"}), 500
 
 @app.route("/device/screenshot/base64", methods=["GET"])
 @require_auth
 def screenshot_base64():
     """Take screenshot and return as base64 JSON"""
-    result = subprocess.run(
-        ["adb", "-s", ADB_CONNECT, "exec-out", "screencap", "-p"],
-        capture_output=True, timeout=30
-    )
-    
-    if result.returncode == 0 and result.stdout:
-        return jsonify({
-            "success": True,
-            "image_base64": base64.b64encode(result.stdout).decode()
-        })
-    
-    return jsonify({"success": False, "error": "Failed to capture screenshot"}), 500
+    result = _do_screenshot_base64()
+    status = 200 if result.get("success") else 500
+    return jsonify(result), status
 
 # =============================================================================
 # App Management Endpoints
@@ -684,7 +783,7 @@ def update_config():
 
 # Device profiles directory
 PROFILES_DIR = os.environ.get("PROFILES_DIR", "/opt/cloud-phone/config/device-profiles")
-ANTIDETECT_SCRIPT = "/opt/waydroid-scripts/anti-detection.sh"
+ANTIDETECT_SCRIPT = "/opt/redroid-scripts/anti-detection.sh"
 
 # In-memory device state
 _device_state = {
@@ -1011,6 +1110,64 @@ def reset_antidetect():
         "success": True,
         "message": "Anti-detection reset. Restart container for full reset."
     })
+
+# =============================================================================
+# Job Queue Endpoints
+# =============================================================================
+
+@app.route("/jobs", methods=["POST"])
+@require_auth
+def create_job():
+    """
+    Create an async job and poll for result.
+
+    Body:
+    {
+        "type": "adb_shell" | "device_input" | "screen" | "screenshot"
+                | "app_start" | "app_stop" | "app_clear" | "app_uninstall",
+        "payload": { ... }
+    }
+    """
+    data = request.get_json() or {}
+    job_type = data.get("type", "")
+    payload = data.get("payload", {})
+    if not job_type:
+        return jsonify({"error": "type required"}), 400
+
+    _prune_jobs()
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    job = {
+        "id": job_id,
+        "type": job_type,
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "result": None,
+        "error": None
+    }
+    with _jobs_lock:
+        _jobs[job_id] = job
+
+    thread = threading.Thread(target=_run_job, args=(job_id, job_type, payload), daemon=True)
+    thread.start()
+
+    return jsonify({
+        "job_id": job_id,
+        "status": "queued",
+        "type": job_type
+    }), 202
+
+
+@app.route("/jobs/<job_id>", methods=["GET"])
+@require_auth
+def get_job(job_id):
+    _prune_jobs()
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "job not found"}), 404
+    return jsonify(job)
 
 # =============================================================================
 # Main
