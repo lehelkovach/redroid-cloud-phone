@@ -33,8 +33,11 @@ export COMPARTMENT_ID="ocid1.compartment..."
 export SUBNET_ID="ocid1.subnet..."
 export AVAILABILITY_DOMAIN="AD-1"
 
-# Deploy (Ubuntu 20.04 with Redroid)
-./scripts/deploy-ubuntu20-redroid.sh my-cloud-phone
+# Full deployment (create instance + deploy + test)
+./cloud-phone deploy --full --name my-phone
+
+# Or deploy to existing instance
+./cloud-phone deploy --to-instance 129.146.x.x
 
 # Or with full options
 ./scripts/deploy-cloud-phone.sh \
@@ -48,7 +51,10 @@ export AVAILABILITY_DOMAIN="AD-1"
 ### Connect
 
 ```bash
-# SSH tunnel for secure access
+# Start SSH tunnel for secure access
+./cloud-phone tunnel --start 129.146.x.x
+
+# Or manually:
 ssh -L 5555:localhost:5555 -L 5900:localhost:5900 -L 8080:localhost:8080 ubuntu@<IP>
 
 # View via scrcpy (install: sudo apt install scrcpy)
@@ -59,6 +65,9 @@ vncviewer localhost:5900  # password: redroid
 
 # API health check
 curl http://localhost:8080/health
+
+# Check status
+./cloud-phone status --instance 129.146.x.x
 ```
 
 ### Stream from OBS
@@ -88,6 +97,8 @@ curl http://localhost:8080/health
 
 ```
 redroid-cloud-phone/
+├── cloud-phone             # Unified CLI tool (main entry point)
+├── install-redroid.sh      # System installer
 ├── api/                    # Control API server
 │   ├── server.py          # Main Flask API
 │   └── agent_api.py       # Agent coordination API
@@ -98,15 +109,17 @@ redroid-cloud-phone/
 ├── docker/                 # Docker build files
 ├── docs/                   # Documentation
 ├── orchestrator/           # Multi-instance orchestrator
-├── scripts/                # Deployment and utility scripts
-│   ├── deploy-cloud-phone.sh
-│   ├── deploy-ubuntu20-redroid.sh
-│   ├── ffmpeg-bridge.sh
-│   ├── health-check.sh
+├── scripts/                # Deployment and utility scripts (40+ scripts)
+│   ├── deploy-cloud-phone.sh    # Full deployment
+│   ├── deploy-from-golden.sh    # Fast golden image deploy
+│   ├── ffmpeg-bridge.sh         # RTMP to virtual device
+│   ├── health-check.sh          # Health monitoring
+│   ├── proxy-control.sh         # Proxy configuration
+│   ├── vnc-tunnel.sh            # SSH tunnel management
 │   └── ...
 ├── systemd/                # Systemd service files
 ├── terraform/              # Infrastructure as Code
-├── tests/                  # Test suite
+├── tests/                  # Test suite (75+ tests)
 └── cloud-init.yaml         # Cloud-init configuration
 ```
 
@@ -130,12 +143,18 @@ See [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for complete API documentatio
 ## Testing
 
 ```bash
-# Create virtual environment
+# Using the unified CLI
+./cloud-phone test --all                    # Run all tests
+./cloud-phone test --unit                   # Unit tests only
+./cloud-phone test --integration            # Integration tests
+./cloud-phone test --e2e                    # End-to-end tests
+./cloud-phone test --all --instance 129.146.x.x  # Test remote instance
+
+# Or directly with pytest
 python3 -m venv .venv
 source .venv/bin/activate
 pip install pytest
 
-# Run all tests
 VM_HOST=<INSTANCE_IP> pytest tests/ -v
 
 # Run specific test suites

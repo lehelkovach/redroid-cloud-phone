@@ -1,6 +1,53 @@
 # Development Guide
 
-This guide covers development workflow, testing, and contribution guidelines.
+This guide covers development workflow, testing, scripts reference, and contribution guidelines.
+
+## Unified CLI Tool
+
+The `cloud-phone` script in the project root provides a single entry point for all operations:
+
+```bash
+./cloud-phone <command> [options]
+```
+
+### Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `deploy` | Deploy new instance or to existing instance |
+| `test` | Run tests (unit, integration, e2e, api) |
+| `manage` | Manage running instances (start, stop, restart, status) |
+| `fix` | Apply hotfixes and repairs |
+| `tunnel` | Manage SSH tunnels for remote access |
+| `proxy` | Configure proxy settings |
+| `build` | Build custom Docker images |
+| `install` | Install on local/remote system |
+| `status` | Show system status and health |
+| `logs` | View logs from services |
+
+### Quick Examples
+
+```bash
+# Full deployment (create + deploy + test)
+./cloud-phone deploy --full --name my-phone
+
+# Deploy to existing instance
+./cloud-phone deploy --to-instance 129.146.x.x
+
+# Run all tests
+./cloud-phone test --all
+
+# Apply all hotfixes
+./cloud-phone fix --all
+
+# Start SSH tunnel
+./cloud-phone tunnel --start 129.146.x.x
+
+# Check status
+./cloud-phone status
+```
+
+Run `./cloud-phone <command> --help` for command-specific options.
 
 ## Development Workflow
 
@@ -98,6 +145,117 @@ class TestExample:
     def test_service_running(self):
         code, out, _ = ssh_cmd("sudo systemctl is-active nginx-rtmp")
         assert code == 0 and out == "active"
+```
+
+## Scripts Reference
+
+All scripts are in the `scripts/` directory and can be called directly or via the `cloud-phone` CLI.
+
+### Deployment Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `deploy-cloud-phone.sh` | Full deployment with config options | `./scripts/deploy-cloud-phone.sh --name my-phone --ocpus 2` |
+| `deploy-from-golden.sh` | Fast deployment from golden image | `./scripts/deploy-from-golden.sh my-phone` |
+| `deploy-to-instance.sh` | Deploy to existing instance | `./scripts/deploy-to-instance.sh 129.146.x.x ~/.ssh/key` |
+| `deploy-and-test.sh` | Deploy and run test suite | `./scripts/deploy-and-test.sh` |
+| `create-instance.sh` | Create OCI instance only | `./scripts/create-instance.sh my-phone` |
+| `create-golden-image.sh` | Create OCI custom image | `./scripts/create-golden-image.sh` |
+| `prepare-golden-image.sh` | Prepare instance for imaging | `./scripts/prepare-golden-image.sh` |
+| `launch-fleet.sh` | Launch multiple instances | `./scripts/launch-fleet.sh 5` |
+
+### Testing Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `test-full-suite.sh` | Comprehensive test suite | `./scripts/test-full-suite.sh 129.146.x.x` |
+| `run-tests.sh` | Test runner with logging | `./scripts/run-tests.sh --instance-ip 129.146.x.x` |
+| `test-redroid.sh` | Quick Redroid validation | `./scripts/test-redroid.sh` |
+| `test-redroid-full.sh` | Full Redroid test suite | `./scripts/test-redroid-full.sh 129.146.x.x` |
+| `test-redroid-complete.sh` | Complete setup + test | `./scripts/test-redroid-complete.sh 129.146.x.x` |
+| `test-api.sh` | API endpoint tests | `./scripts/test-api.sh` |
+| `test-adb-vnc.sh` | ADB and VNC connectivity | `./scripts/test-adb-vnc.sh 129.146.x.x` |
+| `test-rtmp-stream.sh` | RTMP streaming test | `./scripts/test-rtmp-stream.sh` |
+| `test-audio-pipeline.sh` | Audio loopback test | `./scripts/test-audio-pipeline.sh` |
+| `test-system.sh` | System validation | `./scripts/test-system.sh` |
+| `test-instance.sh` | Quick instance test | `./scripts/test-instance.sh 129.146.x.x` |
+
+### Service Management Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `redroid-container.sh` | Container launcher (idempotent) | `./scripts/redroid-container.sh` |
+| `ffmpeg-bridge.sh` | RTMP to virtual device bridge | `./scripts/ffmpeg-bridge.sh` |
+| `health-check.sh` | Comprehensive health check | `./scripts/health-check.sh` |
+| `viewing-control.sh` | Control viewing methods | `./scripts/viewing-control.sh vnc` |
+
+### Network & Proxy Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `proxy-control.sh` | Configure HTTP/SOCKS5/transparent proxy | `./scripts/proxy-control.sh enable socks5 host 1080` |
+| `vnc-tunnel.sh` | SSH tunnel management | `./scripts/vnc-tunnel.sh start 129.146.x.x` |
+| `setup-networking.sh` | OCI VCN/subnet setup | `./scripts/setup-networking.sh` |
+
+### Fix & Repair Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `fix-instance-connectivity.sh` | Fix SSH/network issues | `./scripts/fix-instance-connectivity.sh 129.146.x.x` |
+| `fix-redroid-vnc.sh` | Fix VNC issues | `./scripts/fix-redroid-vnc.sh` |
+| `fix-play-services.sh` | Fix Google Play sign-in | `./scripts/fix-play-services.sh` |
+| `fix-v4l2loopback.sh` | Fix virtual camera module | `./scripts/fix-v4l2loopback.sh` |
+
+### Installation Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `install-gapps.sh` | Install Google Apps | `./scripts/install-gapps.sh 129.146.x.x` |
+| `install-camera.sh` | Install camera app | `./scripts/install-camera.sh` |
+| `anti-detection.sh` | Apply anti-detection mods | `./scripts/anti-detection.sh` |
+| `setup-redroid-virtual-devices.sh` | Setup virtual camera/audio | `./scripts/setup-redroid-virtual-devices.sh` |
+
+### Utility Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `get-oci-config.sh` | Discover OCI OCIDs | `./scripts/get-oci-config.sh` |
+| `get-oci-console-log.sh` | Get OCI console log | `./scripts/get-oci-console-log.sh` |
+| `get-troubleshoot-log.sh` | Get troubleshooting logs | `./scripts/get-troubleshoot-log.sh 129.146.x.x` |
+| `check-instance.sh` | Quick connectivity check | `./scripts/check-instance.sh 129.146.x.x` |
+| `check-redroid-vnc.sh` | Check VNC status | `./scripts/check-redroid-vnc.sh` |
+| `diagnose-redroid-deploy.sh` | Deployment diagnostics | `./scripts/diagnose-redroid-deploy.sh` |
+| `troubleshoot-redroid.sh` | Collect diagnostics | `./scripts/troubleshoot-redroid.sh` |
+| `monitor-oci-logs.sh` | Monitor instance logs | `./scripts/monitor-oci-logs.sh` |
+| `run-with-logging.sh` | Run command with logging | `./scripts/run-with-logging.sh "command"` |
+| `control-client.py` | API CLI client | `python3 scripts/control-client.py health` |
+| `spawn-cursor-agents.py` | Spawn Cursor agents | `python3 scripts/spawn-cursor-agents.py` |
+| `orchestrate-two.sh` | Orchestrate two VMs | `./scripts/orchestrate-two.sh` |
+
+### Script Dependencies Flow
+
+```mermaid
+graph TD
+    A[cloud-phone CLI] --> B[deploy]
+    A --> C[test]
+    A --> D[manage]
+    A --> E[fix]
+    
+    B --> B1[create-instance.sh]
+    B --> B2[deploy-to-instance.sh]
+    B --> B3[install-gapps.sh]
+    B --> B4[test-full-suite.sh]
+    
+    C --> C1[test-full-suite.sh]
+    C --> C2[run-tests.sh]
+    C --> C3[pytest tests/]
+    
+    D --> D1[health-check.sh]
+    D --> D2[redroid-container.sh]
+    
+    E --> E1[fix-instance-connectivity.sh]
+    E --> E2[fix-redroid-vnc.sh]
+    E --> E3[fix-play-services.sh]
 ```
 
 ## Git Workflow

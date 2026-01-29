@@ -1,0 +1,952 @@
+#!/bin/bash
+#
+# cloud-phone - Unified CLI for Redroid Cloud Phone
+#
+# A single entry point for all operations: deploy, test, manage, hotfix.
+# Scripts are called in dependency order with proper failure handling.
+#
+# Usage:
+#   ./cloud-phone <command> [options]
+#   ./cloud-phone help
+#
+# Commands:
+#   deploy      Deploy new instance or to existing instance
+#   test        Run tests (unit, integration, e2e, api)
+#   manage      Manage running instances (start, stop, restart, status)
+#   fix         Apply hotfixes and repairs
+#   tunnel      Manage SSH tunnels for remote access
+#   proxy       Configure proxy settings
+#   build       Build custom Docker images
+#   install     Install on local/remote system
+#
+# See './cloud-phone <command> --help' for command-specific options.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$SCRIPT_DIR/scripts"
+TESTS_DIR="$SCRIPT_DIR/tests"
+DOCKER_DIR="$SCRIPT_DIR/docker"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Logging
+log_info()   { echo -e "${GREEN}[INFO]${NC} $*"; }
+log_warn()   { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_error()  { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+log_header() { echo -e "\n${BLUE}═══════════════════════════════════════════════════════════${NC}"; echo -e "${BLUE}  $*${NC}"; echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}\n"; }
+log_step()   { echo -e "${CYAN}➤${NC} $*"; }
+
+# Error handling
+die() { log_error "$*"; exit 1; }
+
+# Run a script and halt on failure
+run_script() {
+    local script="$1"
+    shift
+    
+    if [[ ! -f "$script" ]]; then
+        die "Script not found: $script"
+    fi
+    
+    log_step "Running: $(basename "$script") $*"
+    if ! bash "$script" "$@"; then
+        die "Script failed: $(basename "$script")"
+    fi
+}
+
+# Run a script but continue on failure
+run_script_optional() {
+    local script="$1"
+    shift
+    
+    if [[ ! -f "$script" ]]; then
+        log_warn "Script not found: $script (skipping)"
+        return 0
+    fi
+    
+    log_step "Running: $(basename "$script") $*"
+    if ! bash "$script" "$@"; then
+        log_warn "Script returned non-zero: $(basename "$script") (continuing)"
+    fi
+}
+
+# =============================================================================
+# HELP
+# =============================================================================
+
+show_help() {
+    cat <<'EOF'
+cloud-phone - Unified CLI for Redroid Cloud Phone
+
+USAGE:
+    ./cloud-phone <command> [options]
+
+COMMANDS:
+    deploy          Deploy new instance or to existing instance
+    test            Run tests (unit, integration, e2e, api)
+    manage          Manage running instances (start, stop, restart, status)
+    fix             Apply hotfixes and repairs
+    tunnel          Manage SSH tunnels for remote access
+    proxy           Configure proxy settings
+    build           Build custom Docker images
+    install         Install on local/remote system
+    status          Show system status and health
+    logs            View logs from services
+    help            Show this help
+
+EXAMPLES:
+    # Full deployment (create + deploy + test)
+    ./cloud-phone deploy --full --name my-phone
+
+    # Deploy to existing instance
+    ./cloud-phone deploy --to-instance 129.146.x.x
+
+    # Run all tests
+    ./cloud-phone test --all
+
+    # Run only unit tests
+    ./cloud-phone test --unit
+
+    # Apply hotfixes
+    ./cloud-phone fix --all
+
+    # Start SSH tunnel
+    ./cloud-phone tunnel --start 129.146.x.x
+
+    # Check status
+    ./cloud-phone status
+
+    # View logs
+    ./cloud-phone logs --service redroid-container
+
+DOCUMENTATION:
+    See docs/DEVELOPMENT.md for detailed script documentation.
+    See docs/QUICK_START.md for getting started guide.
+    See docs/DEPLOYMENT.md for deployment options.
+
+EOF
+    exit 0
+}
+
+# =============================================================================
+# DEPLOY COMMANDS
+# =============================================================================
+
+cmd_deploy() {
+    local mode=""
+    local instance_name="redroid-$(date +%s)"
+    local instance_ip=""
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    local config_file=""
+    local skip_tests=false
+    local skip_gapps=false
+    local from_golden=false
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --full)         mode="full"; shift ;;
+            --to-instance)  mode="existing"; instance_ip="$2"; shift 2 ;;
+            --from-golden)  from_golden=true; shift ;;
+            --name)         instance_name="$2"; shift 2 ;;
+            --ssh-key)      ssh_key="$2"; shift 2 ;;
+            --config)       config_file="$2"; shift 2 ;;
+            --skip-tests)   skip_tests=true; shift ;;
+            --skip-gapps)   skip_gapps=true; shift ;;
+            --help|-h)      deploy_help; exit 0 ;;
+            *) die "Unknown deploy option: $1" ;;
+        esac
+    done
+    
+    log_header "DEPLOY: Cloud Phone"
+    
+    case "$mode" in
+        full)
+            log_info "Mode: Full deployment (create + configure + test)"
+            log_info "Instance: $instance_name"
+            
+            # Step 1: Create instance
+            log_header "Step 1/4: Create OCI Instance"
+            if [[ "$from_golden" == true ]]; then
+                run_script "$SCRIPTS_DIR/deploy-from-golden.sh" "$instance_name"
+            else
+                run_script "$SCRIPTS_DIR/create-instance.sh" "$instance_name"
+            fi
+            
+            # Get instance IP from temp file
+            if [[ -f /tmp/redroid-instance-info.txt ]]; then
+                instance_ip=$(cut -d'|' -f2 < /tmp/redroid-instance-info.txt)
+            else
+                die "Instance info not found"
+            fi
+            
+            # Step 2: Deploy to instance
+            log_header "Step 2/4: Deploy Redroid"
+            run_script "$SCRIPTS_DIR/deploy-to-instance.sh" "$instance_ip" "$ssh_key"
+            
+            # Step 3: Install GApps (optional)
+            if [[ "$skip_gapps" != true ]]; then
+                log_header "Step 3/4: Install Google Apps"
+                run_script_optional "$SCRIPTS_DIR/install-gapps.sh" "$instance_ip" "$ssh_key"
+            else
+                log_header "Step 3/4: Install Google Apps (SKIPPED)"
+            fi
+            
+            # Step 4: Run tests
+            if [[ "$skip_tests" != true ]]; then
+                log_header "Step 4/4: Run Tests"
+                run_script "$SCRIPTS_DIR/test-full-suite.sh" "$instance_ip" "$ssh_key"
+            else
+                log_header "Step 4/4: Run Tests (SKIPPED)"
+            fi
+            
+            log_header "DEPLOYMENT COMPLETE"
+            log_info "Instance IP: $instance_ip"
+            log_info "VNC: ssh -L 5900:localhost:5900 ubuntu@$instance_ip"
+            log_info "ADB: adb connect $instance_ip:5555"
+            ;;
+            
+        existing)
+            log_info "Mode: Deploy to existing instance"
+            log_info "Instance IP: $instance_ip"
+            
+            # Step 1: Deploy
+            log_header "Step 1/3: Deploy Redroid"
+            run_script "$SCRIPTS_DIR/deploy-to-instance.sh" "$instance_ip" "$ssh_key"
+            
+            # Step 2: Install GApps (optional)
+            if [[ "$skip_gapps" != true ]]; then
+                log_header "Step 2/3: Install Google Apps"
+                run_script_optional "$SCRIPTS_DIR/install-gapps.sh" "$instance_ip" "$ssh_key"
+            else
+                log_header "Step 2/3: Install Google Apps (SKIPPED)"
+            fi
+            
+            # Step 3: Run tests
+            if [[ "$skip_tests" != true ]]; then
+                log_header "Step 3/3: Run Tests"
+                run_script "$SCRIPTS_DIR/test-full-suite.sh" "$instance_ip" "$ssh_key"
+            else
+                log_header "Step 3/3: Run Tests (SKIPPED)"
+            fi
+            
+            log_header "DEPLOYMENT COMPLETE"
+            ;;
+            
+        "")
+            deploy_help
+            exit 1
+            ;;
+    esac
+}
+
+deploy_help() {
+    cat <<'EOF'
+cloud-phone deploy - Deploy Redroid Cloud Phone
+
+USAGE:
+    ./cloud-phone deploy [options]
+
+OPTIONS:
+    --full              Full deployment: create instance + deploy + test
+    --to-instance IP    Deploy to existing instance at IP
+    --from-golden       Use golden image for faster deployment
+    --name NAME         Instance name (default: redroid-TIMESTAMP)
+    --ssh-key PATH      SSH key path (default: ~/.ssh/redroid_oci)
+    --config FILE       Use JSON config file for settings
+    --skip-tests        Skip test suite after deployment
+    --skip-gapps        Skip Google Apps installation
+
+EXAMPLES:
+    # Full deployment with new instance
+    ./cloud-phone deploy --full --name my-phone
+
+    # Deploy from golden image (faster)
+    ./cloud-phone deploy --full --from-golden --name my-phone
+
+    # Deploy to existing instance
+    ./cloud-phone deploy --to-instance 129.146.1.2
+
+    # Deploy without tests
+    ./cloud-phone deploy --full --skip-tests
+
+EOF
+}
+
+# =============================================================================
+# TEST COMMANDS
+# =============================================================================
+
+cmd_test() {
+    local test_type="all"
+    local instance_ip=""
+    local api_url="http://localhost:8080"
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    local verbose=false
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --all)          test_type="all"; shift ;;
+            --unit)         test_type="unit"; shift ;;
+            --integration)  test_type="integration"; shift ;;
+            --e2e)          test_type="e2e"; shift ;;
+            --api)          test_type="api"; shift ;;
+            --streaming)    test_type="streaming"; shift ;;
+            --instance)     instance_ip="$2"; shift 2 ;;
+            --api-url)      api_url="$2"; shift 2 ;;
+            --ssh-key)      ssh_key="$2"; shift 2 ;;
+            --verbose|-v)   verbose=true; shift ;;
+            --help|-h)      test_help; exit 0 ;;
+            *) die "Unknown test option: $1" ;;
+        esac
+    done
+    
+    log_header "TEST: Cloud Phone"
+    
+    # Setup SSH tunnel if testing remote
+    local tunnel_pid=""
+    if [[ -n "$instance_ip" ]]; then
+        log_info "Setting up SSH tunnel to $instance_ip..."
+        ssh -i "$ssh_key" -o StrictHostKeyChecking=no \
+            -L 8080:localhost:8080 -L 5555:localhost:5555 \
+            ubuntu@"$instance_ip" -N &
+        tunnel_pid=$!
+        sleep 3
+        api_url="http://localhost:8080"
+        trap "kill $tunnel_pid 2>/dev/null || true" EXIT
+    fi
+    
+    local pytest_args=""
+    [[ "$verbose" == true ]] && pytest_args="-v"
+    
+    case "$test_type" in
+        all)
+            log_header "Running All Tests"
+            
+            log_step "1. Unit Tests"
+            python3 -m pytest $pytest_args "$TESTS_DIR/test_streaming_unit.py" "$TESTS_DIR/test_orchestrator_unit.py" || die "Unit tests failed"
+            
+            log_step "2. Integration Tests"  
+            python3 -m pytest $pytest_args "$TESTS_DIR/test_streaming_integration.py" "$TESTS_DIR/test_orchestrator_integration.py" || die "Integration tests failed"
+            
+            log_step "3. API Tests"
+            python3 -m pytest $pytest_args "$TESTS_DIR/test_agent_api.py" --api-url "$api_url" || die "API tests failed"
+            
+            log_step "4. E2E Tests"
+            python3 -m pytest $pytest_args "$TESTS_DIR/test_streaming_e2e.py" "$TESTS_DIR/test_orchestrator_e2e.py" || die "E2E tests failed"
+            ;;
+            
+        unit)
+            log_header "Running Unit Tests"
+            python3 -m pytest $pytest_args "$TESTS_DIR/"*_unit.py || die "Unit tests failed"
+            ;;
+            
+        integration)
+            log_header "Running Integration Tests"
+            python3 -m pytest $pytest_args "$TESTS_DIR/"*_integration.py || die "Integration tests failed"
+            ;;
+            
+        e2e)
+            log_header "Running E2E Tests"
+            python3 -m pytest $pytest_args "$TESTS_DIR/"*_e2e.py || die "E2E tests failed"
+            ;;
+            
+        api)
+            log_header "Running API Tests"
+            python3 -m pytest $pytest_args "$TESTS_DIR/test_agent_api.py" --api-url "$api_url" || die "API tests failed"
+            ;;
+            
+        streaming)
+            log_header "Running Streaming Tests"
+            python3 -m pytest $pytest_args "$TESTS_DIR/test_streaming_unit.py" "$TESTS_DIR/test_streaming_integration.py" "$TESTS_DIR/test_streaming_e2e.py" "$TESTS_DIR/test_virtual_camera.py" || die "Streaming tests failed"
+            ;;
+    esac
+    
+    log_header "ALL TESTS PASSED"
+}
+
+test_help() {
+    cat <<'EOF'
+cloud-phone test - Run test suites
+
+USAGE:
+    ./cloud-phone test [options]
+
+OPTIONS:
+    --all               Run all tests (default)
+    --unit              Run unit tests only
+    --integration       Run integration tests only
+    --e2e               Run end-to-end tests only
+    --api               Run API tests only
+    --streaming         Run streaming/virtual device tests
+    --instance IP       Test against remote instance (creates SSH tunnel)
+    --api-url URL       API URL for tests (default: http://localhost:8080)
+    --ssh-key PATH      SSH key for remote access
+    --verbose, -v       Verbose test output
+
+EXAMPLES:
+    # Run all tests locally
+    ./cloud-phone test --all
+
+    # Run unit tests only
+    ./cloud-phone test --unit
+
+    # Test remote instance
+    ./cloud-phone test --all --instance 129.146.1.2
+
+EOF
+}
+
+# =============================================================================
+# MANAGE COMMANDS
+# =============================================================================
+
+cmd_manage() {
+    local action=""
+    local service=""
+    local instance_ip=""
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            start|stop|restart|status) action="$1"; shift ;;
+            --service)      service="$2"; shift 2 ;;
+            --instance)     instance_ip="$2"; shift 2 ;;
+            --ssh-key)      ssh_key="$2"; shift 2 ;;
+            --help|-h)      manage_help; exit 0 ;;
+            *) die "Unknown manage option: $1" ;;
+        esac
+    done
+    
+    [[ -z "$action" ]] && { manage_help; exit 1; }
+    
+    log_header "MANAGE: $action"
+    
+    local ssh_cmd="sudo"
+    if [[ -n "$instance_ip" ]]; then
+        ssh_cmd="ssh -i $ssh_key -o StrictHostKeyChecking=no ubuntu@$instance_ip sudo"
+    fi
+    
+    local services="${service:-redroid-container nginx-rtmp ffmpeg-bridge control-api}"
+    
+    case "$action" in
+        start)
+            $ssh_cmd systemctl start redroid-cloud-phone.target
+            log_info "All services started"
+            ;;
+        stop)
+            $ssh_cmd systemctl stop redroid-cloud-phone.target
+            log_info "All services stopped"
+            ;;
+        restart)
+            for svc in $services; do
+                log_step "Restarting $svc..."
+                $ssh_cmd systemctl restart "$svc" || log_warn "Failed to restart $svc"
+            done
+            log_info "Services restarted"
+            ;;
+        status)
+            if [[ -n "$instance_ip" ]]; then
+                run_script_optional "$SCRIPTS_DIR/health-check.sh" "$instance_ip" "$ssh_key"
+            else
+                run_script_optional "$SCRIPTS_DIR/health-check.sh"
+            fi
+            ;;
+    esac
+}
+
+manage_help() {
+    cat <<'EOF'
+cloud-phone manage - Manage services
+
+USAGE:
+    ./cloud-phone manage <action> [options]
+
+ACTIONS:
+    start       Start all services
+    stop        Stop all services
+    restart     Restart services
+    status      Show service status and health
+
+OPTIONS:
+    --service NAME      Specific service to manage
+    --instance IP       Manage remote instance
+    --ssh-key PATH      SSH key for remote access
+
+EXAMPLES:
+    # Check local status
+    ./cloud-phone manage status
+
+    # Restart remote services
+    ./cloud-phone manage restart --instance 129.146.1.2
+
+    # Restart specific service
+    ./cloud-phone manage restart --service redroid-container
+
+EOF
+}
+
+# =============================================================================
+# FIX COMMANDS
+# =============================================================================
+
+cmd_fix() {
+    local fix_type=""
+    local instance_ip=""
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --all)              fix_type="all"; shift ;;
+            --connectivity)     fix_type="connectivity"; shift ;;
+            --vnc)              fix_type="vnc"; shift ;;
+            --play-services)    fix_type="play"; shift ;;
+            --v4l2loopback)     fix_type="v4l2"; shift ;;
+            --instance)         instance_ip="$2"; shift 2 ;;
+            --ssh-key)          ssh_key="$2"; shift 2 ;;
+            --help|-h)          fix_help; exit 0 ;;
+            *) die "Unknown fix option: $1" ;;
+        esac
+    done
+    
+    [[ -z "$fix_type" ]] && { fix_help; exit 1; }
+    
+    log_header "FIX: Applying hotfixes"
+    
+    local args=""
+    [[ -n "$instance_ip" ]] && args="$instance_ip $ssh_key"
+    
+    case "$fix_type" in
+        all)
+            log_step "Fixing connectivity..."
+            run_script_optional "$SCRIPTS_DIR/fix-instance-connectivity.sh" $args
+            log_step "Fixing VNC..."
+            run_script_optional "$SCRIPTS_DIR/fix-redroid-vnc.sh" $args
+            log_step "Fixing Play Services..."
+            run_script_optional "$SCRIPTS_DIR/fix-play-services.sh" $args
+            ;;
+        connectivity)
+            run_script "$SCRIPTS_DIR/fix-instance-connectivity.sh" $args
+            ;;
+        vnc)
+            run_script "$SCRIPTS_DIR/fix-redroid-vnc.sh" $args
+            ;;
+        play)
+            run_script "$SCRIPTS_DIR/fix-play-services.sh" $args
+            ;;
+        v4l2)
+            run_script "$SCRIPTS_DIR/fix-v4l2loopback.sh" $args
+            ;;
+    esac
+    
+    log_info "Hotfixes applied"
+}
+
+fix_help() {
+    cat <<'EOF'
+cloud-phone fix - Apply hotfixes and repairs
+
+USAGE:
+    ./cloud-phone fix [options]
+
+OPTIONS:
+    --all               Apply all fixes
+    --connectivity      Fix instance connectivity
+    --vnc               Fix VNC issues
+    --play-services     Fix Google Play Services
+    --v4l2loopback      Fix virtual camera module (kernel 6.8+)
+    --instance IP       Fix remote instance
+    --ssh-key PATH      SSH key for remote access
+
+EXAMPLES:
+    # Apply all fixes locally
+    ./cloud-phone fix --all
+
+    # Fix VNC on remote instance
+    ./cloud-phone fix --vnc --instance 129.146.1.2
+
+    # Fix Google Play Services
+    ./cloud-phone fix --play-services
+
+EOF
+}
+
+# =============================================================================
+# TUNNEL COMMANDS
+# =============================================================================
+
+cmd_tunnel() {
+    local action=""
+    local instance_ip=""
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --start)    action="start"; instance_ip="$2"; shift 2 ;;
+            --stop)     action="stop"; shift ;;
+            --status)   action="status"; shift ;;
+            --ssh-key)  ssh_key="$2"; shift 2 ;;
+            --help|-h)  tunnel_help; exit 0 ;;
+            *) die "Unknown tunnel option: $1" ;;
+        esac
+    done
+    
+    [[ -z "$action" ]] && { tunnel_help; exit 1; }
+    
+    run_script "$SCRIPTS_DIR/vnc-tunnel.sh" "$action" "$instance_ip" "$ssh_key"
+}
+
+tunnel_help() {
+    cat <<'EOF'
+cloud-phone tunnel - Manage SSH tunnels
+
+USAGE:
+    ./cloud-phone tunnel [options]
+
+OPTIONS:
+    --start IP      Start SSH tunnel to instance
+    --stop          Stop SSH tunnel
+    --status        Show tunnel status
+    --ssh-key PATH  SSH key for remote access
+
+EXAMPLES:
+    # Start tunnel
+    ./cloud-phone tunnel --start 129.146.1.2
+
+    # Check status
+    ./cloud-phone tunnel --status
+
+    # Stop tunnel
+    ./cloud-phone tunnel --stop
+
+TUNNELED PORTS:
+    5555    ADB
+    5900    VNC
+    8080    Control API
+
+EOF
+}
+
+# =============================================================================
+# PROXY COMMANDS
+# =============================================================================
+
+cmd_proxy() {
+    local action=""
+    local proxy_url=""
+    local instance_ip=""
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --enable)   action="enable"; proxy_url="$2"; shift 2 ;;
+            --disable)  action="disable"; shift ;;
+            --status)   action="status"; shift ;;
+            --instance) instance_ip="$2"; shift 2 ;;
+            --ssh-key)  ssh_key="$2"; shift 2 ;;
+            --help|-h)  proxy_help; exit 0 ;;
+            *) die "Unknown proxy option: $1" ;;
+        esac
+    done
+    
+    [[ -z "$action" ]] && { proxy_help; exit 1; }
+    
+    local args=""
+    [[ -n "$instance_ip" ]] && args="--remote $instance_ip --ssh-key $ssh_key"
+    
+    case "$action" in
+        enable)
+            run_script "$SCRIPTS_DIR/proxy-control.sh" enable "$proxy_url" $args
+            ;;
+        disable)
+            run_script "$SCRIPTS_DIR/proxy-control.sh" disable $args
+            ;;
+        status)
+            run_script "$SCRIPTS_DIR/proxy-control.sh" status $args
+            ;;
+    esac
+}
+
+proxy_help() {
+    cat <<'EOF'
+cloud-phone proxy - Configure proxy settings
+
+USAGE:
+    ./cloud-phone proxy [options]
+
+OPTIONS:
+    --enable URL        Enable proxy (socks5://host:port or http://host:port)
+    --disable           Disable proxy
+    --status            Show proxy status
+    --instance IP       Configure remote instance
+    --ssh-key PATH      SSH key for remote access
+
+EXAMPLES:
+    # Enable SOCKS5 proxy
+    ./cloud-phone proxy --enable socks5://proxy.example.com:1080
+
+    # Enable HTTP proxy
+    ./cloud-phone proxy --enable http://proxy.example.com:8080
+
+    # Disable proxy
+    ./cloud-phone proxy --disable
+
+    # Check status
+    ./cloud-phone proxy --status
+
+EOF
+}
+
+# =============================================================================
+# BUILD COMMANDS
+# =============================================================================
+
+cmd_build() {
+    local args=()
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h) build_help; exit 0 ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    
+    log_header "BUILD: Docker Image"
+    run_script "$DOCKER_DIR/build.sh" "${args[@]}"
+}
+
+build_help() {
+    cat <<'EOF'
+cloud-phone build - Build custom Docker images
+
+USAGE:
+    ./cloud-phone build [options]
+
+OPTIONS:
+    --name NAME         Image name (default: cloud-phone)
+    --tag TAG           Image tag (default: latest)
+    --android VERSION   Android version (11, 12, 13)
+    --gapps             Include Google Apps
+    --push REGISTRY     Push to registry after build
+    --no-cache          Build without cache
+
+EXAMPLES:
+    # Basic build
+    ./cloud-phone build
+
+    # Build with GApps for Android 11
+    ./cloud-phone build --android 11 --gapps
+
+    # Build and push to registry
+    ./cloud-phone build --push myregistry.com/cloud-phone --tag v1.0
+
+EOF
+}
+
+# =============================================================================
+# INSTALL COMMANDS
+# =============================================================================
+
+cmd_install() {
+    local target="local"
+    local instance_ip=""
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --local)    target="local"; shift ;;
+            --remote)   target="remote"; instance_ip="$2"; shift 2 ;;
+            --ssh-key)  ssh_key="$2"; shift 2 ;;
+            --help|-h)  install_help; exit 0 ;;
+            *) die "Unknown install option: $1" ;;
+        esac
+    done
+    
+    log_header "INSTALL: Redroid Cloud Phone"
+    
+    case "$target" in
+        local)
+            if [[ $EUID -ne 0 ]]; then
+                die "Local install requires root. Use: sudo ./cloud-phone install --local"
+            fi
+            run_script "$SCRIPT_DIR/install-redroid.sh"
+            ;;
+        remote)
+            log_info "Installing to remote instance: $instance_ip"
+            scp -i "$ssh_key" -o StrictHostKeyChecking=no \
+                "$SCRIPT_DIR/install-redroid.sh" \
+                ubuntu@"$instance_ip":/tmp/
+            ssh -i "$ssh_key" -o StrictHostKeyChecking=no \
+                ubuntu@"$instance_ip" "sudo bash /tmp/install-redroid.sh"
+            ;;
+    esac
+}
+
+install_help() {
+    cat <<'EOF'
+cloud-phone install - Install Redroid Cloud Phone
+
+USAGE:
+    ./cloud-phone install [options]
+
+OPTIONS:
+    --local         Install on local system (requires sudo)
+    --remote IP     Install on remote instance
+    --ssh-key PATH  SSH key for remote access
+
+EXAMPLES:
+    # Local installation
+    sudo ./cloud-phone install --local
+
+    # Remote installation
+    ./cloud-phone install --remote 129.146.1.2
+
+EOF
+}
+
+# =============================================================================
+# STATUS COMMANDS
+# =============================================================================
+
+cmd_status() {
+    local instance_ip=""
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --instance) instance_ip="$2"; shift 2 ;;
+            --ssh-key)  ssh_key="$2"; shift 2 ;;
+            --help|-h)  status_help; exit 0 ;;
+            *) die "Unknown status option: $1" ;;
+        esac
+    done
+    
+    if [[ -n "$instance_ip" ]]; then
+        run_script "$SCRIPTS_DIR/health-check.sh" "$instance_ip" "$ssh_key"
+    else
+        run_script "$SCRIPTS_DIR/health-check.sh"
+    fi
+}
+
+status_help() {
+    cat <<'EOF'
+cloud-phone status - Show system status
+
+USAGE:
+    ./cloud-phone status [options]
+
+OPTIONS:
+    --instance IP   Check remote instance
+    --ssh-key PATH  SSH key for remote access
+
+EXAMPLES:
+    # Local status
+    ./cloud-phone status
+
+    # Remote status
+    ./cloud-phone status --instance 129.146.1.2
+
+EOF
+}
+
+# =============================================================================
+# LOGS COMMANDS
+# =============================================================================
+
+cmd_logs() {
+    local service="redroid-container"
+    local follow=false
+    local lines=100
+    local instance_ip=""
+    local ssh_key="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --service|-s)   service="$2"; shift 2 ;;
+            --follow|-f)    follow=true; shift ;;
+            --lines|-n)     lines="$2"; shift 2 ;;
+            --instance)     instance_ip="$2"; shift 2 ;;
+            --ssh-key)      ssh_key="$2"; shift 2 ;;
+            --help|-h)      logs_help; exit 0 ;;
+            *) die "Unknown logs option: $1" ;;
+        esac
+    done
+    
+    local journal_cmd="journalctl -u $service -n $lines"
+    [[ "$follow" == true ]] && journal_cmd="$journal_cmd -f"
+    
+    if [[ -n "$instance_ip" ]]; then
+        ssh -i "$ssh_key" -o StrictHostKeyChecking=no ubuntu@"$instance_ip" "sudo $journal_cmd"
+    else
+        sudo $journal_cmd
+    fi
+}
+
+logs_help() {
+    cat <<'EOF'
+cloud-phone logs - View service logs
+
+USAGE:
+    ./cloud-phone logs [options]
+
+OPTIONS:
+    --service, -s NAME  Service name (default: redroid-container)
+    --follow, -f        Follow log output
+    --lines, -n N       Number of lines (default: 100)
+    --instance IP       View logs from remote instance
+    --ssh-key PATH      SSH key for remote access
+
+SERVICES:
+    redroid-container   Main Redroid container
+    nginx-rtmp          RTMP streaming server
+    ffmpeg-bridge       Video/audio bridge
+    control-api         REST API server
+
+EXAMPLES:
+    # View Redroid logs
+    ./cloud-phone logs --service redroid-container
+
+    # Follow API logs
+    ./cloud-phone logs -s control-api -f
+
+    # View remote logs
+    ./cloud-phone logs --instance 129.146.1.2 -s nginx-rtmp
+
+EOF
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        show_help
+    fi
+    
+    local cmd="$1"
+    shift
+    
+    case "$cmd" in
+        deploy)     cmd_deploy "$@" ;;
+        test)       cmd_test "$@" ;;
+        manage)     cmd_manage "$@" ;;
+        fix)        cmd_fix "$@" ;;
+        tunnel)     cmd_tunnel "$@" ;;
+        proxy)      cmd_proxy "$@" ;;
+        build)      cmd_build "$@" ;;
+        install)    cmd_install "$@" ;;
+        status)     cmd_status "$@" ;;
+        logs)       cmd_logs "$@" ;;
+        help|--help|-h) show_help ;;
+        *) die "Unknown command: $cmd. Run './cloud-phone help' for usage." ;;
+    esac
+}
+
+main "$@"
