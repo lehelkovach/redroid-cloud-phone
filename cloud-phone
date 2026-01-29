@@ -925,10 +925,16 @@ cmd_logs() {
     local lines=100
     local instance_ip="${VM_HOST:-}"
     local ssh_key_arg="$SSH_KEY"
+    local filter_type=""
+    local filter_level=""
+    local search_pattern=""
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
             start|stop|status|sync|fetch|tail) action="$1"; shift ;;
+            filter)     action="filter"; filter_type="${2:-}"; lines="${3:-100}"; shift; [[ $# -gt 0 ]] && shift; [[ $# -gt 0 ]] && shift ;;
+            level)      action="level"; filter_level="${2:-ERROR}"; lines="${3:-100}"; shift; [[ $# -gt 0 ]] && shift; [[ $# -gt 0 ]] && shift ;;
+            search)     action="search"; search_pattern="${2:-}"; shift; [[ $# -gt 0 ]] && shift ;;
             --service|-s)   service="$2"; shift 2 ;;
             --follow|-f)    follow=true; shift ;;
             --lines|-n)     lines="$2"; shift 2 ;;
@@ -937,6 +943,8 @@ cmd_logs() {
             --redroid)      service="redroid"; shift ;;
             --logcat)       service="logcat"; shift ;;
             --adb)          service="adb"; shift ;;
+            --api)          service="api"; shift ;;
+            --unified)      service="unified"; shift ;;
             --all)          service="all"; shift ;;
             --help|-h)      logs_help; exit 0 ;;
             *) die "Unknown logs option: $1" ;;
@@ -955,6 +963,15 @@ cmd_logs() {
             tail)
                 run_script "$SCRIPTS_DIR/log-collector.sh" tail "$lines"
                 ;;
+            filter)
+                run_script "$SCRIPTS_DIR/log-collector.sh" filter "$filter_type" "$lines"
+                ;;
+            level)
+                run_script "$SCRIPTS_DIR/log-collector.sh" level "$filter_level" "$lines"
+                ;;
+            search)
+                run_script "$SCRIPTS_DIR/log-collector.sh" search "$search_pattern"
+                ;;
         esac
         return
     fi
@@ -966,7 +983,9 @@ cmd_logs() {
             redroid)    log_file="$LOG_DIR/redroid.log" ;;
             logcat)     log_file="$LOG_DIR/logcat.log" ;;
             adb)        log_file="$LOG_DIR/adb.log" ;;
+            api)        log_file="$LOG_DIR/api.log" ;;
             streaming)  log_file="$LOG_DIR/streaming.log" ;;
+            unified)    log_file="$LOG_DIR/unified.log" ;;
             main)       log_file="$LOG_DIR/cloud-phone.log" ;;
             all)
                 if [[ "$follow" == true ]]; then
@@ -1009,12 +1028,15 @@ USAGE:
     ./cloud-phone logs [action] [options]
 
 ACTIONS:
-    start           Start log collection (Redroid, logcat, containers)
-    stop            Stop log collection
-    status          Show log collector status
-    sync            Sync logs to remote host
-    fetch [HOST]    Fetch logs from remote VM
-    tail [N]        Tail all log files
+    start               Start log collection (Redroid, logcat, containers)
+    stop                Stop log collection
+    status              Show log collector status
+    sync                Sync logs to remote host
+    fetch [HOST]        Fetch logs from remote VM
+    tail [N]            Tail unified log
+    filter TYPE [N]     Filter by log type
+    level LEVEL [N]     Filter by level (DEBUG, INFO, WARN, ERROR)
+    search PATTERN      Search logs for pattern
 
 OPTIONS:
     --service, -s NAME  View specific service log
@@ -1025,39 +1047,57 @@ OPTIONS:
     --redroid           View Redroid container logs
     --logcat            View Android logcat
     --adb               View ADB logs
+    --api               View API logs
     --all               View all log files
+    --unified           View unified log (all sources)
+
+LOG TYPES (for filtering):
+    SYSTEM   [SYS]  - System/CLI messages
+    REDROID  [RDR]  - Redroid container output
+    LOGCAT   [LCT]  - Android logcat
+    ADB      [ADB]  - ADB commands
+    API      [API]  - Control API logs
+    NGINX    [NGX]  - nginx-rtmp logs
+    FFMPEG   [FFM]  - FFmpeg bridge logs
+
+LOG FORMAT:
+    TIMESTAMP [TYPE] [LEVEL] MESSAGE
+    Example: 2024-01-22 10:30:45.123 [RDR] [INFO] Container started
 
 LOG FILES (in $LOG_DIR):
+    unified.log         All sources combined with labels
     cloud-phone.log     Main application log
     redroid.log         Redroid container output
     logcat.log          Android logcat capture
     adb.log             ADB command logs
     streaming.log       RTMP/FFmpeg logs
-
-SYSTEMD SERVICES:
-    redroid-container   Main Redroid container
-    nginx-rtmp          RTMP streaming server
-    ffmpeg-bridge       Video/audio bridge
-    control-api         REST API server
+    api.log             Control API logs
 
 EXAMPLES:
     # Start log collection
     ./cloud-phone logs start
 
-    # Tail Redroid logs
-    ./cloud-phone logs --redroid -f
+    # Tail unified log (all sources with labels)
+    ./cloud-phone logs tail 100
 
-    # View logcat
+    # Filter by type
+    ./cloud-phone logs filter REDROID 50
+    ./cloud-phone logs filter LOGCAT
+
+    # Filter by level
+    ./cloud-phone logs level ERROR
+    ./cloud-phone logs level WARN 200
+
+    # Search logs
+    ./cloud-phone logs search "camera"
+    ./cloud-phone logs search "error"
+
+    # View specific log
+    ./cloud-phone logs --redroid -f
     ./cloud-phone logs --logcat -n 200
 
     # Fetch logs from remote VM
     ./cloud-phone logs fetch 129.146.1.2
-
-    # View journald logs for service
-    ./cloud-phone logs -s control-api -f
-
-    # Sync logs to configured remote
-    ./cloud-phone logs sync
 
 EOF
 }

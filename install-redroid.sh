@@ -136,7 +136,7 @@ log_info "[8/9] Setting up logging..."
 mkdir -p /var/log/cloud-phone
 chmod 755 /var/log/cloud-phone
 # Create empty log files
-touch /var/log/cloud-phone/{cloud-phone,redroid,logcat,adb,streaming}.log
+touch /var/log/cloud-phone/{cloud-phone,unified,redroid,logcat,adb,streaming,api}.log
 
 log_info "[9/9] Installing systemd units..."
 cp "$SCRIPT_DIR/systemd/nginx-rtmp.service" /etc/systemd/system/

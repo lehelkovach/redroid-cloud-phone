@@ -63,32 +63,128 @@ REMOTE_KEY="${REMOTE_KEY/#\~/$HOME}"
 
 # Log files
 MAIN_LOG="$LOG_DIR/cloud-phone.log"
+UNIFIED_LOG="$LOG_DIR/unified.log"  # All sources combined with labels
 REDROID_LOG="$LOG_DIR/redroid.log"
 ADB_LOG="$LOG_DIR/adb.log"
 LOGCAT_LOG="$LOG_DIR/logcat.log"
 STREAMING_LOG="$LOG_DIR/streaming.log"
+API_LOG="$LOG_DIR/api.log"
 
 # PID files
 LOGCAT_PID_FILE="/var/run/cloud-phone-logcat.pid"
 CONTAINER_LOG_PID_FILE="/var/run/cloud-phone-container-log.pid"
 REMOTE_STREAM_PID_FILE="/var/run/cloud-phone-remote-stream.pid"
+SERVICE_LOG_PID_FILE="/var/run/cloud-phone-service-log.pid"
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-log_info()  { echo -e "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$MAIN_LOG"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$MAIN_LOG"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$MAIN_LOG" >&2; }
+# Log type labels
+declare -A LOG_TYPES=(
+    [SYSTEM]="SYS"
+    [REDROID]="RDR"
+    [LOGCAT]="LCT"
+    [ADB]="ADB"
+    [API]="API"
+    [STREAM]="STR"
+    [NGINX]="NGX"
+    [FFMPEG]="FFM"
+    [DOCKER]="DKR"
+)
+
+declare -A LOG_COLORS=(
+    [SYS]="$GREEN"
+    [RDR]="$CYAN"
+    [LCT]="$MAGENTA"
+    [ADB]="$BLUE"
+    [API]="$YELLOW"
+    [STR]="$RED"
+    [NGX]="$GREEN"
+    [FFM]="$CYAN"
+    [DKR]="$BLUE"
+)
+
+# Format log entry with type label
+# Format: TIMESTAMP [TYPE] [LEVEL] MESSAGE
+# JSON format: {"ts":"...","type":"...","level":"...","msg":"..."}
+format_log() {
+    local log_type="$1"
+    local level="$2"
+    local message="$3"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S.%3N')
+    
+    local type_label="${LOG_TYPES[$log_type]:-$log_type}"
+    
+    if [[ "${LOG_FORMAT:-text}" == "json" ]]; then
+        # JSON format for structured logging
+        printf '{"ts":"%s","type":"%s","level":"%s","msg":"%s"}\n' \
+            "$timestamp" "$type_label" "$level" "${message//\"/\\\"}"
+    else
+        # Text format with type label
+        printf '%s [%s] [%s] %s\n' "$timestamp" "$type_label" "$level" "$message"
+    fi
+}
+
+# Write to both individual and unified logs
+write_log() {
+    local log_type="$1"
+    local level="$2"
+    local message="$3"
+    local target_log="$4"
+    
+    local formatted
+    formatted=$(format_log "$log_type" "$level" "$message")
+    
+    # Write to individual log
+    echo "$formatted" >> "$target_log"
+    
+    # Write to unified log
+    echo "$formatted" >> "$UNIFIED_LOG"
+}
+
+# Colored console output + logging
+log_info()  { 
+    local msg="$*"
+    local formatted
+    formatted=$(format_log "SYSTEM" "INFO" "$msg")
+    echo -e "${GREEN}$formatted${NC}"
+    echo "$formatted" >> "$MAIN_LOG"
+    echo "$formatted" >> "$UNIFIED_LOG"
+}
+
+log_warn()  { 
+    local msg="$*"
+    local formatted
+    formatted=$(format_log "SYSTEM" "WARN" "$msg")
+    echo -e "${YELLOW}$formatted${NC}"
+    echo "$formatted" >> "$MAIN_LOG"
+    echo "$formatted" >> "$UNIFIED_LOG"
+}
+
+log_error() { 
+    local msg="$*"
+    local formatted
+    formatted=$(format_log "SYSTEM" "ERROR" "$msg")
+    echo -e "${RED}$formatted${NC}" >&2
+    echo "$formatted" >> "$MAIN_LOG"
+    echo "$formatted" >> "$UNIFIED_LOG"
+}
 
 # Initialize log directory
 init_logs() {
     sudo mkdir -p "$LOG_DIR"
     sudo chown -R "${USER:-root}:${USER:-root}" "$LOG_DIR" 2>/dev/null || true
-    touch "$MAIN_LOG" "$REDROID_LOG" "$ADB_LOG" "$LOGCAT_LOG" "$STREAMING_LOG"
+    touch "$MAIN_LOG" "$UNIFIED_LOG" "$REDROID_LOG" "$ADB_LOG" "$LOGCAT_LOG" "$STREAMING_LOG" "$API_LOG"
     log_info "Log directory initialized: $LOG_DIR"
+    log_info "Log format: ${LOG_FORMAT:-text}"
+    log_info "Log types available: ${!LOG_TYPES[*]}"
 }
 
 # Rotate logs if they exceed max size
@@ -127,10 +223,24 @@ start_logcat() {
     adb connect "$ADB_CONNECT" &>/dev/null || true
     sleep 2
     
-    # Start logcat in background
+    # Start logcat in background with labels
     (
         while true; do
-            adb -s "$ADB_CONNECT" logcat "$LOGCAT_FILTER" 2>/dev/null >> "$LOGCAT_LOG"
+            adb -s "$ADB_CONNECT" logcat -v time "$LOGCAT_FILTER" 2>/dev/null | while IFS= read -r line; do
+                # Parse logcat level from line (V/D/I/W/E/F)
+                local level="INFO"
+                if [[ "$line" =~ ^[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+\ ([VDIWEF])/ ]]; then
+                    case "${BASH_REMATCH[1]}" in
+                        V) level="VERBOSE" ;;
+                        D) level="DEBUG" ;;
+                        I) level="INFO" ;;
+                        W) level="WARN" ;;
+                        E) level="ERROR" ;;
+                        F) level="FATAL" ;;
+                    esac
+                fi
+                write_log "LOGCAT" "$level" "$line" "$LOGCAT_LOG"
+            done
             sleep 5  # Retry on disconnect
         done
     ) &
@@ -173,8 +283,17 @@ start_container_logs() {
     log_info "Starting container log capture..."
     
     (
-        docker logs -f redroid 2>&1 | while read -r line; do
-            echo "$(date '+%Y-%m-%d %H:%M:%S') $line" >> "$REDROID_LOG"
+        docker logs -f redroid 2>&1 | while IFS= read -r line; do
+            # Try to detect log level from Docker output
+            local level="INFO"
+            if [[ "$line" =~ (ERROR|error|Error|FATAL|fatal|Fatal|FAIL|fail|Fail) ]]; then
+                level="ERROR"
+            elif [[ "$line" =~ (WARN|warn|Warn|WARNING|warning|Warning) ]]; then
+                level="WARN"
+            elif [[ "$line" =~ (DEBUG|debug|Debug) ]]; then
+                level="DEBUG"
+            fi
+            write_log "REDROID" "$level" "$line" "$REDROID_LOG"
             rotate_logs "$REDROID_LOG"
         done
     ) &
@@ -196,19 +315,99 @@ stop_container_logs() {
     fi
 }
 
-# Capture service logs to files
+# Map service names to log types
+get_service_log_type() {
+    local service="$1"
+    case "$service" in
+        nginx-rtmp)        echo "NGINX" ;;
+        ffmpeg-bridge)     echo "FFMPEG" ;;
+        control-api)       echo "API" ;;
+        redroid-container) echo "DOCKER" ;;
+        *)                 echo "SYSTEM" ;;
+    esac
+}
+
+# Capture service logs to files (one-time capture)
 capture_service_logs() {
     log_info "Capturing service logs..."
     
-    # Capture recent logs from systemd services
+    # Capture recent logs from systemd services with labels
     for service in nginx-rtmp ffmpeg-bridge control-api redroid-container; do
+        local log_type
+        log_type=$(get_service_log_type "$service")
         local log_file="$LOG_DIR/${service}.log"
+        
         if systemctl is-active --quiet "$service" 2>/dev/null; then
-            journalctl -u "$service" --no-pager -n 1000 >> "$log_file" 2>/dev/null || true
+            journalctl -u "$service" --no-pager -n 1000 -o short-precise 2>/dev/null | \
+            while IFS= read -r line; do
+                local level="INFO"
+                if [[ "$line" =~ (error|ERROR|Error|fail|FAIL|Fail) ]]; then
+                    level="ERROR"
+                elif [[ "$line" =~ (warn|WARN|Warn|warning|WARNING|Warning) ]]; then
+                    level="WARN"
+                fi
+                write_log "$log_type" "$level" "$line" "$log_file"
+            done
         fi
     done
     
     log_info "Service logs captured"
+}
+
+# Start continuous service log capture
+start_service_logs() {
+    if [[ -f "$SERVICE_LOG_PID_FILE" ]] && kill -0 "$(cat "$SERVICE_LOG_PID_FILE")" 2>/dev/null; then
+        log_info "Service log capture already running"
+        return 0
+    fi
+    
+    log_info "Starting continuous service log capture..."
+    
+    (
+        # Follow all relevant service logs
+        journalctl -f -u nginx-rtmp -u ffmpeg-bridge -u control-api -o short-precise 2>/dev/null | \
+        while IFS= read -r line; do
+            # Determine source service from log line
+            local log_type="SYSTEM"
+            local log_file="$STREAMING_LOG"
+            
+            if [[ "$line" =~ nginx-rtmp ]]; then
+                log_type="NGINX"
+                log_file="$STREAMING_LOG"
+            elif [[ "$line" =~ ffmpeg-bridge|ffmpeg ]]; then
+                log_type="FFMPEG"
+                log_file="$STREAMING_LOG"
+            elif [[ "$line" =~ control-api|gunicorn|flask ]]; then
+                log_type="API"
+                log_file="$API_LOG"
+            fi
+            
+            local level="INFO"
+            if [[ "$line" =~ (error|ERROR|Error|fail|FAIL|Fail) ]]; then
+                level="ERROR"
+            elif [[ "$line" =~ (warn|WARN|Warn|warning|WARNING|Warning) ]]; then
+                level="WARN"
+            fi
+            
+            write_log "$log_type" "$level" "$line" "$log_file"
+        done
+    ) &
+    echo $! | sudo tee "$SERVICE_LOG_PID_FILE" > /dev/null
+    
+    log_info "Service log capture started (PID: $(cat "$SERVICE_LOG_PID_FILE"))"
+}
+
+# Stop service log capture
+stop_service_logs() {
+    if [[ -f "$SERVICE_LOG_PID_FILE" ]]; then
+        local pid=$(cat "$SERVICE_LOG_PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            pkill -P "$pid" 2>/dev/null || true
+            log_info "Service log capture stopped"
+        fi
+        sudo rm -f "$SERVICE_LOG_PID_FILE"
+    fi
 }
 
 # Start remote log streaming
@@ -315,7 +514,8 @@ start_all() {
     
     start_container_logs
     start_logcat
-    capture_service_logs
+    start_service_logs
+    capture_service_logs  # Initial capture
     start_remote_stream
     
     log_info "Log collection started"
@@ -326,6 +526,7 @@ stop_all() {
     log_info "Stopping log collection..."
     
     stop_remote_stream
+    stop_service_logs
     stop_logcat
     stop_container_logs
     
@@ -338,6 +539,13 @@ show_status() {
     echo ""
     echo "Log Directory: $LOG_DIR"
     echo "Config File: $CONFIG_FILE"
+    echo "Log Format: ${LOG_FORMAT:-text}"
+    echo ""
+    
+    echo "Log Type Labels:"
+    for type in "${!LOG_TYPES[@]}"; do
+        echo "  $type -> [${LOG_TYPES[$type]}]"
+    done
     echo ""
     
     echo "Processes:"
@@ -353,6 +561,12 @@ show_status() {
         echo "  ✗ Container logs: Stopped"
     fi
     
+    if [[ -f "$SERVICE_LOG_PID_FILE" ]] && kill -0 "$(cat "$SERVICE_LOG_PID_FILE")" 2>/dev/null; then
+        echo "  ✓ Service logs: Running (PID: $(cat "$SERVICE_LOG_PID_FILE"))"
+    else
+        echo "  ✗ Service logs: Stopped"
+    fi
+    
     if [[ -f "$REMOTE_STREAM_PID_FILE" ]] && kill -0 "$(cat "$REMOTE_STREAM_PID_FILE")" 2>/dev/null; then
         echo "  ✓ Remote stream: Running (PID: $(cat "$REMOTE_STREAM_PID_FILE"))"
     else
@@ -361,11 +575,11 @@ show_status() {
     
     echo ""
     echo "Log Files:"
-    for log in "$MAIN_LOG" "$REDROID_LOG" "$LOGCAT_LOG" "$ADB_LOG" "$STREAMING_LOG"; do
+    for log in "$MAIN_LOG" "$UNIFIED_LOG" "$REDROID_LOG" "$LOGCAT_LOG" "$ADB_LOG" "$STREAMING_LOG" "$API_LOG"; do
         if [[ -f "$log" ]]; then
             local size=$(du -h "$log" | cut -f1)
-            local lines=$(wc -l < "$log")
-            echo "  $log: $size ($lines lines)"
+            local lines=$(wc -l < "$log" 2>/dev/null || echo 0)
+            echo "  $(basename "$log"): $size ($lines lines)"
         fi
     done
     
@@ -375,14 +589,81 @@ show_status() {
     [[ "$REMOTE_ENABLED" == "true" ]] && echo "  Host: $REMOTE_USER@$REMOTE_HOST"
 }
 
-# Tail all logs
+# Tail all logs (unified)
 tail_logs() {
     local lines="${1:-50}"
     
-    echo "=== Tailing logs (Ctrl+C to exit) ==="
-    tail -f -n "$lines" "$MAIN_LOG" "$REDROID_LOG" "$LOGCAT_LOG" 2>/dev/null || \
+    echo "=== Tailing unified log (Ctrl+C to exit) ==="
+    echo "Filter by type: grep '\\[RDR\\]' for Redroid, '\\[LCT\\]' for logcat, etc."
+    echo ""
+    tail -f -n "$lines" "$UNIFIED_LOG" 2>/dev/null || \
     tail -f -n "$lines" "$MAIN_LOG" 2>/dev/null || \
     echo "No logs available"
+}
+
+# Filter logs by type
+filter_logs() {
+    local log_type="${1:-}"
+    local lines="${2:-100}"
+    local log_file="${3:-$UNIFIED_LOG}"
+    
+    if [[ -z "$log_type" ]]; then
+        echo "Available log types:"
+        for type in "${!LOG_TYPES[@]}"; do
+            echo "  $type (label: ${LOG_TYPES[$type]})"
+        done
+        echo ""
+        echo "Usage: $0 filter <TYPE> [LINES] [LOG_FILE]"
+        return 0
+    fi
+    
+    # Get the label for the type
+    local label="${LOG_TYPES[$log_type]:-$log_type}"
+    
+    echo "=== Filtering logs by type: $log_type ([$label]) ==="
+    echo ""
+    
+    if [[ -f "$log_file" ]]; then
+        grep "\\[$label\\]" "$log_file" | tail -n "$lines"
+    else
+        echo "Log file not found: $log_file"
+    fi
+}
+
+# Filter logs by level
+filter_level() {
+    local level="${1:-ERROR}"
+    local lines="${2:-100}"
+    local log_file="${3:-$UNIFIED_LOG}"
+    
+    echo "=== Filtering logs by level: $level ==="
+    echo ""
+    
+    if [[ -f "$log_file" ]]; then
+        grep "\\[$level\\]" "$log_file" | tail -n "$lines"
+    else
+        echo "Log file not found: $log_file"
+    fi
+}
+
+# Search logs
+search_logs() {
+    local pattern="${1:-}"
+    local log_file="${2:-$UNIFIED_LOG}"
+    
+    if [[ -z "$pattern" ]]; then
+        echo "Usage: $0 search <PATTERN> [LOG_FILE]"
+        return 1
+    fi
+    
+    echo "=== Searching for: $pattern ==="
+    echo ""
+    
+    if [[ -f "$log_file" ]]; then
+        grep -i "$pattern" "$log_file" | tail -n 100
+    else
+        echo "Log file not found: $log_file"
+    fi
 }
 
 # Usage
@@ -393,21 +674,53 @@ Log Collector - Capture and route logs from Redroid Cloud Phone
 Usage: $0 <command> [options]
 
 Commands:
-  start         Start all log collection
-  stop          Stop all log collection
-  status        Show collector status
-  tail [N]      Tail all logs (default: 50 lines)
-  sync          Sync logs to remote host
-  fetch [HOST]  Fetch logs from remote VM
-  rotate        Rotate log files now
-  init          Initialize log directory
+  start              Start all log collection
+  stop               Stop all log collection
+  status             Show collector status
+  tail [N]           Tail unified log (default: 50 lines)
+  filter TYPE [N]    Filter by log type (REDROID, LOGCAT, API, etc.)
+  level LEVEL [N]    Filter by level (DEBUG, INFO, WARN, ERROR)
+  search PATTERN     Search logs for pattern
+  sync               Sync logs to remote host
+  fetch [HOST]       Fetch logs from remote VM
+  rotate             Rotate log files now
+  init               Initialize log directory
+
+Log Types (use with 'filter'):
+  SYSTEM   [SYS]  - System/CLI messages
+  REDROID  [RDR]  - Redroid container output
+  LOGCAT   [LCT]  - Android logcat
+  ADB      [ADB]  - ADB commands
+  API      [API]  - Control API logs
+  STREAM   [STR]  - Streaming logs
+  NGINX    [NGX]  - nginx-rtmp logs
+  FFMPEG   [FFM]  - FFmpeg bridge logs
+  DOCKER   [DKR]  - Docker logs
+
+Log Levels:
+  DEBUG, INFO, WARN, ERROR, FATAL, VERBOSE
+
+Log Format:
+  Text:  TIMESTAMP [TYPE] [LEVEL] MESSAGE
+  JSON:  {"ts":"...","type":"...","level":"...","msg":"..."}
+         (set LOG_FORMAT=json to enable)
 
 Configuration:
   Config file: $CONFIG_FILE
   Log directory: $LOG_DIR
+  Unified log: $UNIFIED_LOG
 
 Environment Variables:
   CLOUD_PHONE_CONFIG    Path to config file
+  LOG_FORMAT            Output format (text/json)
+
+Examples:
+  $0 start                    # Start collection
+  $0 tail 100                 # Tail last 100 lines
+  $0 filter REDROID 50        # Filter Redroid logs
+  $0 filter LOGCAT            # Filter Android logcat
+  $0 level ERROR              # Show only errors
+  $0 search "camera"          # Search for "camera"
 
 EOF
     exit 0
@@ -427,6 +740,15 @@ case "${1:-}" in
     tail)
         tail_logs "${2:-50}"
         ;;
+    filter)
+        filter_logs "${2:-}" "${3:-100}" "${4:-$UNIFIED_LOG}"
+        ;;
+    level)
+        filter_level "${2:-ERROR}" "${3:-100}" "${4:-$UNIFIED_LOG}"
+        ;;
+    search)
+        search_logs "${2:-}" "${3:-$UNIFIED_LOG}"
+        ;;
     sync)
         sync_logs
         ;;
@@ -434,7 +756,7 @@ case "${1:-}" in
         fetch_remote_logs "${2:-}" "${3:-}" "${4:-}"
         ;;
     rotate)
-        for log in "$MAIN_LOG" "$REDROID_LOG" "$LOGCAT_LOG" "$ADB_LOG" "$STREAMING_LOG"; do
+        for log in "$MAIN_LOG" "$UNIFIED_LOG" "$REDROID_LOG" "$LOGCAT_LOG" "$ADB_LOG" "$STREAMING_LOG" "$API_LOG"; do
             rotate_logs "$log"
         done
         ;;
