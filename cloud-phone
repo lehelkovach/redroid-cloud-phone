@@ -358,6 +358,7 @@ cmd_test() {
             --e2e)          test_type="e2e"; shift ;;
             --api)          test_type="api"; shift ;;
             --streaming)    test_type="streaming"; shift ;;
+            --virtual-device) test_type="virtual-device"; shift ;;
             --instance)     instance_ip="$2"; shift 2 ;;
             --api-url)      api_url="$2"; shift 2 ;;
             --ssh-key)      ssh_key="$2"; shift 2 ;;
@@ -426,6 +427,16 @@ cmd_test() {
             log_header "Running Streaming Tests"
             python3 -m pytest $pytest_args "$TESTS_DIR/test_streaming_unit.py" "$TESTS_DIR/test_streaming_integration.py" "$TESTS_DIR/test_streaming_e2e.py" "$TESTS_DIR/test_virtual_camera.py" || die "Streaming tests failed"
             ;;
+        virtual-device)
+            log_header "Running Virtual Device Output Test"
+            if [[ -n "$instance_ip" ]]; then
+                run_script "$SCRIPTS_DIR/test-virtual-device-output.sh" --duration 10 "$instance_ip"
+            elif [[ -n "${VM_HOST:-}" ]]; then
+                run_script "$SCRIPTS_DIR/test-virtual-device-output.sh" --duration 10 "$VM_HOST"
+            else
+                run_script "$SCRIPTS_DIR/test-virtual-device-output.sh" --duration 10 --local
+            fi
+            ;;
     esac
     
     log_header "ALL TESTS PASSED"
@@ -445,6 +456,7 @@ OPTIONS:
     --e2e               Run end-to-end tests only
     --api               Run API tests only
     --streaming         Run streaming/virtual device tests
+    --virtual-device    Run video/audio output verification (stream + verify pipeline)
     --instance IP       Test against remote instance (creates SSH tunnel)
     --api-url URL       API URL for tests (default: http://localhost:8080)
     --ssh-key PATH      SSH key for remote access

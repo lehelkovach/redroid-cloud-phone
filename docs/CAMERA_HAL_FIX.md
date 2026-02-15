@@ -211,15 +211,53 @@ ssh ubuntu@VM_IP 'sudo timeout 1 cat /dev/video42 | wc -c'
 | Extract HAL | Quick if compatible | Version mismatch issues |
 | Community image | Pre-built | May lack other features |
 
-## Fix Script
+## Diagnostic Test
 
-A diagnostic and fix script is available:
+Run the full diagnostic test to check every component of the camera pipeline:
+
+```bash
+# Local
+./scripts/test-redroid-camera-diag.sh
+
+# Remote (Oracle Cloud instance)
+./scripts/test-redroid-camera-diag.sh 132.226.155.1
+```
+
+This checks: v4l2loopback version/caps, ALSA loopback, device passthrough into container,
+Camera HAL presence, VINTF manifest, camera provider service, camera count, and streaming services.
+
+## Building the Custom Image
+
+A Dockerfile and build script are provided to create a camera-enabled Redroid image:
+
+```bash
+# Build (config-only, you'll need to add AOSP binaries separately)
+./docker/build-camera-image.sh
+
+# Build for Android 12
+./docker/build-camera-image.sh --android 12
+
+# The image includes:
+#   - external_camera_config.xml (points to /dev/video42)
+#   - VINTF manifest fragment for camera provider
+#   - Camera permission XML
+#   - Init script for external camera service
+#   - System properties for external camera HAL
+```
+
+After building, you need to add the actual camera provider binary:
+- `android.hardware.camera.provider@2.4-external-service` (from AOSP source build)
+- `camera.external.so` (from AOSP source build)
+
+See `docker/Dockerfile.camera` for details.
+
+## Legacy Fix Script
 
 ```bash
 # Check current status
 ./scripts/fix-camera-hal.sh check
 
-# Attempt fixes
+# Attempt runtime fixes (limited without HAL)
 VM_HOST=132.226.155.1 ./scripts/fix-camera-hal.sh fix
 
 # Show workarounds

@@ -77,7 +77,7 @@ if [[ "$KERNEL_MAJOR" -eq 5 ]] || [[ "$KERNEL_MAJOR" -lt 6 ]]; then
   
   # Configure modules
   cat > /etc/modprobe.d/v4l2loopback.conf << 'EOF'
-options v4l2loopback devices=1 video_nr=42 card_label="VirtualCam" exclusive_caps=1
+options v4l2loopback devices=1 video_nr=42 card_label="VirtualCam" exclusive_caps=1 max_openers=10 max_buffers=32
 EOF
   
   cat > /etc/modprobe.d/snd-aloop.conf << 'EOF'
@@ -90,7 +90,7 @@ snd-aloop
 EOF
   
   # Try to load modules now
-  modprobe v4l2loopback devices=1 video_nr=42 card_label="VirtualCam" exclusive_caps=1 2>/dev/null || log_warn "v4l2loopback will load after reboot"
+  modprobe v4l2loopback devices=1 video_nr=42 card_label="VirtualCam" exclusive_caps=1 max_openers=10 max_buffers=32 2>/dev/null || log_warn "v4l2loopback will load after reboot"
   modprobe snd-aloop index=10 id=Loopback pcm_substreams=1 2>/dev/null || log_warn "snd-aloop will load after reboot"
   
   # Check if devices were created

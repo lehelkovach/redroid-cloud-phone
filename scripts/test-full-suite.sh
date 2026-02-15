@@ -92,7 +92,16 @@ fi
 
 echo ""
 
-section "4) Service Recovery"
+section "4) Virtual Device Output Verification"
+if [[ "$REMOTE_MODE" == true ]]; then
+    run_remote "/opt/redroid-scripts/test-virtual-device-output.sh --duration 10 --local" || true
+else
+    sudo /opt/redroid-scripts/test-virtual-device-output.sh --duration 10 --local || true
+fi
+
+echo ""
+
+section "5) Service Recovery"
 if [[ "$REMOTE_MODE" == true ]]; then
     run_remote_sudo "systemctl restart redroid-container" || true
     run_remote_sudo "systemctl restart ffmpeg-bridge" || true

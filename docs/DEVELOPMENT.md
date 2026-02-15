@@ -227,7 +227,10 @@ All scripts are in the `scripts/` directory and can be called directly or via th
 | `test-api.sh` | API endpoint tests | `./scripts/test-api.sh` |
 | `test-adb-vnc.sh` | ADB and VNC connectivity | `./scripts/test-adb-vnc.sh 129.146.x.x` |
 | `test-rtmp-stream.sh` | RTMP streaming test | `./scripts/test-rtmp-stream.sh` |
+| `test-virtual-device-output.sh` | Verify video/audio output from v4l2+ALSA | `./scripts/test-virtual-device-output.sh [VM_IP]` (use `--save-capture` to keep files) |
 | `test-audio-pipeline.sh` | Audio loopback test | `./scripts/test-audio-pipeline.sh` |
+| `generate-test-video.sh` | Generate test video for output verification | `./scripts/generate-test-video.sh [OUTPUT] [DURATION]` |
+| `test-redroid-camera-diag.sh` | Camera HAL + kernel module diagnostics | `./scripts/test-redroid-camera-diag.sh [VM_IP]` |
 | `test-system.sh` | System validation | `./scripts/test-system.sh` |
 | `test-instance.sh` | Quick instance test | `./scripts/test-instance.sh 129.146.x.x` |
 

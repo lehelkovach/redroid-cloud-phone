@@ -75,8 +75,12 @@ curl http://localhost:8080/health
 1. Configure OBS output:
    - Server: `rtmp://<INSTANCE_IP>/live`
    - Stream Key: `cam`
+   - Video: 1080×1920, 15 fps, H.264
+   - Audio: 44100 Hz, stereo, AAC
 2. Start streaming
 3. In Android, use VLC to view: `rtmp://127.0.0.1/live/cam`
+
+See [docs/OBS_STREAMING.md](docs/OBS_STREAMING.md) for full OBS settings and troubleshooting.
 
 ## Documentation
 
@@ -90,6 +94,7 @@ curl http://localhost:8080/health
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and solutions |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development workflow, testing |
 | [docs/CAMERA_HAL_FIX.md](docs/CAMERA_HAL_FIX.md) | Camera HAL limitation and workarounds |
+| [docs/OBS_STREAMING.md](docs/OBS_STREAMING.md) | OBS settings for RTMP streaming |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | Research notes on alternatives |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history and changes |
 
@@ -166,7 +171,7 @@ pytest tests/test_virtual_camera.py -v      # Virtual camera tests
 
 ## Known Limitations
 
-1. **Camera HAL Missing** - Android apps cannot detect the virtual camera. Use VLC to view RTMP stream directly. See [docs/CAMERA_HAL_FIX.md](docs/CAMERA_HAL_FIX.md).
+1. **Camera HAL Missing** - Standard `redroid/redroid` images do not include a Camera HAL. Android apps cannot detect `/dev/video42`. Build a custom image with `./docker/build-camera-image.sh` or use VLC workaround. See [docs/CAMERA_HAL_FIX.md](docs/CAMERA_HAL_FIX.md). Run `./scripts/test-redroid-camera-diag.sh` to verify status.
 
 2. **Ubuntu 20.04 Required** - Kernel 5.x needed for v4l2loopback/snd-aloop modules.
 

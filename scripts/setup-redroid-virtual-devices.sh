@@ -62,7 +62,7 @@ echo ""
 
 echo "=== Loading Virtual Device Modules ==="
 echo "Loading v4l2loopback..."
-sudo modprobe v4l2loopback devices=1 video_nr=42 card_label="VirtualCam" exclusive_caps=1 2>&1 || {
+sudo modprobe v4l2loopback devices=1 video_nr=42 card_label="VirtualCam" exclusive_caps=1 max_openers=10 max_buffers=32 2>&1 || {
     echo "⚠ v4l2loopback failed to load"
     echo "Attempting to build from source..."
     # This may fail on kernel 6.8

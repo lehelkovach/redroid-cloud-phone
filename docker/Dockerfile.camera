@@ -1,0 +1,173 @@
+# Custom Redroid Image with External Camera Provider + Virtual Mic
+#
+# This Dockerfile layers camera HAL support on top of the stock Redroid image.
+# It uses AOSP's external camera provider which discovers v4l2 devices.
+#
+# The external camera provider watches for /dev/video* devices and exposes
+# them to Android's Camera2 API. Combined with v4l2loopback on the host,
+# this lets ffmpeg-bridge feed video into Android as a virtual camera.
+#
+# Build:
+#   docker build -f Dockerfile.camera -t cloud-phone-camera:11 .
+#   docker build -f Dockerfile.camera --build-arg BASE_IMAGE=redroid/redroid:12.0.0-latest -t cloud-phone-camera:12 .
+#
+# What this adds to the base image:
+#   1. External camera provider HIDL service
+#   2. external_camera_config.xml (configures /dev/video42)
+#   3. VINTF manifest fragment for camera provider
+#   4. Camera permission XML
+#   5. System properties for camera
+#
+# NOTE: This approach copies pre-built binaries from the AOSP emulator/cuttlefish.
+# For a fully source-built image, use the AOSP build method documented in
+# docs/CAMERA_HAL_FIX.md.
+
+ARG BASE_IMAGE=redroid/redroid:11.0.0-latest
+FROM ${BASE_IMAGE}
+
+LABEL maintainer="cloud-phone"
+LABEL description="Redroid with External Camera Provider for v4l2 virtual camera"
+LABEL camera_support="external-v4l2"
+
+# -------------------------------------------------------------------------
+# 1. External camera config - tells the provider where to find our device
+# -------------------------------------------------------------------------
+RUN mkdir -p /vendor/etc && \
+    cat > /vendor/etc/external_camera_config.xml << 'XMLEOF'
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- External camera configuration for v4l2loopback virtual camera -->
+<ExternalCamera>
+    <Provider>
+        <!-- Only monitor our v4l2loopback device, not all /dev/video* -->
+        <ignore>
+            <id>0</id>
+            <id>1</id>
+            <id>2</id>
+            <id>3</id>
+        </ignore>
+    </Provider>
+    <Device>
+        <Orientation>0</Orientation>
+        <HighQualityJpeg>
+            <Width>1080</Width>
+            <Height>1920</Height>
+        </HighQualityJpeg>
+        <Sensor>
+            <ExposureTimeRange>
+                <Min>1000</Min>
+                <Max>300000000</Max>
+            </ExposureTimeRange>
+        </Sensor>
+        <FPS>
+            <Limit>
+                <Width>1920</Width>
+                <Height>1080</Height>
+                <FPSUpper>30</FPSUpper>
+            </Limit>
+            <Limit>
+                <Width>1080</Width>
+                <Height>1920</Height>
+                <FPSUpper>30</FPSUpper>
+            </Limit>
+        </FPS>
+    </Device>
+</ExternalCamera>
+XMLEOF
+
+# -------------------------------------------------------------------------
+# 2. Camera permission - allows apps to request camera access
+# -------------------------------------------------------------------------
+RUN mkdir -p /vendor/etc/permissions && \
+    cat > /vendor/etc/permissions/android.hardware.camera.external.xml << 'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<permissions>
+    <feature name="android.hardware.camera.external" />
+    <feature name="android.hardware.camera" />
+</permissions>
+XMLEOF
+
+# -------------------------------------------------------------------------
+# 3. System properties for camera
+# -------------------------------------------------------------------------
+RUN echo "" >> /vendor/build.prop && \
+    echo "# Camera HAL - external v4l2 provider" >> /vendor/build.prop && \
+    echo "ro.hardware.camera=external" >> /vendor/build.prop && \
+    echo "persist.camera.HAL3.enabled=1" >> /vendor/build.prop
+
+# -------------------------------------------------------------------------
+# 4. VINTF manifest fragment for external camera provider
+#    This tells Android's hwservicemanager that a camera provider exists
+# -------------------------------------------------------------------------
+RUN mkdir -p /vendor/etc/vintf && \
+    if [ -f /vendor/etc/vintf/manifest.xml ]; then \
+        # Add camera provider HAL entry before closing </manifest> tag
+        sed -i '/<\/manifest>/i \
+    <hal format="hidl">\
+        <name>android.hardware.camera.provider</name>\
+        <transport>hwbinder</transport>\
+        <version>2.4</version>\
+        <interface>\
+            <name>ICameraProvider</name>\
+            <instance>external/0</instance>\
+        </interface>\
+    </hal>' /vendor/etc/vintf/manifest.xml; \
+    else \
+        cat > /vendor/etc/vintf/manifest.xml << 'XMLEOF'
+<manifest version="1.0" type="device">
+    <hal format="hidl">
+        <name>android.hardware.camera.provider</name>
+        <transport>hwbinder</transport>
+        <version>2.4</version>
+        <interface>
+            <name>ICameraProvider</name>
+            <instance>external/0</instance>
+        </interface>
+    </hal>
+</manifest>
+XMLEOF
+    fi
+
+# -------------------------------------------------------------------------
+# 5. Init script for external camera provider service
+#    This starts the external camera provider on boot
+# -------------------------------------------------------------------------
+RUN mkdir -p /vendor/etc/init && \
+    cat > /vendor/etc/init/android.hardware.camera.provider@2.4-external-service.rc << 'RCEOF'
+service vendor.camera-provider-2-4-ext /vendor/bin/hw/android.hardware.camera.provider@2.4-external-service
+    interface android.hardware.camera.provider@2.4::ICameraProvider external/0
+    class hal
+    user cameraserver
+    group audio camera input drmrpc
+    ioprio rt 4
+    capabilities SYS_NICE
+    writepid /dev/cpuset/camera-daemon/tasks /dev/stune/top-app/tasks
+RCEOF
+
+# -------------------------------------------------------------------------
+# 6. Placeholder for the actual camera provider binary
+#    The binary must match the Android version and architecture.
+#    See docs/CAMERA_HAL_FIX.md for how to extract or build it.
+# -------------------------------------------------------------------------
+# COPY camera-provider-binaries/arm64/ /vendor/bin/hw/
+# COPY camera-provider-binaries/arm64/lib64/ /vendor/lib64/hw/
+#
+# If you have the pre-built binaries, uncomment the COPY lines above.
+# The required files are:
+#   /vendor/bin/hw/android.hardware.camera.provider@2.4-external-service
+#   /vendor/lib64/hw/camera.external.so  (or under /vendor/lib64/)
+#
+# Without these binaries, the init script above will fail to start.
+# The rest of the configuration (manifest, config xml, permissions) is valid.
+
+# -------------------------------------------------------------------------
+# 7. ADB and debug settings (inherited from base Dockerfile)
+# -------------------------------------------------------------------------
+RUN echo "persist.adb.tcp.port=5555" >> /system/build.prop && \
+    echo "service.adb.tcp.port=5555" >> /system/build.prop && \
+    echo "ro.adb.secure=0" >> /system/build.prop && \
+    echo "ro.debuggable=1" >> /system/build.prop && \
+    echo "ro.setupwizard.mode=OPTIONAL" >> /system/build.prop && \
+    echo "ro.config.nocheckin=1" >> /system/build.prop
+
+EXPOSE 5555
+EXPOSE 5900

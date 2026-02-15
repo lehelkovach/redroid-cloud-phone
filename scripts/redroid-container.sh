@@ -90,10 +90,21 @@ if [ "$VNC_ENABLED" = "1" ] || [ "$VNC_ENABLED" = "true" ]; then
   )
 fi
 
+DEVICE_ARGS=()
+# Pass virtual camera device if v4l2loopback is loaded
+if [ -e /dev/video42 ]; then
+  DEVICE_ARGS+=(--device=/dev/video42)
+fi
+# Pass audio devices for ALSA loopback virtual mic
+if [ -d /dev/snd ]; then
+  DEVICE_ARGS+=(--device=/dev/snd -v /dev/snd:/dev/snd)
+fi
+
 docker run -itd \
   --privileged \
   --restart=unless-stopped \
   --name "$NAME" \
+  "${DEVICE_ARGS[@]}" \
   -p "${ADB_PORT}:5555" \
   -p "${VNC_PORT}:5900" \
   -v "${DATA_DIR}:/data" \
