@@ -1,75 +1,67 @@
 #!/bin/bash
-# prepare-golden-image.sh
-# Prepares an OCI instance for creating a custom golden image
-#
-# Usage: Run this script on the instance before creating a custom image in OCI Console
-# After running, shutdown the instance and create the custom image
+# Prepare a Cuttlefish OCI instance for custom image capture.
 
 set -euo pipefail
 
+PLATFORM="cuttlefish"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --platform)
+            PLATFORM="${2:-cuttlefish}"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: sudo $0 [--platform cuttlefish]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+[[ "$PLATFORM" == "cuttlefish" ]] || { echo "Only cuttlefish platform is supported."; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "Run as root (sudo)."; exit 1; }
+
 echo "=========================================="
-echo "Preparing instance for golden image..."
+echo "Preparing Cuttlefish instance for imaging"
 echo "=========================================="
 
-# Check if running as root or with sudo
-if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root or with sudo" 
-   exit 1
-fi
-
-echo "[1/7] Stopping all redroid services..."
-systemctl stop redroid-cloud-phone.target || true
-docker stop redroid || true
-systemctl stop ffmpeg-bridge.service || true
+echo "[1/6] Stopping Cuttlefish services..."
+systemctl stop cuttlefish-cloud-phone.target || true
+systemctl stop cuttlefish-rtmp-bridge.service || true
+systemctl stop cuttlefish-launch.service || true
 systemctl stop nginx-rtmp.service || true
-systemctl stop control-api.service || true
+cvd stop --clear_instance_dirs --instance_name "${CF_INSTANCE_NAME:-cvd-arm64-1}" >/dev/null 2>&1 || true
+rm -rf /tmp/cuttlefish-* /tmp/cvd* /tmp/cf-* 2>/dev/null || true
 
-echo "[2/7] Cleaning journal logs (reduces image size)..."
+echo "[2/6] Cleaning logs..."
 journalctl --vacuum-time=1d || true
 rm -rf /var/log/*.gz /var/log/*.1 /var/log/*.old 2>/dev/null || true
 
-echo "[3/7] Cleaning package cache..."
+echo "[3/6] Cleaning package cache..."
 apt clean || true
 apt autoremove -y || true
 
-echo "[4/7] Clearing bash history..."
-if [[ -n "${SUDO_USER:-}" ]]; then
-    USER_HOME=$(eval echo ~$SUDO_USER)
-    history -c || true
-    rm -f "$USER_HOME/.bash_history" 2>/dev/null || true
-fi
-history -c || true
-rm -f /root/.bash_history 2>/dev/null || true
-rm -f ~/.bash_history 2>/dev/null || true
-
-echo "[5/7] Clearing cloud-init (will run fresh on new instances)..."
+echo "[4/6] Clearing cloud-init and temp files..."
 cloud-init clean --logs || true
-
-echo "[6/7] Clearing temporary files..."
 rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
 
-echo "[7/7] Optional: Remove SSH authorized_keys (uncomment if desired)..."
-# Uncomment the following lines if you want to remove SSH keys
-# (You'll need to add them back per instance)
-# if [[ -n "${SUDO_USER:-}" ]]; then
-#     USER_HOME=$(eval echo ~$SUDO_USER)
-#     rm -f "$USER_HOME/.ssh/authorized_keys" 2>/dev/null || true
-# fi
-# rm -f /root/.ssh/authorized_keys 2>/dev/null || true
+echo "[5/6] Clearing shell history..."
+if [[ -n "${SUDO_USER:-}" ]]; then
+    USER_HOME=$(eval echo "~$SUDO_USER")
+    rm -f "$USER_HOME/.bash_history" 2>/dev/null || true
+fi
+rm -f /root/.bash_history 2>/dev/null || true
+history -c || true
+
+echo "[6/6] Syncing filesystem..."
+sync
 
 echo ""
-echo "=========================================="
-echo "Preparation complete!"
-echo "=========================================="
-echo ""
-echo "Next steps:"
-echo "1. Review the cleanup above"
-echo "2. Shutdown the instance: sudo shutdown -h now"
-echo "3. In OCI Console: Compute → Instances → [Your Instance] → More Actions → Create Custom Image"
-echo "4. Name it: redroid-cloud-phone-v1"
-echo "5. Wait 10-20 minutes for image to be available"
-echo ""
-echo "After creating the image, you can launch new instances using:"
-echo "  ./scripts/launch-fleet.sh"
-echo ""
-
+echo "Preparation complete."
+echo "Next:"
+echo "  1) Shutdown instance: sudo shutdown -h now"
+echo "  2) Create OCI custom image from this instance"

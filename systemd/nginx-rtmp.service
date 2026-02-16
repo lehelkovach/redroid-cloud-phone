@@ -2,7 +2,7 @@
 Description=nginx RTMP Server
 Documentation=https://github.com/arut/nginx-rtmp-module
 After=network.target
-PartOf=redroid-cloud-phone.target
+PartOf=cuttlefish-cloud-phone.target
 
 [Service]
 Type=forking
@@ -16,4 +16,4 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=redroid-cloud-phone.target
+WantedBy=cuttlefish-cloud-phone.target
