@@ -1,195 +1,64 @@
-# Redroid Cloud Phone
+# Cuttlefish Cloud Phone (OCI ARM64)
 
-Run Android in the cloud with virtual camera/microphone support, controllable via REST API or ADB.
+This repository is now focused on a single stack:
 
-## Overview
+- Cuttlefish Android on OCI ARM64
+- OBS RTMP ingest via `nginx-rtmp`
+- FFmpeg bridge to Cuttlefish front/back camera sinks and mic sink
+- Golden image deployment for multi-device fleets
 
-This project deploys [Redroid](https://github.com/remote-android/redroid-doc) (Android in Docker) on Oracle Cloud Infrastructure (OCI) with:
-
-- **Virtual Camera/Microphone** - Stream from OBS to Android via RTMP
-- **REST API** - Programmatic control for automation/LLM agents
-- **Multiple Viewing Options** - VNC, scrcpy, WebRTC
-- **Proxy Support** - Route Android traffic through SOCKS5/HTTP proxy
-- **GPS Spoofing** - Set fake location coordinates
-- **Google Play** - Optional GApps installation
-
-## Quick Start
-
-### Prerequisites
-
-- OCI account with Always Free tier (ARM instances)
-- OCI CLI configured (`oci setup config`)
-- SSH key pair
-
-### Deploy
+## Canonical commands
 
 ```bash
-# Clone repository
-git clone https://github.com/lehelkovach/redroid-cloud-phone.git
-cd redroid-cloud-phone
+# Deploy fresh OCI instance and install cuttlefish stack
+./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
 
-# Set environment variables
-export COMPARTMENT_ID="ocid1.compartment..."
-export SUBNET_ID="ocid1.subnet..."
-export AVAILABILITY_DOMAIN="AD-1"
+# Verify runtime + ingest (video+audio)
+./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
 
-# Full deployment (create instance + deploy + test)
-./cloud-phone deploy --full --name my-phone
+# Create golden image from configured source
+COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <OCI_PUBLIC_IP> cloud-phone-cuttlefish-v1 cuttlefish
 
-# Or deploy to existing instance
-./cloud-phone deploy --to-instance 129.146.x.x
+# Deploy one from golden
+GOLDEN_IMAGE_ID=<image_ocid> ./cloud-phone deploy-golden --name phone-1 --wait-check
 
-# Or with full options
-./scripts/deploy-cloud-phone.sh \
-  --name my-phone \
-  --ocpus 2 \
-  --memory 8 \
-  --gapps \
-  --proxy socks5://proxy:1080
+# Deploy many from same golden image
+GOLDEN_IMAGE_ID=<image_ocid> ./cloud-phone deploy-fleet --count 5 --parallel 2 --verify-ingest
 ```
 
-### Connect
+## Project structure (current)
 
-```bash
-# Start SSH tunnel for secure access
-./cloud-phone tunnel --start 129.146.x.x
-
-# Or manually:
-ssh -L 5555:localhost:5555 -L 5900:localhost:5900 -L 8080:localhost:8080 ubuntu@<IP>
-
-# View via scrcpy (install: sudo apt install scrcpy)
-scrcpy -s localhost:5555
-
-# Or via VNC
-vncviewer localhost:5900  # password: redroid
-
-# API health check
-curl http://localhost:8080/health
-
-# Check status
-./cloud-phone status --instance 129.146.x.x
+```text
+redroid-cloud-phone/
+├── cloud-phone
+├── scripts/
+│   ├── deploy-cuttlefish-oci.sh
+│   ├── install-cuttlefish-cloud-phone.sh
+│   ├── deploy-from-golden.sh
+│   ├── deploy-golden-fleet.sh
+│   ├── create-golden-image.sh
+│   ├── prepare-golden-image.sh
+│   ├── cuttlefish-phase1-setup.sh
+│   ├── cuttlefish-phase1-validate.sh
+│   ├── cuttlefish-rtmp-bridge.sh
+│   ├── test-cuttlefish-rtmp-bridge.sh
+│   └── verify-cuttlefish-ingest.sh
+├── systemd/
+│   ├── cuttlefish-cloud-phone.target
+│   ├── cuttlefish-launch.service
+│   ├── cuttlefish-rtmp-bridge.service
+│   └── nginx-rtmp.service
+└── docs/
+    ├── DEPLOYMENT.md
+    ├── CUTTLEFISH_PHASE1.md
+    ├── CUTTLEFISH_PHASE2_RTMP_BRIDGE.md
+    └── CUTTLEFISH_OCI_GOLDEN_IMAGE.md
 ```
-
-### Stream from OBS
-
-1. Configure OBS output:
-   - Server: `rtmp://<INSTANCE_IP>/live`
-   - Stream Key: `cam`
-   - Video: 1080×1920, 15 fps, H.264
-   - Audio: 44100 Hz, stereo, AAC
-2. Start streaming
-3. In Android, use VLC to view: `rtmp://127.0.0.1/live/cam`
-
-See [docs/OBS_STREAMING.md](docs/OBS_STREAMING.md) for full OBS settings and troubleshooting.
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture, diagrams, data flow |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | All deployment options (CLI, Terraform, Golden Image) |
-| [docs/FEATURES.md](docs/FEATURES.md) | Feature documentation (proxy, GPS, GApps, API) |
-| [docs/QUICK_START.md](docs/QUICK_START.md) | Getting started guide |
-| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | REST API documentation |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and solutions |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development workflow, testing |
-| [docs/CAMERA_HAL_FIX.md](docs/CAMERA_HAL_FIX.md) | Camera HAL limitation and workarounds |
-| [docs/OBS_STREAMING.md](docs/OBS_STREAMING.md) | OBS settings for RTMP streaming |
-| [docs/RESEARCH.md](docs/RESEARCH.md) | Research notes on alternatives |
-| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history and changes |
-
-## Project Structure
-
-```
-redroid-cloud-phone/
-├── cloud-phone             # Unified CLI tool (main entry point)
-├── install-redroid.sh      # System installer
-├── api/                    # Control API server
-│   ├── server.py          # Main Flask API
-│   └── agent_api.py       # Agent coordination API
-├── config/                 # Configuration files
-│   ├── cloud-phone-config.example.json
-│   ├── device-profiles/   # Anti-detection profiles
-│   └── nginx-rtmp.conf    # RTMP server config
-├── docker/                 # Docker build files
-├── docs/                   # Documentation
-├── orchestrator/           # Multi-instance orchestrator
-├── scripts/                # Deployment and utility scripts (40+ scripts)
-│   ├── deploy-cloud-phone.sh    # Full deployment
-│   ├── deploy-from-golden.sh    # Fast golden image deploy
-│   ├── ffmpeg-bridge.sh         # RTMP to virtual device
-│   ├── health-check.sh          # Health monitoring
-│   ├── proxy-control.sh         # Proxy configuration
-│   ├── vnc-tunnel.sh            # SSH tunnel management
-│   └── ...
-├── systemd/                # Systemd service files
-├── terraform/              # Infrastructure as Code
-├── tests/                  # Test suite (75+ tests)
-└── cloud-init.yaml         # Cloud-init configuration
-```
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/status` | GET | Device status |
-| `/device/screenshot` | GET | Capture screenshot |
-| `/device/input` | POST | Send tap/swipe/text |
-| `/adb/shell` | POST | Execute shell command |
-| `/adb/install` | POST | Install APK |
-| `/proxy` | GET/POST/DELETE | Proxy configuration |
-| `/location` | GET/POST/DELETE | GPS spoofing |
-| `/apps` | GET | List installed apps |
-| `/apps/<pkg>/start` | POST | Launch app |
-
-See [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for complete API documentation.
-
-## Testing
-
-```bash
-# Using the unified CLI
-./cloud-phone test --all                    # Run all tests
-./cloud-phone test --unit                   # Unit tests only
-./cloud-phone test --integration            # Integration tests
-./cloud-phone test --e2e                    # End-to-end tests
-./cloud-phone test --all --instance 129.146.x.x  # Test remote instance
-
-# Or directly with pytest
-python3 -m venv .venv
-source .venv/bin/activate
-pip install pytest
-
-VM_HOST=<INSTANCE_IP> pytest tests/ -v
-
-# Run specific test suites
-pytest tests/test_streaming_unit.py -v      # Unit tests
-pytest tests/test_streaming_integration.py -v  # Integration tests
-pytest tests/test_streaming_e2e.py -v       # End-to-end tests
-pytest tests/test_virtual_camera.py -v      # Virtual camera tests
-```
-
-## Known Limitations
-
-1. **Camera HAL Missing** - Standard `redroid/redroid` images do not include a Camera HAL. Android apps cannot detect `/dev/video42`. Build a custom image with `./docker/build-camera-image.sh` or use VLC workaround. See [docs/CAMERA_HAL_FIX.md](docs/CAMERA_HAL_FIX.md). Run `./scripts/test-redroid-camera-diag.sh` to verify status.
-
-2. **Ubuntu 20.04 Required** - Kernel 5.x needed for v4l2loopback/snd-aloop modules.
-
-3. **ARM Only** - OCI Always Free tier provides ARM (Ampere) instances. x86 requires paid instances.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Run tests: `pytest tests/ -v`
-4. Submit a pull request
-
-## License
-
-MIT License - See LICENSE file for details.
-
-## Acknowledgments
-
-- [Redroid](https://github.com/remote-android/redroid-doc) - Android in Docker
-- [v4l2loopback](https://github.com/umlaeute/v4l2loopback) - Virtual video device
-- [nginx-rtmp-module](https://github.com/arut/nginx-rtmp-module) - RTMP server
+- `docs/DEPLOYMENT.md`
+- `docs/CUTTLEFISH_PHASE1.md`
+- `docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md`
+- `docs/CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
+- `FUTURE_CONSIDERATIONS_CAMERA_STACK.md`
