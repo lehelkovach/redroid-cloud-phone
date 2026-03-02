@@ -91,28 +91,40 @@ if [[ "$CPU_COUNT" -lt 4 ]] || [[ "$MEM_GB" -lt 24 ]]; then
     log_warn "Detected: ${CPU_COUNT} OCPU, ${MEM_GB}GB RAM"
 fi
 
-log_info "[1/7] Installing baseline packages..."
+log_info "[1/8] Installing baseline packages..."
 apt-get update -y
 apt-get install -y \
     curl wget ca-certificates jq \
     nginx libnginx-mod-rtmp \
     ffmpeg android-tools-adb \
-    qemu-kvm bridge-utils dnsmasq iptables iproute2
+    qemu-kvm bridge-utils dnsmasq iptables iproute2 \
+    python3 python3-venv python3-pip
 
-log_info "[2/7] Configuring nginx-rtmp..."
+log_info "[2/8] Configuring nginx-rtmp..."
 cp "$PROJECT_ROOT/config/nginx-rtmp.conf" /etc/nginx/nginx.conf
 systemctl disable nginx.service 2>/dev/null || true
 
-log_info "[3/7] Installing scripts to /opt/redroid-scripts..."
-mkdir -p /opt/redroid-scripts
-cp "$PROJECT_ROOT/scripts/"*.sh /opt/redroid-scripts/
-chmod +x /opt/redroid-scripts/*.sh
+log_info "[3/8] Installing scripts to /opt/cloud-phone-scripts..."
+mkdir -p /opt/cloud-phone-scripts
+cp "$PROJECT_ROOT/scripts/"*.sh /opt/cloud-phone-scripts/
+chmod +x /opt/cloud-phone-scripts/*.sh
 
-log_info "[4/7] Installing Cuttlefish systemd units..."
+log_info "[4/8] Installing Control API..."
+mkdir -p /opt/cloud-phone-api
+cp "$PROJECT_ROOT/api/server.py" /opt/cloud-phone-api/
+cp "$PROJECT_ROOT/api/requirements.txt" /opt/cloud-phone-api/
+mkdir -p /opt/cloud-phone/config/device-profiles
+cp "$PROJECT_ROOT/config/device-profiles/"*.prop /opt/cloud-phone/config/device-profiles/
+python3 -m venv /opt/cloud-phone-api/venv
+/opt/cloud-phone-api/venv/bin/pip install --upgrade pip >/dev/null
+/opt/cloud-phone-api/venv/bin/pip install -r /opt/cloud-phone-api/requirements.txt >/dev/null
+
+log_info "[5/8] Installing Cuttlefish systemd units..."
 cp "$PROJECT_ROOT/systemd/nginx-rtmp.service" /etc/systemd/system/
 cp "$PROJECT_ROOT/systemd/cuttlefish-launch.service" /etc/systemd/system/
 cp "$PROJECT_ROOT/systemd/cuttlefish-rtmp-bridge.service" /etc/systemd/system/
 cp "$PROJECT_ROOT/systemd/cuttlefish-cloud-phone.target" /etc/systemd/system/
+cp "$PROJECT_ROOT/systemd/control-api.service" /etc/systemd/system/
 
 mkdir -p /etc/default
 cat > /etc/default/cuttlefish-cloud-phone <<EOF
@@ -124,14 +136,15 @@ BACK_SINK_URI="$BACK_SINK_URI"
 MIC_SINK_URI="$MIC_SINK_URI"
 EOF
 
-log_info "[5/7] Reloading and enabling services..."
+log_info "[6/8] Reloading and enabling services..."
 systemctl daemon-reload
 systemctl enable nginx-rtmp.service
 systemctl enable cuttlefish-launch.service
 systemctl enable cuttlefish-rtmp-bridge.service
+systemctl enable control-api.service
 systemctl enable cuttlefish-cloud-phone.target
 
-log_info "[6/7] Verifying Cuttlefish prerequisites..."
+log_info "[7/8] Verifying Cuttlefish prerequisites..."
 if [[ ! -e /dev/kvm ]]; then
     log_error "/dev/kvm is missing; Cuttlefish cannot start."
     exit 1
@@ -148,7 +161,7 @@ else
     log_info "Cuttlefish host tools detected."
 fi
 
-log_info "[7/7] Starting stack..."
+log_info "[8/8] Starting stack..."
 systemctl start cuttlefish-cloud-phone.target || true
 sleep 3
 
@@ -162,7 +175,8 @@ echo ""
 echo "Check services:"
 echo "  sudo systemctl status cuttlefish-launch.service"
 echo "  sudo systemctl status cuttlefish-rtmp-bridge.service"
+echo "  sudo systemctl status control-api.service"
 echo "  sudo systemctl status nginx-rtmp.service"
 echo ""
 echo "Validate:"
-echo "  /opt/redroid-scripts/cuttlefish-phase1-validate.sh --local --instance-name $INSTANCE_NAME --webrtc-port $WEBRTC_PORT"
+echo "  /opt/cloud-phone-scripts/cuttlefish-phase1-validate.sh --local --instance-name $INSTANCE_NAME --webrtc-port $WEBRTC_PORT"

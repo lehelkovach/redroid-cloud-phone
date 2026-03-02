@@ -1,4 +1,4 @@
-# Cuttlefish Cloud Phone (OCI ARM64)
+# Android ARM Cloud Phone (OCI ARM64)
 
 This repository is now focused on a single stack:
 
@@ -6,6 +6,15 @@ This repository is now focused on a single stack:
 - OBS RTMP ingest via `nginx-rtmp`
 - FFmpeg bridge to Cuttlefish front/back camera sinks and mic sink
 - Golden image deployment for multi-device fleets
+- Control API and orchestrator for multi-phone automation
+
+## Updates and notes
+
+- Runtime is Cuttlefish-only; legacy runtime-specific assumptions were removed.
+- Control-plane support is included (`api/` + `orchestrator/`) and deployable from repo.
+- Naming is now generalized for runtime swap flexibility (`android-arm-cloud-phone`).
+- Default SSH key naming is `~/.ssh/android_arm_cloud_phone_oci(.pub)`.
+- Clean-machine recovery is documented in `docs/CLEANROOM_BOOTSTRAP.md`.
 
 ## Canonical commands
 
@@ -26,11 +35,34 @@ GOLDEN_IMAGE_ID=<image_ocid> ./cloud-phone deploy-golden --name phone-1 --wait-c
 GOLDEN_IMAGE_ID=<image_ocid> ./cloud-phone deploy-fleet --count 5 --parallel 2 --verify-ingest
 ```
 
+## After machine wipe (quick path)
+
+```bash
+git clone <your-repo-url> android-arm-cloud-phone
+cd android-arm-cloud-phone
+cp .env.example .env
+
+# Optional: local control-plane venv
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r api/requirements.txt -r orchestrator/requirements.txt
+
+# Deploy and validate
+./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
+./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
+```
+
 ## Project structure (current)
 
 ```text
-redroid-cloud-phone/
+android-arm-cloud-phone/
 ├── cloud-phone
+├── api/
+│   ├── server.py
+│   └── requirements.txt
+├── orchestrator/
+│   ├── server.py
+│   └── requirements.txt
 ├── scripts/
 │   ├── deploy-cuttlefish-oci.sh
 │   ├── install-cuttlefish-cloud-phone.sh
@@ -47,6 +79,7 @@ redroid-cloud-phone/
 │   ├── cuttlefish-cloud-phone.target
 │   ├── cuttlefish-launch.service
 │   ├── cuttlefish-rtmp-bridge.service
+│   ├── control-api.service
 │   └── nginx-rtmp.service
 └── docs/
     ├── DEPLOYMENT.md
@@ -61,4 +94,7 @@ redroid-cloud-phone/
 - `docs/CUTTLEFISH_PHASE1.md`
 - `docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md`
 - `docs/CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
+- `docs/API_REFERENCE.md`
+- `docs/AGENT_COORDINATION.md`
+- `docs/CLEANROOM_BOOTSTRAP.md`
 - `FUTURE_CONSIDERATIONS_CAMERA_STACK.md`

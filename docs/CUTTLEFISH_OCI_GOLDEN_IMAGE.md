@@ -36,15 +36,15 @@ If Cuttlefish host tools are already preinstalled in your image, this brings up:
 ## 2) Validate runtime and bridge
 
 ```bash
-ssh -i ~/.ssh/redroid_oci ubuntu@<OCI_PUBLIC_IP> \
-  '/opt/redroid-scripts/cuttlefish-phase1-validate.sh --local --instance-name cvd-arm64-1 --webrtc-port 8443'
+ssh -i ~/.ssh/android_arm_cloud_phone_oci ubuntu@<OCI_PUBLIC_IP> \
+  '/opt/cloud-phone-scripts/cuttlefish-phase1-validate.sh --local --instance-name cvd-arm64-1 --webrtc-port 8443'
 ```
 
 Run bridge test:
 
 ```bash
-ssh -i ~/.ssh/redroid_oci ubuntu@<OCI_PUBLIC_IP> \
-  '/opt/redroid-scripts/test-cuttlefish-rtmp-bridge.sh --local'
+ssh -i ~/.ssh/android_arm_cloud_phone_oci ubuntu@<OCI_PUBLIC_IP> \
+  '/opt/cloud-phone-scripts/test-cuttlefish-rtmp-bridge.sh --local'
 ```
 
 ## 3) Prepare and create a new golden image
@@ -52,8 +52,8 @@ ssh -i ~/.ssh/redroid_oci ubuntu@<OCI_PUBLIC_IP> \
 Prepare on the instance:
 
 ```bash
-ssh -i ~/.ssh/redroid_oci ubuntu@<OCI_PUBLIC_IP> \
-  'sudo /opt/redroid-scripts/prepare-golden-image.sh --platform cuttlefish'
+ssh -i ~/.ssh/android_arm_cloud_phone_oci ubuntu@<OCI_PUBLIC_IP> \
+  'sudo /opt/cloud-phone-scripts/prepare-golden-image.sh --platform cuttlefish'
 ```
 
 Create image from local machine:
@@ -96,6 +96,6 @@ AVAILABILITY_DOMAIN=<ad> \
 ## Notes
 
 - `deploy-from-golden.sh` in this repo is now cuttlefish-only.
-- Cuttlefish sizing is materially higher than Redroid; keep at least `4 OCPU / 24GB` unless you have validated lower.
+- Cuttlefish sizing is materially higher than container-first Android runtimes; keep at least `4 OCPU / 24GB` unless you have validated lower.
 - OBS still publishes RTMP exactly as before: `rtmp://<IP>/live` with stream key `cam`.
 - Release gate command: `./scripts/verify-cuttlefish-ingest.sh --vm <OCI_PUBLIC_IP>`

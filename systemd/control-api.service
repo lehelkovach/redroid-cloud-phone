@@ -1,0 +1,30 @@
+[Unit]
+Description=Cloud Phone Control API Server (ADB wrapper)
+Documentation=https://github.com/lehelkovach/android-arm-cloud-phone
+After=network.target cuttlefish-launch.service
+Wants=cuttlefish-launch.service
+PartOf=cuttlefish-cloud-phone.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cloud-phone-api
+ExecStartPre=/bin/bash -c 'adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true'
+ExecStart=/opt/cloud-phone-api/venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+
+# Run as root for ADB access
+User=root
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=API_HOST=0.0.0.0
+Environment=API_PORT=8080
+Environment=ADB_CONNECT=127.0.0.1:5555
+Environment=CLOUD_PHONE_CONFIG=/etc/cloud-phone/config.json
+
+# Health check endpoint
+ExecStartPost=/bin/bash -c 'for i in {1..10}; do curl -sf http://127.0.0.1:8080/health && exit 0; sleep 2; done; exit 1'
+
+[Install]
+WantedBy=cuttlefish-cloud-phone.target

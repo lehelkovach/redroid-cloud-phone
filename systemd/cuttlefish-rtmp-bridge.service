@@ -8,7 +8,7 @@ PartOf=cuttlefish-cloud-phone.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/default/cuttlefish-cloud-phone
-ExecStart=/bin/bash -lc '/opt/redroid-scripts/cuttlefish-rtmp-bridge.sh --rtmp-url "${RTMP_URL:-rtmp://127.0.0.1/live/cam}" --front-sink "${FRONT_SINK_URI:-udp://127.0.0.1:23000?pkt_size=1316}" --back-sink "${BACK_SINK_URI:-udp://127.0.0.1:23001?pkt_size=1316}" --mic-sink "${MIC_SINK_URI:-udp://127.0.0.1:23010?pkt_size=1316}"'
+ExecStart=/bin/bash -lc '/opt/cloud-phone-scripts/cuttlefish-rtmp-bridge.sh --rtmp-url "${RTMP_URL:-rtmp://127.0.0.1/live/cam}" --front-sink "${FRONT_SINK_URI:-udp://127.0.0.1:23000?pkt_size=1316}" --back-sink "${BACK_SINK_URI:-udp://127.0.0.1:23001?pkt_size=1316}" --mic-sink "${MIC_SINK_URI:-udp://127.0.0.1:23010?pkt_size=1316}"'
 Restart=always
 RestartSec=5
 User=root

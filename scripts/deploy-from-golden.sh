@@ -16,7 +16,7 @@ PLATFORM="cuttlefish"
 COMPARTMENT_ID="${COMPARTMENT_ID:-}"
 SUBNET_ID="${SUBNET_ID:-}"
 AVAILABILITY_DOMAIN="${AVAILABILITY_DOMAIN:-}"
-SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/redroid_oci.pub}"
+SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/android_arm_cloud_phone_oci.pub}"
 SECURITY_TOKEN_FILE="${SECURITY_TOKEN_FILE:-$HOME/.oci/sessions/DEFAULT/token}"
 OCI_AUTH_ARGS=()
 if [[ -f "$SECURITY_TOKEN_FILE" ]]; then
@@ -123,7 +123,7 @@ $SSH_CMD ubuntu@"$PUBLIC_IP" 'sudo systemctl start cuttlefish-cloud-phone.target
 
 if [[ "$WAIT_CHECK" == "true" ]]; then
     log_info "Running runtime validation..."
-    $SSH_CMD ubuntu@"$PUBLIC_IP" "/opt/redroid-scripts/cuttlefish-phase1-validate.sh --local" || true
+    $SSH_CMD ubuntu@"$PUBLIC_IP" "/opt/cloud-phone-scripts/cuttlefish-phase1-validate.sh --local" || true
 fi
 
 if [[ "$RUN_TESTS" == "true" ]]; then

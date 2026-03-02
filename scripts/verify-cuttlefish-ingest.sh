@@ -13,7 +13,7 @@
 #   --local                     Run locally
 #   --vm HOST                   Run remotely via SSH
 #   --ssh-user USER             SSH user (default: ubuntu)
-#   --ssh-key PATH              SSH key (default: ~/.ssh/redroid_oci)
+#   --ssh-key PATH              SSH key (default: ~/.ssh/android_arm_cloud_phone_oci)
 #   --instance-name NAME        CVD instance name (default: cvd-arm64-1)
 #   --webrtc-port PORT          WebRTC signaling port (default: 8443)
 #   --duration SEC              Stream test duration (default: 20)
@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VM_HOST=""
 RUN_MODE="local"
 SSH_USER="ubuntu"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/android_arm_cloud_phone_oci}"
 INSTANCE_NAME="cvd-arm64-1"
 WEBRTC_PORT="8443"
 DURATION="20"
@@ -42,7 +42,7 @@ Options:
   --local                     Run locally
   --vm HOST                   Run remotely via SSH
   --ssh-user USER             SSH user (default: ubuntu)
-  --ssh-key PATH              SSH key (default: ~/.ssh/redroid_oci)
+  --ssh-key PATH              SSH key (default: ~/.ssh/android_arm_cloud_phone_oci)
   --instance-name NAME        CVD instance name (default: cvd-arm64-1)
   --webrtc-port PORT          WebRTC signaling port (default: 8443)
   --duration SEC              Stream test duration (default: 20)
@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
         --local) RUN_MODE="local"; VM_HOST=""; shift ;;
         --vm) VM_HOST="${2:-}"; RUN_MODE="remote"; shift 2 ;;
         --ssh-user) SSH_USER="${2:-ubuntu}"; shift 2 ;;
-        --ssh-key) SSH_KEY="${2:-$HOME/.ssh/redroid_oci}"; shift 2 ;;
+        --ssh-key) SSH_KEY="${2:-$HOME/.ssh/android_arm_cloud_phone_oci}"; shift 2 ;;
         --instance-name) INSTANCE_NAME="${2:-$INSTANCE_NAME}"; shift 2 ;;
         --webrtc-port) WEBRTC_PORT="${2:-$WEBRTC_PORT}"; shift 2 ;;
         --duration) DURATION="${2:-$DURATION}"; shift 2 ;;

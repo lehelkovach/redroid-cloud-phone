@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Control API CLI client for Redroid instances.
+Control API CLI client for Cuttlefish cloud phone instances.
 
 Usage examples:
   python scripts/control-client.py --api-url http://IP:8080 health
@@ -33,7 +33,7 @@ def request_json(method: str, url: str, headers: dict, data=None, timeout=30):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Redroid Control API client")
+    parser = argparse.ArgumentParser(description="Cuttlefish Control API client")
     parser.add_argument("--api-url", required=True, help="Base API URL, e.g. http://IP:8080")
     parser.add_argument("--token", default="", help="Bearer token if configured")
     parser.add_argument("--timeout", type=int, default=30, help="Request timeout")

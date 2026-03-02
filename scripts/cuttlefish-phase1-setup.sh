@@ -15,7 +15,7 @@
 #   --local                     Run on local host
 #   --vm HOST                   Run remotely via SSH
 #   --ssh-user USER             SSH user (default: ubuntu)
-#   --ssh-key PATH              SSH key (default: ~/.ssh/redroid_oci)
+#   --ssh-key PATH              SSH key (default: ~/.ssh/android_arm_cloud_phone_oci)
 #   --no-install                Skip apt package installation
 #   --skip-launch               Skip launch_cvd
 #   --instance-name NAME        CVD instance name (default: cvd-arm64-1)
@@ -41,7 +41,7 @@ VM_HOST=""
 RUN_MODE="local"
 
 SSH_USER="ubuntu"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/android_arm_cloud_phone_oci}"
 
 DO_INSTALL=true
 DO_LAUNCH=true
@@ -70,7 +70,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --ssh-key)
-            SSH_KEY="${2:-$HOME/.ssh/redroid_oci}"
+            SSH_KEY="${2:-$HOME/.ssh/android_arm_cloud_phone_oci}"
             shift 2
             ;;
         --no-install)

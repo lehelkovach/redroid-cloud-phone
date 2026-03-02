@@ -2,7 +2,7 @@
 *.pem
 *.key
 id_rsa*
-waydroid_oci*
+android_arm_cloud_phone_oci*
 *.priv
 *.pub
 

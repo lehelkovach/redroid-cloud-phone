@@ -20,6 +20,8 @@ Commands:
   verify-ingest     Verify runtime + RTMP video/audio ingest
   create-golden     Create golden image from configured source instance
   prepare-golden    Prepare current host for image capture
+  api-run           Run control API locally
+  orchestrator-run  Run orchestrator locally
   help              Show this help
 
 Examples:
@@ -27,6 +29,8 @@ Examples:
   ./cloud-phone deploy-golden --image-id <ocid> --name phone-1
   ./cloud-phone deploy-fleet --image-id <ocid> --count 5 --parallel 2 --verify-ingest
   ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
+  ./cloud-phone api-run
+  ./cloud-phone orchestrator-run
 EOF
 }
 
@@ -57,6 +61,12 @@ case "$cmd" in
         ;;
     prepare-golden)
         run_script "$SCRIPTS_DIR/prepare-golden-image.sh" --platform cuttlefish "$@"
+        ;;
+    api-run)
+        python3 "$ROOT_DIR/api/server.py" "$@"
+        ;;
+    orchestrator-run)
+        python3 "$ROOT_DIR/orchestrator/server.py" "$@"
         ;;
     help|-h|--help)
         usage

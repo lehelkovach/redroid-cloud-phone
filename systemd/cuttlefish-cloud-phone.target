@@ -1,11 +1,12 @@
 [Unit]
 Description=Cuttlefish Cloud Phone Target
-Documentation=https://github.com/lehelkovach/redroid-cloud-phone
+Documentation=https://github.com/lehelkovach/android-arm-cloud-phone
 After=network-online.target
 Wants=network-online.target
 Wants=nginx-rtmp.service
 Wants=cuttlefish-launch.service
 Wants=cuttlefish-rtmp-bridge.service
+Wants=control-api.service
 
 [Install]
 WantedBy=multi-user.target

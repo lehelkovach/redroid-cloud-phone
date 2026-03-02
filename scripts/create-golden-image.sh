@@ -7,7 +7,7 @@ INSTANCE_IP="${1:-}"
 IMAGE_NAME="${2:-cloud-phone-cuttlefish-$(date +%Y%m%d)}"
 PLATFORM="${3:-cuttlefish}"
 
-SSH_KEY="${SSH_KEY_FILE:-$HOME/.ssh/redroid_oci}"
+SSH_KEY="${SSH_KEY_FILE:-$HOME/.ssh/android_arm_cloud_phone_oci}"
 COMPARTMENT_ID="${COMPARTMENT_ID:-}"
 
 GREEN='\033[0;32m'
@@ -48,7 +48,7 @@ INSTANCE_OCID=$(oci compute instance list \
 [[ -n "$INSTANCE_OCID" && "$INSTANCE_OCID" != "null" ]] || { log_error "Instance with IP $INSTANCE_IP not found."; exit 1; }
 
 log_info "Stopping Cuttlefish services and cleaning instance..."
-$SSH_CMD ubuntu@"$INSTANCE_IP" 'sudo /opt/redroid-scripts/prepare-golden-image.sh --platform cuttlefish'
+$SSH_CMD ubuntu@"$INSTANCE_IP" 'sudo /opt/cloud-phone-scripts/prepare-golden-image.sh --platform cuttlefish'
 
 log_info "Stopping instance..."
 oci compute instance action --instance-id "$INSTANCE_OCID" --action STOP --wait-for-state STOPPED >/dev/null

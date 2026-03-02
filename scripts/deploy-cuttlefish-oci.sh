@@ -11,7 +11,7 @@
 #   --image-id OCID          Launch from specific image (recommended for golden)
 #   --ocpus N                OCPUs for new instance (default: 4)
 #   --memory N               Memory GB for new instance (default: 24)
-#   --ssh-key-file FILE      SSH public key file (default: ~/.ssh/redroid_oci.pub)
+#   --ssh-key-file FILE      SSH public key file (default: ~/.ssh/android_arm_cloud_phone_oci.pub)
 #   --ssh-user USER          SSH username (default: ubuntu)
 #   --instance-name NAME     Cuttlefish instance name (default: cvd-arm64-1)
 #   --webrtc-port PORT       WebRTC signaling port (default: 8443)
@@ -33,7 +33,7 @@ TARGET_IP=""
 IMAGE_ID=""
 OCPUS="4"
 MEMORY_GB="24"
-SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/redroid_oci.pub}"
+SSH_KEY_FILE="${SSH_KEY_FILE:-$HOME/.ssh/android_arm_cloud_phone_oci.pub}"
 SSH_USER="ubuntu"
 CF_INSTANCE_NAME="cvd-arm64-1"
 WEBRTC_PORT="8443"
@@ -74,7 +74,7 @@ Options:
   --image-id OCID          Launch from specific image (recommended for golden)
   --ocpus N                OCPUs for new instance (default: 4)
   --memory N               Memory GB for new instance (default: 24)
-  --ssh-key-file FILE      SSH public key file (default: ~/.ssh/redroid_oci.pub)
+  --ssh-key-file FILE      SSH public key file (default: ~/.ssh/android_arm_cloud_phone_oci.pub)
   --ssh-user USER          SSH username (default: ubuntu)
   --instance-name NAME     Cuttlefish instance name (default: cvd-arm64-1)
   --webrtc-port PORT       WebRTC signaling port (default: 8443)
@@ -208,19 +208,19 @@ tar czf "$TARBALL" \
     --exclude='*.pyc' \
     --exclude='__pycache__' \
     -C "$PROJECT_ROOT" .
-scp -i "$SSH_KEY_PRIVATE" -o StrictHostKeyChecking=no "$TARBALL" "${SSH_USER}@${TARGET_IP}:/tmp/redroid-cloud-phone.tar.gz"
+scp -i "$SSH_KEY_PRIVATE" -o StrictHostKeyChecking=no "$TARBALL" "${SSH_USER}@${TARGET_IP}:/tmp/cuttlefish-cloud-phone.tar.gz"
 rm -f "$TARBALL"
 
 log_info "Installing stack on remote host..."
-REMOTE_INSTALL_CMD="sudo /tmp/redroid-cloud-phone/scripts/install-cuttlefish-cloud-phone.sh --instance-name \"$CF_INSTANCE_NAME\" --webrtc-port \"$WEBRTC_PORT\" --rtmp-url \"$RTMP_URL\" --front-sink \"$FRONT_SINK_URI\" --back-sink \"$BACK_SINK_URI\""
+REMOTE_INSTALL_CMD="sudo /tmp/cuttlefish-cloud-phone/scripts/install-cuttlefish-cloud-phone.sh --instance-name \"$CF_INSTANCE_NAME\" --webrtc-port \"$WEBRTC_PORT\" --rtmp-url \"$RTMP_URL\" --front-sink \"$FRONT_SINK_URI\" --back-sink \"$BACK_SINK_URI\""
 REMOTE_INSTALL_CMD="$REMOTE_INSTALL_CMD --mic-sink \"$MIC_SINK_URI\""
 if [[ "$SKIP_TOOLS_CHECK" == "true" ]]; then
     REMOTE_INSTALL_CMD="$REMOTE_INSTALL_CMD --skip-tools-check"
 fi
-"${SSH_CMD[@]}" bash -lc "set -euo pipefail; rm -rf /tmp/redroid-cloud-phone && mkdir -p /tmp/redroid-cloud-phone && tar xzf /tmp/redroid-cloud-phone.tar.gz -C /tmp/redroid-cloud-phone; $REMOTE_INSTALL_CMD"
+"${SSH_CMD[@]}" bash -lc "set -euo pipefail; rm -rf /tmp/cuttlefish-cloud-phone && mkdir -p /tmp/cuttlefish-cloud-phone && tar xzf /tmp/cuttlefish-cloud-phone.tar.gz -C /tmp/cuttlefish-cloud-phone; $REMOTE_INSTALL_CMD"
 
 log_info "Running Phase 1 validation..."
-"${SSH_CMD[@]}" "bash /opt/redroid-scripts/cuttlefish-phase1-validate.sh --local --instance-name \"$CF_INSTANCE_NAME\" --webrtc-port \"$WEBRTC_PORT\" || true"
+"${SSH_CMD[@]}" "bash /opt/cloud-phone-scripts/cuttlefish-phase1-validate.sh --local --instance-name \"$CF_INSTANCE_NAME\" --webrtc-port \"$WEBRTC_PORT\" || true"
 
 echo ""
 echo -e "${BLUE}==========================================${NC}"

@@ -10,7 +10,7 @@
 #   --local                     Run locally
 #   --vm HOST                   Run remotely via SSH
 #   --ssh-user USER             SSH user (default: ubuntu)
-#   --ssh-key PATH              SSH key (default: ~/.ssh/redroid_oci)
+#   --ssh-key PATH              SSH key (default: ~/.ssh/android_arm_cloud_phone_oci)
 #   --duration SEC              Stream duration (default: 20)
 #   --rtmp-url URL              Input RTMP URL (default: rtmp://127.0.0.1/live/cam)
 #   --front-sink URI            Front sink URI (default: file:/tmp/cf-front.ts)
@@ -20,6 +20,8 @@
 #   --help                      Show help
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
@@ -31,7 +33,7 @@ ENV_VM_HOST="${VM_HOST:-${DEV_INSTANCE:-}}"
 VM_HOST=""
 RUN_MODE="local"
 SSH_USER="ubuntu"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/redroid_oci}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/android_arm_cloud_phone_oci}"
 
 DURATION="20"
 RTMP_URL="rtmp://127.0.0.1/live/cam"
@@ -53,7 +55,7 @@ Options:
   --local                     Run locally
   --vm HOST                   Run remotely via SSH
   --ssh-user USER             SSH user (default: ubuntu)
-  --ssh-key PATH              SSH key (default: ~/.ssh/redroid_oci)
+  --ssh-key PATH              SSH key (default: ~/.ssh/android_arm_cloud_phone_oci)
   --duration SEC              Stream duration (default: 20)
   --rtmp-url URL              Input RTMP URL (default: rtmp://127.0.0.1/live/cam)
   --front-sink URI            Front sink URI (default: file:/tmp/cf-front.ts)
@@ -69,7 +71,7 @@ while [[ $# -gt 0 ]]; do
         --local) RUN_MODE="local"; VM_HOST=""; shift ;;
         --vm) VM_HOST="${2:-}"; RUN_MODE="remote"; shift 2 ;;
         --ssh-user) SSH_USER="${2:-ubuntu}"; shift 2 ;;
-        --ssh-key) SSH_KEY="${2:-$HOME/.ssh/redroid_oci}"; shift 2 ;;
+        --ssh-key) SSH_KEY="${2:-$HOME/.ssh/android_arm_cloud_phone_oci}"; shift 2 ;;
         --duration) DURATION="${2:-20}"; shift 2 ;;
         --rtmp-url) RTMP_URL="${2:-$RTMP_URL}"; shift 2 ;;
         --front-sink) FRONT_SINK="${2:-$FRONT_SINK}"; shift 2 ;;
@@ -138,7 +140,7 @@ fi
 
 run_shell "rm -f /tmp/cf-front.ts /tmp/cf-back.ts /tmp/cf-mic.ts /tmp/cf-bridge-test.log /tmp/cf-source-test.log"
 
-BRIDGE_CMD="timeout $((DURATION + 20)) /bin/bash /home/poop/Development/git-repos/redroid-cloud-phone/scripts/cuttlefish-rtmp-bridge.sh --rtmp-url \"$RTMP_URL\" --front-sink \"$FRONT_SINK\" --back-sink \"$BACK_SINK\" --mic-sink \"$MIC_SINK\" --log-dir /tmp/cf-bridge-test"
+BRIDGE_CMD="timeout $((DURATION + 20)) /bin/bash \"$SCRIPT_DIR/cuttlefish-rtmp-bridge.sh\" --rtmp-url \"$RTMP_URL\" --front-sink \"$FRONT_SINK\" --back-sink \"$BACK_SINK\" --mic-sink \"$MIC_SINK\" --log-dir /tmp/cf-bridge-test"
 SOURCE_CMD="timeout ${DURATION} ffmpeg -hide_banner -loglevel warning -re -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=880:sample_rate=44100 -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -c:a aac -ar 44100 -b:a 128k -shortest -f flv \"$RTMP_URL\""
 
 run_shell "$BRIDGE_CMD >/tmp/cf-bridge-test.log 2>&1 & echo \$! > /tmp/cf-bridge-test.pid"

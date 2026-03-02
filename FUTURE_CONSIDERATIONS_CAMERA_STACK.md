@@ -4,7 +4,7 @@ This document captures future-facing guidance only. It does not change the curre
 
 ## 1) Building a Docker Android ARM64 image with a working virtual camera HAL
 
-To make a Redroid-like container image reliably expose cameras to Android apps, these pieces must all match:
+To make a container-first Android image reliably expose cameras to Android apps, these pieces must all match:
 
 - **Exact source/build parity with base image**
   - Build against the exact Android branch/tag used by the target image.
@@ -25,7 +25,7 @@ To make a Redroid-like container image reliably expose cameras to Android apps, 
   - Feed format and timing constraints (`yuv420p`, supported resolutions/fps, stable timestamps).
   - Deterministic input paths (video + audio) with robust reconnect behavior.
 
-## 2) What was missing in the prior Redroid HAL attempt
+## 2) What was missing in the prior container HAL attempt
 
 The main blocker was not just compilation errors; it was runtime compatibility:
 
@@ -40,17 +40,17 @@ The main blocker was not just compilation errors; it was runtime compatibility:
 - **Incomplete end-to-end platform integration**
   - Even after partial build success, provider/impl/runtime alignment (init/VINTF/SELinux/runtime deps) was not fully coherent for that image.
 
-## 3) Waydroid vs Redroid vs pure AOSP (if recompiling)
+## 3) Runtime model comparison (container vs LXC vs pure AOSP)
 
 Short version:
 
-- **Redroid (current path)**
+- **Container-first Android runtime**
   - Best operational simplicity and density for containerized cloud deployment.
   - Hardest part is camera HAL correctness when image/runtime ABI is not rebuilt as one coherent stack.
 
-- **Waydroid**
+- **LXC-integrated Android runtime**
   - Often better camera integration potential when rebuilding/patching a fuller Android userspace stack.
-  - Heavier operational model (LXC/system integration) and more moving pieces than Redroid.
+  - Heavier operational model (LXC/system integration) and more moving pieces than container-first runtimes.
 
 - **Pure AOSP rebuild**
   - Highest chance of HAL correctness if you control and build the full platform consistently.
@@ -58,8 +58,8 @@ Short version:
 
 Practical guidance:
 
-- If priority is fast production operations: keep Redroid/Cuttlefish workflow and avoid ad-hoc HAL binary mixing.
-- If priority is deep camera HAL correctness via recompilation: full-platform rebuild discipline (Waydroid/full AOSP style) is typically safer than piecemeal binary insertion.
+- If priority is fast production operations: keep the container/Cuttlefish workflow and avoid ad-hoc HAL binary mixing.
+- If priority is deep camera HAL correctness via recompilation: full-platform rebuild discipline (LXC/full AOSP style) is typically safer than piecemeal binary insertion.
 
 ## 4) OCI nested virtualization and v4l2loopback
 
@@ -67,7 +67,7 @@ Important distinction:
 
 - **`v4l2loopback` does not require nested virtualization.**
   - It is a Linux kernel module on the host kernel.
-  - Redroid/Waydroid camera ingest via host virtual devices can work without nested virtualization.
+  - Container/LXC camera ingest via host virtual devices can work without nested virtualization.
 
 - **Cuttlefish generally requires KVM virtualization support (`/dev/kvm`).**
   - This is about hardware virtualization availability on the instance.
