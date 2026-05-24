@@ -244,10 +244,6 @@ while true; do
             -hide_banner \
             -loglevel warning \
             -nostdin \
-            -reconnect 1 \
-            -reconnect_at_eof 1 \
-            -reconnect_streamed 1 \
-            -reconnect_delay_max 2 \
             -i "$RTMP_URL" \
             -map 0:v:0 \
             -filter:v "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=${VIDEO_FPS}" \
@@ -259,8 +255,11 @@ while true; do
             >>"$OUT_LOG" 2>&1 &
         FFMPEG_PID=$!
 
-        wait "$FFMPEG_PID" || true
-        EXIT_CODE=$?
+        if wait "$FFMPEG_PID"; then
+            EXIT_CODE=0
+        else
+            EXIT_CODE=$?
+        fi
         if [[ "$EXIT_CODE" -ne 0 ]]; then
             err "ffmpeg exited with code $EXIT_CODE. See $OUT_LOG"
         else

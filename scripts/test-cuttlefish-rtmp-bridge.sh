@@ -141,7 +141,7 @@ fi
 run_shell "rm -f /tmp/cf-front.ts /tmp/cf-back.ts /tmp/cf-mic.ts /tmp/cf-bridge-test.log /tmp/cf-source-test.log"
 
 BRIDGE_CMD="timeout $((DURATION + 20)) /bin/bash \"$SCRIPT_DIR/cuttlefish-rtmp-bridge.sh\" --rtmp-url \"$RTMP_URL\" --front-sink \"$FRONT_SINK\" --back-sink \"$BACK_SINK\" --mic-sink \"$MIC_SINK\" --log-dir /tmp/cf-bridge-test"
-SOURCE_CMD="timeout ${DURATION} ffmpeg -hide_banner -loglevel warning -re -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=880:sample_rate=44100 -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -c:a aac -ar 44100 -b:a 128k -shortest -f flv \"$RTMP_URL\""
+SOURCE_CMD="timeout ${DURATION} ffmpeg -hide_banner -loglevel warning -re -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=880:sample_rate=44100 -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 60 -keyint_min 60 -c:a aac -ar 44100 -b:a 128k -shortest -f flv \"$RTMP_URL\""
 
 run_shell "$BRIDGE_CMD >/tmp/cf-bridge-test.log 2>&1 & echo \$! > /tmp/cf-bridge-test.pid"
 sleep 4
