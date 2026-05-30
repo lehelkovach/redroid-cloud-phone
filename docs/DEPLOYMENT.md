@@ -109,7 +109,23 @@ Or via CLI:
 ./cloud-phone orchestrator-run
 ```
 
-## 6) Release readiness checklist
+## 6) OpenClaw/mobile-agent skill integration
+
+After the host passes `verify-ingest`, expose the Control API or Orchestrator to
+your agent runtime as a skill:
+
+- direct single-phone skill: `http://<OCI_PUBLIC_IP>:8080`
+- fleet/orchestrator skill: `http://<ORCH_IP>:8090`
+
+See `docs/OPENCLAW_SKILL.md` for:
+
+- OpenClaw-style tool manifest examples
+- Python HTTP adapter examples
+- OBS/RTMP setup for programmable camera/audio input
+- orchestrator lease/routing examples
+- troubleshooting and policy controls
+
+## 7) Release readiness checklist
 
 Before pushing to production:
 

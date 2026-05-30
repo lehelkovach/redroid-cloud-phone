@@ -15,6 +15,7 @@ This repository is now focused on a single stack:
 - Naming is now generalized for runtime swap flexibility (`android-arm-cloud-phone`).
 - Default SSH key naming is `~/.ssh/android_arm_cloud_phone_oci(.pub)`.
 - Clean-machine recovery is documented in `docs/CLEANROOM_BOOTSTRAP.md`.
+- OpenClaw/mobile-agent skill deployment is documented in `docs/OPENCLAW_SKILL.md`.
 
 ## Canonical commands
 
@@ -24,6 +25,9 @@ This repository is now focused on a single stack:
 
 # Verify runtime + ingest (video+audio)
 ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
+
+# Register/use as an OpenClaw skill
+# See docs/OPENCLAW_SKILL.md for tool schemas and API adapter examples.
 
 # Create golden image from configured source
 COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <OCI_PUBLIC_IP> cloud-phone-cuttlefish-v1 cuttlefish
@@ -96,5 +100,6 @@ android-arm-cloud-phone/
 - `docs/CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
 - `docs/API_REFERENCE.md`
 - `docs/AGENT_COORDINATION.md`
+- `docs/OPENCLAW_SKILL.md`
 - `docs/CLEANROOM_BOOTSTRAP.md`
 - `FUTURE_CONSIDERATIONS_CAMERA_STACK.md`

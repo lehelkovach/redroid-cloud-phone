@@ -1,6 +1,12 @@
 # Cloud Phone Agent API
 
-A REST API designed for consumption by LLM-based automation agents (like osl-agent-prototype).
+A REST API designed for consumption by LLM-based automation agents.
+
+> Current deployment note: the installed production service is
+> `control-api.service`, which runs `api/server.py` on port `8080`. Some older
+> examples in this file reference `api/agent_api.py`; use
+> `docs/OPENCLAW_SKILL.md` for the current OpenClaw skill deployment path and
+> the `api/server.py` endpoint map.
 
 ## Overview
 

@@ -7,6 +7,9 @@ Agent-to-agent coordination is handled by a separate service:
 See that repository for bus auth, endpoints, and deployment details.
 The orchestrator here only manages and routes to cloud phone instances.
 
+For OpenClaw/mobile-agent skill deployment, tool definitions, and runtime
+verification steps, see `docs/OPENCLAW_SKILL.md`.
+
 ## Clean environment setup
 
 For cloud agents running in ephemeral environments:
