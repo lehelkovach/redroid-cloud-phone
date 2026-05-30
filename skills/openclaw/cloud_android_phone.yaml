@@ -1,0 +1,150 @@
+name: cloud_android_phone
+description: Authorized cloud Android device control through the Cuttlefish Control API.
+version: 0.1.0
+runtime:
+  type: python
+  entrypoint: cloud_android_phone.py
+config:
+  base_url:
+    type: string
+    required: true
+    description: Control API base URL, e.g. http://1.2.3.4:8080
+  token:
+    type: string
+    required: false
+    secret: true
+    description: Bearer token if API_TOKEN is configured.
+policy:
+  intended_use: Authorized QA, research, livestream operations, app automation, and owned-account workflows.
+  restricted_use: Fraud, impersonation without consent, spam, fake engagement, and verification bypass are prohibited.
+tools:
+  - name: android_health
+    description: Check Control API and ADB/device health.
+    method: GET
+    path: /health
+    timeout_seconds: 10
+
+  - name: android_status
+    description: Return detailed Android/device status.
+    method: GET
+    path: /status
+    timeout_seconds: 15
+
+  - name: android_screenshot
+    description: Return the current screen as a base64 PNG.
+    method: GET
+    path: /device/screenshot/base64
+    timeout_seconds: 30
+
+  - name: android_tap
+    description: Tap absolute screen coordinates.
+    method: POST
+    path: /device/input
+    timeout_seconds: 10
+    body:
+      type: tap
+      x: "{{x}}"
+      y: "{{y}}"
+    parameters:
+      x:
+        type: integer
+        minimum: 0
+      y:
+        type: integer
+        minimum: 0
+
+  - name: android_swipe
+    description: Swipe from one absolute coordinate to another.
+    method: POST
+    path: /device/input
+    timeout_seconds: 10
+    body:
+      type: swipe
+      x1: "{{x1}}"
+      y1: "{{y1}}"
+      x2: "{{x2}}"
+      y2: "{{y2}}"
+      duration: "{{duration}}"
+    parameters:
+      x1:
+        type: integer
+        minimum: 0
+      y1:
+        type: integer
+        minimum: 0
+      x2:
+        type: integer
+        minimum: 0
+      y2:
+        type: integer
+        minimum: 0
+      duration:
+        type: integer
+        default: 300
+        minimum: 1
+
+  - name: android_type_text
+    description: Type text into the focused field.
+    method: POST
+    path: /device/input
+    timeout_seconds: 15
+    body:
+      type: text
+      text: "{{text}}"
+    parameters:
+      text:
+        type: string
+
+  - name: android_key
+    description: Send an Android keycode such as Back=4, Home=3, Enter=66.
+    method: POST
+    path: /device/input
+    timeout_seconds: 10
+    body:
+      type: key
+      keycode: "{{keycode}}"
+    parameters:
+      keycode:
+        type: integer
+
+  - name: android_start_app
+    description: Launch an installed Android package.
+    method: POST
+    path: /apps/{{package}}/start
+    timeout_seconds: 20
+    parameters:
+      package:
+        type: string
+
+  - name: android_stop_app
+    description: Stop an installed Android package.
+    method: POST
+    path: /apps/{{package}}/stop
+    timeout_seconds: 20
+    parameters:
+      package:
+        type: string
+
+  - name: android_list_apps
+    description: List installed third-party Android packages.
+    method: GET
+    path: /apps
+    timeout_seconds: 20
+
+  - name: android_shell
+    description: Run an ADB shell command. Restrict this tool to trusted agents.
+    method: POST
+    path: /adb/shell
+    timeout_seconds: 30
+    body:
+      command: "{{command}}"
+      timeout: "{{timeout}}"
+    parameters:
+      command:
+        type: string
+      timeout:
+        type: integer
+        default: 30
+        minimum: 1
+        maximum: 120
+

@@ -1,0 +1,2 @@
+"""OpenClaw-compatible skill adapters."""
+

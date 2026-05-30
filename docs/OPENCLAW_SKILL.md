@@ -157,6 +157,12 @@ Common keycodes:
 
 ## 5. OpenClaw skill manifest example
 
+Ready-to-use artifacts are included under `skills/openclaw/`:
+
+- `skills/openclaw/cloud_android_phone.yaml`
+- `skills/openclaw/cloud_android_phone.py`
+- `skills/openclaw/README.md`
+
 Adapt the field names to your OpenClaw runtime if it uses a different manifest
 schema. The important part is that each tool maps to a deterministic HTTP call
 with bounded timeouts.

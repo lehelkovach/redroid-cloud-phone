@@ -85,6 +85,10 @@ android-arm-cloud-phone/
 │   ├── cuttlefish-rtmp-bridge.service
 │   ├── control-api.service
 │   └── nginx-rtmp.service
+├── skills/
+│   └── openclaw/
+│       ├── cloud_android_phone.py
+│       └── cloud_android_phone.yaml
 └── docs/
     ├── DEPLOYMENT.md
     ├── CUTTLEFISH_PHASE1.md
