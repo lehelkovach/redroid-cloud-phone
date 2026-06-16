@@ -32,9 +32,20 @@ jobs:
     steps:
       - name: Check deploy is configured
         id: cfg
+        env:
+          DEV_DEPLOY_HOST: ${{ secrets.DEV_DEPLOY_HOST }}
+          DEV_DEPLOY_USER: ${{ secrets.DEV_DEPLOY_USER }}
+          DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
+          DEV_DEPLOY_APP_DIR: ${{ secrets.DEV_DEPLOY_APP_DIR }}
         run: |
-          if [ -z "${{ secrets.DEV_DEPLOY_HOST }}" ]; then
-            echo "DEV_DEPLOY_HOST not set — skipping deploy. Configure repo secrets to enable."
+          # Report presence (not values) to make misconfiguration easy to spot.
+          present() { [ -n "$1" ] && echo "set" || echo "MISSING"; }
+          echo "DEV_DEPLOY_HOST=$(present "$DEV_DEPLOY_HOST")"
+          echo "DEV_DEPLOY_USER=$(present "$DEV_DEPLOY_USER")"
+          echo "DEV_DEPLOY_SSH_KEY=$(present "$DEV_DEPLOY_SSH_KEY")"
+          echo "DEV_DEPLOY_APP_DIR=$(present "$DEV_DEPLOY_APP_DIR")"
+          if [ -z "$DEV_DEPLOY_HOST" ]; then
+            echo "::warning::DEV_DEPLOY_HOST not visible to this workflow. Add it as a *repository Actions secret* (Settings → Secrets and variables → Actions → Repository secrets) with that exact name — not as a Variable, not an Environment secret."
             echo "configured=false" >> "$GITHUB_OUTPUT"
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
