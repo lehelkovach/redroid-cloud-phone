@@ -146,7 +146,15 @@ SOURCE_CMD="timeout ${DURATION} ffmpeg -hide_banner -loglevel warning -re -f lav
 run_shell "$BRIDGE_CMD >/tmp/cf-bridge-test.log 2>&1 & echo \$! > /tmp/cf-bridge-test.pid"
 sleep 4
 run_shell "$SOURCE_CMD >/tmp/cf-source-test.log 2>&1 || true"
-sleep 4
+sleep 2
+
+# Gracefully stop the bridge's ffmpeg worker BEFORE asserting. ffmpeg buffers the
+# low-bitrate audio (mic) muxer and only flushes its trailer on shutdown, while
+# nginx-rtmp's drop_idle_publisher keeps the worker alive after the source ends.
+# The bridge writes its worker PID to <log-dir>/ffmpeg.pid; SIGTERM there flushes
+# all sinks (front/back/mic) so the checks are deterministic.
+run_shell "if [ -f /tmp/cf-bridge-test/ffmpeg.pid ]; then kill -TERM \$(cat /tmp/cf-bridge-test/ffmpeg.pid) 2>/dev/null || true; fi"
+sleep 3
 
 if run_shell "test -f /tmp/cf-front.ts"; then
     FRONT_SIZE="$(run_shell "stat -c%s /tmp/cf-front.ts 2>/dev/null || echo 0" | tr -d '\r')"

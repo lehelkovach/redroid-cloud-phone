@@ -232,9 +232,21 @@ if [[ -n "$RESOLVED_MIC_CMD" ]]; then
     MIC_PID=$!
 fi
 
+RUNNING=true
+_shutdown() {
+    RUNNING=false
+    # Forward termination to the active ffmpeg worker so it flushes muxer
+    # trailers (front/back/mic) cleanly instead of leaving truncated sinks.
+    [[ -n "${FFMPEG_PID:-}" ]] && kill -TERM "$FFMPEG_PID" 2>/dev/null || true
+    for _pid in "$FRONT_PID" "$BACK_PID" "$MIC_PID"; do
+        [[ -n "$_pid" ]] && kill -TERM "$_pid" 2>/dev/null || true
+    done
+}
+trap _shutdown TERM INT
+
 log "Bridge started, waiting for RTMP stream: $RTMP_URL"
 
-while true; do
+while $RUNNING; do
     if timeout 6 ffprobe -v error -show_streams "$RTMP_URL" >/dev/null 2>&1; then
         STREAM_COUNT=$((STREAM_COUNT + 1))
         OUT_LOG="$LOG_DIR/ffmpeg-stream-${STREAM_COUNT}.log"
@@ -248,18 +260,26 @@ while true; do
             -map 0:v:0 \
             -filter:v "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=${VIDEO_FPS}" \
             -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -b:v "$VIDEO_BITRATE" \
+            -flush_packets 1 -muxdelay 0 -muxpreload 0 \
             -f tee "[f=mpegts:onfail=ignore]$FRONT_SINK_URI|[f=mpegts:onfail=ignore]$BACK_SINK_URI" \
             -map 0:a:0? \
             -c:a aac -b:a "$AUDIO_BITRATE" -ar "$AUDIO_RATE" -ac "$AUDIO_CHANNELS" \
+            -flush_packets 1 -muxdelay 0 -muxpreload 0 \
             -f mpegts "$MIC_SINK_URI" \
             >>"$OUT_LOG" 2>&1 &
         FFMPEG_PID=$!
+        # Expose the active worker PID so supervisors/tests can signal it directly
+        # (SIGTERM triggers a clean muxer flush of front/back/mic sinks).
+        echo "$FFMPEG_PID" > "$LOG_DIR/ffmpeg.pid" 2>/dev/null || true
 
         if wait "$FFMPEG_PID"; then
             EXIT_CODE=0
         else
             EXIT_CODE=$?
         fi
+        # If we were asked to shut down, exit promptly without treating the
+        # signal-terminated ffmpeg as an error or restarting it.
+        $RUNNING || break
         if [[ "$EXIT_CODE" -ne 0 ]]; then
             err "ffmpeg exited with code $EXIT_CODE. See $OUT_LOG"
         else
