@@ -168,6 +168,11 @@ Launch config + fleet fan-out (added):
   and via `POST /launch-config/apply` / `GET /launch-config` (sets proxy, enqueues startup tasks).
 - Async multi-phone control: `POST /fleet/operations` (targets `instance_ids` or all) dispatches an
   operation to many phones concurrently; poll `GET /fleet/operations/<id>` for per-instance status.
+- Management / IPC commands the orchestrator issues to each instance's Control API:
+  `GET /phones/<id>/monitor` (host + service + RTMP-stream health), `POST /phones/<id>/admin/restart`,
+  `POST /phones/<id>/admin/shutdown` (`{"power_off": true}` to also power off the VM), and
+  `GET /fleet/monitor` (aggregate). `admin/*` use `systemctl` on the VM, so they return a graceful
+  failure off a real host (e.g. this dev container without systemd).
 
 ### Auto-deploy on push to `dev`
 

@@ -95,3 +95,28 @@ curl -X POST http://<ORCH_IP>:8090/fleet/operations \
 curl http://<ORCH_IP>:8090/fleet/operations/<FLEET_ID> \
   -H "Authorization: Bearer $ORCH_API_TOKEN"
 ```
+
+## Instance management / IPC commands
+
+Each phone runs the Control API (`:8080`) as the always-listening command service; the
+orchestrator issues management commands to it (and aggregates across the fleet):
+
+```bash
+# Monitor one phone (host load/mem/disk, service states, RTMP stream status)
+curl http://<ORCH_IP>:8090/phones/<ID>/monitor -H "Authorization: Bearer $ORCH_API_TOKEN"
+
+# Aggregate monitor across all phones
+curl http://<ORCH_IP>:8090/fleet/monitor -H "Authorization: Bearer $ORCH_API_TOKEN"
+
+# Restart the cloud-phone stack on a phone
+curl -X POST http://<ORCH_IP>:8090/phones/<ID>/admin/restart -H "Authorization: Bearer $ORCH_API_TOKEN"
+
+# Stop the stack (add {"power_off": true} to also power off the VM)
+curl -X POST http://<ORCH_IP>:8090/phones/<ID>/admin/shutdown \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" -H "Content-Type: application/json" -d '{}'
+
+# Reconfigure at runtime (proxy / startup tasks) — see launch config
+curl -X POST http://<ORCH_IP>:8090/phones/<ID>/jobs ...   # or apply a launch config
+```
+
+`admin/*` use `systemctl` on the instance, so they only take effect on a real VM host.

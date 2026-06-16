@@ -509,6 +509,44 @@ def phone_job_poll(instance_id, job_id):
     return jsonify(data)
 
 
+@app.route("/phones/<instance_id>/monitor", methods=["GET"])
+def phone_monitor(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    return jsonify(_control_get(inst["api_url"], "/monitor"))
+
+
+@app.route("/phones/<instance_id>/admin/restart", methods=["POST"])
+def phone_admin_restart(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    return jsonify(_control_post(inst["api_url"], "/admin/restart", request.get_json(silent=True) or {}))
+
+
+@app.route("/phones/<instance_id>/admin/shutdown", methods=["POST"])
+def phone_admin_shutdown(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    return jsonify(_control_post(inst["api_url"], "/admin/shutdown", request.get_json(silent=True) or {}))
+
+
+@app.route("/fleet/monitor", methods=["GET"])
+def fleet_monitor():
+    """Aggregate monitor snapshot across all registered phones."""
+    with _instances_lock:
+        items = list(_instances.items())
+    out = {}
+    for iid, inst in items:
+        try:
+            out[iid] = _control_get(inst["api_url"], "/monitor")
+        except Exception as exc:
+            out[iid] = {"error": str(exc)}
+    return jsonify({"count": len(out), "instances": out})
+
+
 def _run_fleet_operation(fleet_id, instance_ids, payload):
     """Run the same operation across many instances concurrently. Each instance
     runs in its own thread; per-instance status is tracked independently so the

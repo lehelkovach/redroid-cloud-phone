@@ -1266,6 +1266,118 @@ def _maybe_apply_boot_launch_config():
 
 
 # =============================================================================
+# Instance management / IPC commands (issued by the orchestrator)
+# =============================================================================
+
+def _systemctl(action, unit, timeout=30):
+    """Run systemctl <action> <unit>; returns (ok, message). Best-effort: returns
+    a clear message when systemd/units are unavailable (e.g. dev container)."""
+    try:
+        r = subprocess.run(["systemctl", action, unit], capture_output=True, text=True, timeout=timeout)
+        return (r.returncode == 0, (r.stdout.strip() or r.stderr.strip() or "ok"))
+    except FileNotFoundError:
+        return (False, "systemctl not available")
+    except Exception as exc:
+        return (False, str(exc))
+
+
+def _service_states(units):
+    states = {}
+    for unit in units:
+        try:
+            r = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, timeout=5)
+            states[unit] = r.stdout.strip() or r.stderr.strip() or "unknown"
+        except FileNotFoundError:
+            states[unit] = "systemctl-unavailable"
+        except Exception as exc:
+            states[unit] = f"error:{exc}"
+    return states
+
+
+STACK_UNITS = [
+    "cuttlefish-launch.service",
+    "nginx-rtmp.service",
+    "cuttlefish-rtmp-bridge.service",
+    "control-api.service",
+]
+STACK_TARGET = "cuttlefish-cloud-phone.target"
+
+
+@app.route("/monitor", methods=["GET"])
+@require_auth
+def monitor():
+    """Health/metrics snapshot for orchestrator monitoring."""
+    import shutil
+    import urllib.request
+    info = {"timestamp": time.time()}
+    try:
+        with open("/proc/loadavg") as fh:
+            info["loadavg"] = fh.read().split()[:3]
+    except Exception:
+        pass
+    try:
+        with open("/proc/uptime") as fh:
+            info["uptime_seconds"] = float(fh.read().split()[0])
+    except Exception:
+        pass
+    try:
+        mem = {}
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                key = line.split(":")[0]
+                if key in ("MemTotal", "MemAvailable"):
+                    mem[key] = int(line.split()[1])
+        info["memory_kb"] = mem
+    except Exception:
+        pass
+    try:
+        du = shutil.disk_usage("/")
+        info["disk_bytes"] = {"total": du.total, "used": du.used, "free": du.free}
+    except Exception:
+        pass
+    info["adb_connected"] = ensure_adb_connected()
+    info["services"] = _service_states(STACK_UNITS)
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8081/stream-status", timeout=2) as r:
+            info["rtmp_stream_status"] = "ok" if r.status == 200 else str(r.status)
+    except Exception:
+        info["rtmp_stream_status"] = "unavailable"
+    with _jobs_lock:
+        info["jobs_active"] = sum(1 for j in _jobs.values() if j["status"] in ("queued", "running"))
+    info["launch_config_applied"] = bool(_state.get("launch_config"))
+    return jsonify(info)
+
+
+@app.route("/admin/restart", methods=["POST"])
+@require_auth
+def admin_restart():
+    """Restart the cloud-phone stack (or a specific unit)."""
+    data = request.get_json(silent=True) or {}
+    target = data.get("target", STACK_TARGET)
+    ok, msg = _systemctl("restart", target)
+    return jsonify({"success": ok, "action": "restart", "target": target, "message": msg}), (200 if ok else 500)
+
+
+@app.route("/admin/shutdown", methods=["POST"])
+@require_auth
+def admin_shutdown():
+    """Stop the cloud-phone stack; optionally power off the VM with {"power_off": true}."""
+    data = request.get_json(silent=True) or {}
+    target = data.get("target", STACK_TARGET)
+    ok, msg = _systemctl("stop", target)
+    result = {"success": ok, "action": "shutdown", "target": target, "message": msg}
+    if data.get("power_off"):
+        try:
+            # Delay so the HTTP response returns before the host goes down.
+            subprocess.Popen(["bash", "-c", "sleep 2; shutdown -h now"])
+            result["power_off"] = "scheduled"
+        except Exception as exc:
+            result["power_off"] = "failed"
+            result["power_off_error"] = str(exc)
+    return jsonify(result), (200 if ok else 500)
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
