@@ -28,7 +28,8 @@ TIERS = [
     ("Tier 2 — Launch new VM & provisioning validation", [
         ("2.1 launch config render/parse + cloud-init delivery", "unittest:tests.test_launch_config"),
         ("2.2 orchestrator provision (incl. launch config) + async fleet fan-out", "script:tests/test_orchestrator_fleet.py"),
-        ("2.3 live provision new VM + validate files/services", "skip:needs OCI launch + device (tests/test_connectivity.py)"),
+        ("2.3 register existing dev phone by IP (env) + route to it", "script:tests/test_orchestrator_register.py"),
+        ("2.4 live provision new VM + validate files/services", "skip:needs OCI launch + device (tests/test_connectivity.py)"),
     ]),
     ("Tier 3 — Orchestrator <-> instance control plane (IPC)", [
         ("3.1 orchestrator unit", "unittest:tests.test_orchestrator_unit"),

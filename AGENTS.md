@@ -50,13 +50,13 @@ Intended promotion model for this project:
 - So the flow is: agent work → merge to `dev` → auto-deploy to dev OCI server → test there →
   promote to the release branch → auto-deploy to release OCI server.
 
-**Secret naming (important):** the `KSG_*` secrets (`KSG_DEV_VM_*`) belong to a *different*
-`KSG` project service (not this repo) — do **not** use them for the cloud phone. The cloud-phone service uses
-secrets prefixed `WAYDROID_`, `REDROID_`, or `CLOUD_PHONE_` (e.g. a `CLOUD_PHONE_DEV_VM_SSH_KEY`
-/ `_HOST` / `_USER` / `_APP_DIR`). As of this writing none of those are set yet, so direct SSH to
-the cloud-phone dev box isn't possible from the agent until they are added. The shared `OCI_*`
-secrets (tenancy/compartment/user/fingerprint/region/`OCI_PRIVATE_KEY_B64`) DO work and are how
-the fleet is discovered/managed (see below).
+**Secrets model (current direction):** the **dev cloud phone needs no secrets**. It's a plain VM
+(provisioned to track the `dev` branch); its public IP/port live in **`config/dev.env`** (gitignored;
+template `config/dev.env.example`), which the agent saves locally and the orchestrator/tests read.
+SSH access uses a keypair baked in at launch (`~/.ssh/cloud_phone_dev`), not a secret. The shared
+`OCI_*` secrets are used to provision/manage the fleet. Only the **release orchestrator service**
+(deployed from `main`) will get secrets later (its public URL + token). Note: the `KSG_*` secrets
+belong to a *different* `KSG` project — never use them for the cloud phone.
 
 If/when a cloud-phone SSH key secret is provided, note that secrets are stored as a SINGLE LINE
 (newlines stripped); rebuild PEM line breaks before use or ssh/ssh-keygen will reject it:
@@ -166,6 +166,9 @@ Launch config + fleet fan-out (added):
   the target Control API. See `config/launch-config.example.json`.
 - The Control API applies it at boot from `LAUNCH_CONFIG_FILE` (default `/etc/cloud-phone/launch.json`)
   and via `POST /launch-config/apply` / `GET /launch-config` (sets proxy, enqueues startup tasks).
+- Register an **already-running** phone (e.g. the dev VM from `config/dev.env`) without provisioning:
+  `POST /instances {"api_url": "http://<ip>:8080"}`, or auto-register on startup via
+  `ORCH_REGISTER_API_URLS` (comma-separated Control API URLs).
 - Async multi-phone control: `POST /fleet/operations` (targets `instance_ids` or all) dispatches an
   operation to many phones concurrently; poll `GET /fleet/operations/<id>` for per-instance status.
 - Management / IPC commands the orchestrator issues to each instance's Control API:

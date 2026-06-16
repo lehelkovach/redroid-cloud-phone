@@ -50,6 +50,9 @@ ORCH_DEPLOY_SCRIPT = os.environ.get(
 ORCH_OCI_PROFILE = os.environ.get("ORCH_OCI_PROFILE", "DEFAULT")
 ORCH_OCI_CONFIG = os.environ.get("ORCH_OCI_CONFIG", str(Path.home() / ".oci" / "config"))
 ORCH_OCI_AUTH = os.environ.get("ORCH_OCI_AUTH", "security_token")
+# Comma-separated Control API URLs to auto-register on startup (e.g. the dev phone
+# from config/dev.env: CLOUD_PHONE_DEV_API_URL). No provisioning — just register.
+ORCH_REGISTER_API_URLS = os.environ.get("ORCH_REGISTER_API_URLS", "")
 
 # In-memory state
 _instances = {}
@@ -143,7 +146,7 @@ def _control_get(api_url: str, path: str):
     return resp.json()
 
 
-def _create_instance_record(api_url: str, name: str):
+def _create_instance_record(api_url: str, name: str, mode: str = None):
     inst_id = uuid.uuid4().hex
     record = {
         "id": inst_id,
@@ -151,12 +154,31 @@ def _create_instance_record(api_url: str, name: str):
         "api_url": api_url,
         "created_at": time.time(),
         "last_used": time.time(),
-        "mode": ORCH_DEPLOY_MODE,
+        "mode": mode or ORCH_DEPLOY_MODE,
         "instance_ocid": None,
     }
     with _instances_lock:
         _instances[inst_id] = record
-    logger.info("Instance registered id=%s name=%s api_url=%s mode=%s", inst_id, name, api_url, ORCH_DEPLOY_MODE)
+    logger.info("Instance registered id=%s name=%s api_url=%s mode=%s", inst_id, name, api_url, record["mode"])
+    return record
+
+
+def _register_external_instance(api_url, name=None, launch_config=None):
+    """Register an already-running phone (e.g. the dev VM from config/dev.env) by
+    its Control API URL — no provisioning. Optionally apply a launch config."""
+    with _instances_lock:
+        for rec in _instances.values():
+            if rec["api_url"] == api_url:
+                rec["last_used"] = time.time()
+                return rec
+    record = _create_instance_record(api_url, name or "external-phone", mode="external")
+    if launch_config:
+        cfg = build_launch_config(record["id"], **_launch_kwargs(launch_config)).to_dict()
+        record["launch_config"] = cfg
+        try:
+            _control_post(api_url, "/launch-config/apply", cfg)
+        except Exception:
+            logger.exception("Failed to apply launch config to external instance %s", api_url)
     return record
 
 
@@ -398,8 +420,13 @@ def list_instances():
 def create_instance():
     body = request.get_json(silent=True) or {}
     launch_config = body.get("launch_config")
+    api_url = body.get("api_url")
     try:
-        inst = _provision_instance(launch_config=launch_config)
+        if api_url:
+            # Register an already-running phone (e.g. the dev VM) instead of provisioning.
+            inst = _register_external_instance(api_url, body.get("name"), launch_config)
+        else:
+            inst = _provision_instance(launch_config=launch_config)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(inst), 201
@@ -675,8 +702,18 @@ def health():
     return jsonify({"status": "ok", "instances": len(_instances), "max_instances": ORCH_MAX_INSTANCES})
 
 
+def _auto_register_from_env():
+    for url in [u.strip() for u in ORCH_REGISTER_API_URLS.split(",") if u.strip()]:
+        try:
+            _register_external_instance(url, name="preregistered")
+            logger.info("Auto-registered instance api_url=%s", url)
+        except Exception:
+            logger.exception("Failed to auto-register api_url=%s", url)
+
+
 if __name__ == "__main__":
     host = os.environ.get("ORCH_HOST", "0.0.0.0")
     port = int(os.environ.get("ORCH_PORT", "8090"))
     logger.info("Starting orchestrator on %s:%s (mode=%s)", host, port, ORCH_DEPLOY_MODE)
+    _auto_register_from_env()
     app.run(host=host, port=port, threaded=True)
