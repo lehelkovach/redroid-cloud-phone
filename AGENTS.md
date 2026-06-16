@@ -95,6 +95,21 @@ available Android versions, so nothing could be streamed into the camera. Those 
 **abandoned in favor of Cuttlefish**, which supports camera input. Treat redroid/waydroid
 references as historical; the current/intended stack is Cuttlefish (see `docs/CUTTLEFISH_*`).
 
+**OCI infra reality (verified on a provisioned instance):** a stock **OCI A1.Flex** (Ampere VM,
+Oracle kernel) exposes **no `/dev/kvm`** → Cuttlefish cannot run on these VMs (needs a KVM-capable
+shape, e.g. bare-metal Ampere). The same kernel ships `binder_linux`/`ashmem_linux` modules but does
+**not** load them or mount binderfs by default → redroid's Android won't reach `adb` "device" until
+you run `scripts/setup-redroid-binder.sh` (loads modules + mounts binderfs via a persistent systemd
+unit, then `systemctl restart redroid-container`). The existing `cloud-phone-gapps-v1` golden is in
+fact a **redroid (Docker Android 11)** image with `adb`, `appium`, `ffmpeg`, `nginx`, and
+`control-api`/`nginx-rtmp` services. Net: redroid works on A1.Flex (after the binder fix) for UI/
+control-plane testing but cannot provide the virtual camera; Cuttlefish (for the camera) needs a
+KVM-capable shape.
+
+**Dev instance (provisioned):** `cloud-phone-dev` — see `config/dev.env` for its public IP/OCID;
+SSH with `~/.ssh/cloud_phone_dev` (pubkey baked at launch). UI control verified end-to-end on it via
+`/ui/*` + `/ui/screen` against the live redroid Android.
+
 ### Viewing / controlling the phone UI
 
 Cuttlefish's native remote UI is **WebRTC in a browser** on `8443` (`CF_WEBRTC_PORT`,
