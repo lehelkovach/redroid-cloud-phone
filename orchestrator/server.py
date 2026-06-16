@@ -229,6 +229,7 @@ def _launch_kwargs(launch_config):
     return {
         "proxy": launch_config.get("proxy"),
         "device_identity": launch_config.get("device_identity"),
+        "ui_backend": launch_config.get("ui_backend"),
         "startup_tasks": launch_config.get("startup_tasks"),
         "labels": launch_config.get("labels"),
         "extra": launch_config.get("extra"),
@@ -507,6 +508,22 @@ def phone_job_poll(instance_id, job_id):
         return err
     data = _control_get(inst["api_url"], f"/jobs/{job_id}")
     return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/ui/command", methods=["POST"])
+def phone_ui_command(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    return jsonify(_control_post(inst["api_url"], "/ui/command", request.get_json() or {}))
+
+
+@app.route("/phones/<instance_id>/ui/screen", methods=["GET"])
+def phone_ui_screen(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    return jsonify(_control_get(inst["api_url"], "/ui/screen"))
 
 
 @app.route("/phones/<instance_id>/monitor", methods=["GET"])

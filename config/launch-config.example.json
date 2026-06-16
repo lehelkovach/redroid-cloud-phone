@@ -13,6 +13,7 @@
     "model": "Pixel 6",
     "manufacturer": "Google"
   },
+  "ui_backend": "adb",
   "startup_tasks": [
     {"type": "adb_shell", "payload": {"command": "settings put system screen_off_timeout 600000"}},
     {"type": "app_start", "payload": {"package": "com.android.settings"}}

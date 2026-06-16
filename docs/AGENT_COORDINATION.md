@@ -120,3 +120,27 @@ curl -X POST http://<ORCH_IP>:8090/phones/<ID>/jobs ...   # or apply a launch co
 ```
 
 `admin/*` use `systemctl` on the instance, so they only take effect on a real VM host.
+
+## UI commandlets (adb | appium)
+
+Drive the Android UI via stable commandlets that map to ADB `input` or Appium (selected per
+instance by the launch-config `ui_backend` var). Coordinates accept pixels or percent of screen:
+
+```bash
+# Tap at 50% / 50% of the screen (resolution-independent)
+curl -X POST http://<ORCH_IP>:8090/phones/<ID>/ui/command \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"action":"tap","xp":50,"yp":50}'
+
+# Swipe up, type text, press a named key
+curl -X POST .../phones/<ID>/ui/command -d '{"action":"swipe","x1p":50,"y1p":80,"x2p":50,"y2p":20}'
+curl -X POST .../phones/<ID>/ui/command -d '{"action":"text","text":"hello world"}'
+curl -X POST .../phones/<ID>/ui/command -d '{"action":"key","key":"back"}'
+
+# getScreen — current UI as a base64 PNG frame
+curl http://<ORCH_IP>:8090/phones/<ID>/ui/screen -H "Authorization: Bearer $ORCH_API_TOKEN"
+```
+
+Actions: `tap`, `long_press`, `swipe`, `text`, `key`. Coords: pixels (`x`/`y`, `x1..y2`) or percent
+(`xp`/`yp`, `x1p..y2p`). The `appium` backend requires `APPIUM_URL` + `appium-python-client` on the
+instance; otherwise the request returns `501` and the `adb` backend is the default.

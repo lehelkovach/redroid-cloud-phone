@@ -41,6 +41,8 @@ class LaunchConfig:
     proxy: Optional[Dict[str, Any]] = None
     # Optional device-identity / anti-detection profile (Control API /device/identity).
     device_identity: Optional[Dict[str, Any]] = None
+    # UI input backend the instance should use: "adb" (default) or "appium".
+    ui_backend: Optional[str] = None
     # Fire-and-forget tasks run once at boot. Each: {"type": <job type>, "payload": {...}}
     startup_tasks: List[Dict[str, Any]] = field(default_factory=list)
     # Free-form labels (e.g. {"role": "dev"}).
@@ -115,6 +117,7 @@ def build_launch_config(
     golden_image_id: Optional[str] = None,
     proxy: Optional[Dict[str, Any]] = None,
     device_identity: Optional[Dict[str, Any]] = None,
+    ui_backend: Optional[str] = None,
     startup_tasks: Optional[List[Dict[str, Any]]] = None,
     labels: Optional[Dict[str, Any]] = None,
     extra: Optional[Dict[str, Any]] = None,
@@ -124,6 +127,7 @@ def build_launch_config(
         golden_image_id=golden_image_id,
         proxy=proxy,
         device_identity=device_identity,
+        ui_backend=ui_backend,
         startup_tasks=list(startup_tasks or []),
         labels=dict(labels or {}),
         extra=dict(extra or {}),

@@ -24,6 +24,11 @@ import uuid
 from functools import wraps
 from flask import Flask, request, jsonify, Response
 
+try:  # works run as `python api/server.py` or imported
+    from api import ui_control
+except ImportError:  # pragma: no cover
+    import ui_control
+
 app = Flask(__name__)
 
 # Logging
@@ -44,6 +49,8 @@ JOB_MAX = int(os.environ.get("JOB_MAX", "500"))
 # Per-instance launch config written by the orchestrator (via cloud-init) and
 # applied at boot. See orchestrator/launch_config.py.
 LAUNCH_CONFIG_FILE = os.environ.get("LAUNCH_CONFIG_FILE", "/etc/cloud-phone/launch.json")
+# UI control backend: adb | appium (overridable per-instance via launch config ui_backend).
+UI_BACKEND = os.environ.get("UI_BACKEND", "adb")
 
 # In-memory state
 _state = {
@@ -1197,6 +1204,15 @@ def apply_launch_config(config):
             logger.exception("launch-config proxy apply failed")
             summary["errors"].append({"proxy": str(exc)})
 
+    ui_backend = config.get("ui_backend")
+    if ui_backend:
+        b = str(ui_backend).lower()
+        if b in ui_control.VALID_BACKENDS:
+            _state["ui_backend"] = b
+            summary["applied"].append("ui_backend")
+        else:
+            summary["errors"].append({"ui_backend": f"unknown backend: {b}"})
+
     tasks = config.get("startup_tasks") or []
     job_ids = []
     for task in tasks:
@@ -1263,6 +1279,125 @@ def _maybe_apply_boot_launch_config():
         apply_launch_config(data)
     except Exception:
         logger.exception("Failed to apply launch config at boot")
+
+
+# =============================================================================
+# UI control commandlets (backend: adb | appium)
+# =============================================================================
+
+def _screen_size():
+    """Resolve device screen size (cached). Falls back to 1080x1920 so percent
+    coordinates still work if `wm size` is unavailable."""
+    cached = _state.get("screen_size")
+    if cached:
+        return tuple(cached)
+    _, out, _ = run_adb_shell("wm size")
+    try:
+        size = ui_control.parse_wm_size(out)
+        _state["screen_size"] = list(size)
+        return size
+    except Exception:
+        return (1080, 1920)
+
+
+def _appium_available():
+    if not os.environ.get("APPIUM_URL"):
+        return False
+    try:
+        import appium  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _active_ui_backend(requested=None):
+    pref = requested or _state.get("ui_backend") or UI_BACKEND
+    return ui_control.select_backend(pref, appium_available=_appium_available())
+
+
+def _execute_ui_command(cmd):
+    """Execute a UI commandlet via the selected backend. Returns a result dict."""
+    backend_pref = cmd.get("backend") or _state.get("ui_backend") or UI_BACKEND
+    if str(backend_pref).lower() == "appium" and not _appium_available():
+        # Valid request, but this instance can't service appium yet -> 501.
+        raise RuntimeError(
+            "appium backend selected but not available; install appium-python-client and set "
+            "APPIUM_URL/APPIUM_CAPS (the adb backend works out of the box)"
+        )
+    backend = _active_ui_backend(backend_pref)
+    size = _screen_size()
+    if backend == "adb":
+        shell_cmds = ui_control.build_adb_input(cmd, size)
+        ensure_adb_connected()
+        for sc in shell_cmds:
+            run_adb_shell(sc)
+        return {
+            "success": True, "backend": "adb",
+            "action": cmd.get("action") or cmd.get("type"),
+            "screen_size": list(size), "commands": shell_cmds,
+        }
+    # appium backend (selectable; requires APPIUM_URL + appium-python-client on the instance)
+    raise RuntimeError(
+        "appium backend selected but not wired on this instance; install appium-python-client "
+        "and set APPIUM_URL/APPIUM_CAPS (the adb backend works out of the box)"
+    )
+
+
+def _ui_response(cmd):
+    try:
+        return jsonify(_execute_ui_command(cmd))
+    except ui_control.UIError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 501
+
+
+@app.route("/ui/command", methods=["POST"])
+@require_auth
+def ui_command():
+    """Generic UI commandlet. Body: {"action":"tap|swipe|long_press|text|key",
+    pixel (x/y, x1..y2) or percent (xp/yp, x1p..y2p) coords, text, key/keycode,
+    optional "backend":"adb|appium"}."""
+    return _ui_response(request.get_json() or {})
+
+
+@app.route("/ui/tap", methods=["POST"])
+@require_auth
+def ui_tap():
+    cmd = request.get_json() or {}; cmd["action"] = "tap"
+    return _ui_response(cmd)
+
+
+@app.route("/ui/swipe", methods=["POST"])
+@require_auth
+def ui_swipe():
+    cmd = request.get_json() or {}; cmd["action"] = "swipe"
+    return _ui_response(cmd)
+
+
+@app.route("/ui/text", methods=["POST"])
+@require_auth
+def ui_text():
+    cmd = request.get_json() or {}; cmd["action"] = "text"
+    return _ui_response(cmd)
+
+
+@app.route("/ui/key", methods=["POST"])
+@require_auth
+def ui_key():
+    cmd = request.get_json() or {}; cmd["action"] = "key"
+    return _ui_response(cmd)
+
+
+@app.route("/ui/screen", methods=["GET"])
+@require_auth
+def ui_screen():
+    """getScreen: current UI as a base64 PNG frame (on request)."""
+    try:
+        result = _do_screenshot_base64()
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+    return jsonify(result), (200 if result.get("success") else 500)
 
 
 # =============================================================================

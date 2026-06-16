@@ -174,6 +174,17 @@ Launch config + fleet fan-out (added):
   `GET /fleet/monitor` (aggregate). `admin/*` use `systemctl` on the VM, so they return a graceful
   failure off a real host (e.g. this dev container without systemd).
 
+UI commandlets (`adb` | `appium`):
+
+- The Control API exposes UI commands that map to ADB `input` or Appium, selected per-instance by
+  the launch-config `ui_backend` var (default `adb`; appium needs `APPIUM_URL` + `appium-python-client`
+  on the instance). `api/ui_control.py` holds the pure mapping (coordinate resolution incl. **percent**
+  coords, command building, backend selection).
+- Endpoints: `POST /ui/command` (generic) + `/ui/tap`, `/ui/swipe`, `/ui/text`, `/ui/key`, and
+  `GET /ui/screen` (getScreen → base64 PNG frame). Coords accept pixels (`x`/`y`, `x1..y2`) or percent
+  (`xp`/`yp`, `x1p..y2p`). Orchestrator routes: `POST /phones/<id>/ui/command`, `GET /phones/<id>/ui/screen`.
+  (Continuous video is the WebRTC path; `getScreen` is the on-request frame.)
+
 ### Auto-deploy on push to `dev`
 
 There is **no** CI/CD auto-deploy configured anywhere in the repo (no `.github/workflows` on any
@@ -186,10 +197,20 @@ that hot-loads the dev server on push to `dev`; it no-ops until these repo secre
 ### Tests
 
 There is no pytest/CI config or linter configured. Run tests directly from the repo root
-(so `from orchestrator import server` resolves):
+(so `from orchestrator import server` resolves).
 
-- Unit: `python -m unittest tests.test_orchestrator_unit -v`
-- Integration: `python tests/test_orchestrator_integration.py`
-- E2E login flow: `python tests/test_orchestrator_e2e.py`
-- `tests/test_agent_api.py` and `tests/test_connectivity.py` require a live Control API /
-  a deployed VM (real device) and are not runnable in this VM.
+**Tiered runner (preferred):** `python tests/run_tiers.py` runs the suite in the staged
+development order and reports per-tier PASS/FAIL/SKIP. Development proceeds along these tiers:
+
+1. **Build deploys & functions** — RTMP A/V loop → nginx-rtmp → bridge → camera/mic sinks
+   (`scripts/test-cuttlefish-rtmp-bridge.sh --local`; needs nginx-rtmp + ffmpeg locally). The
+   OBS→Camera-app injection step is SKIP without a live Cuttlefish device.
+2. **Launch new VM & provisioning** — `tests.test_launch_config`, `tests/test_orchestrator_fleet.py`
+   (provision + launch-config delivery + async fan-out). Live OCI provision is SKIP here.
+3. **Orchestrator ↔ instance IPC** — `tests.test_orchestrator_unit`, `tests/test_orchestrator_integration.py`,
+   `tests/test_orchestrator_e2e.py`, `tests/test_orchestrator_admin.py`.
+4. **UI commandlets** — `tests.test_ui_control`, `tests/test_ui_endpoints.py`. Live Appium is SKIP.
+
+Steps needing a live device / OCI launch / Appium server are reported as SKIP with the reason, so
+the tier map stays complete. `tests/test_agent_api.py` and `tests/test_connectivity.py` target a
+real deployed VM and are not runnable in a plain dev container.
