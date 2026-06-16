@@ -85,6 +85,23 @@ scripts take the target explicitly:
 `PUBLIC_IP=<ip> python tests/test_connectivity.py` and
 `python tests/test_agent_api.py --api-url http://<host>:8080`.
 
+### Viewing / controlling the phone UI (scrcpy over ADB)
+
+The previous/working setup views and controls the Android UI with **`scrcpy` over ADB** (not
+WebRTC or VNC). ADB is the device control path (the Control API also wraps ADB; `ADB_CONNECT`
+defaults to `127.0.0.1:5555`). Typical flow from a laptop:
+
+```bash
+# ADB/5555 is not opened publicly by default — tunnel it over SSH to the VM host:
+ssh -i <cloud-phone-key> -L 5555:127.0.0.1:5555 ubuntu@<host>
+# then, locally:
+adb connect 127.0.0.1:5555
+scrcpy            # mirror + control (keyboard/mouse/touch)
+```
+
+So the SSH key only authenticates the VM host login; the Android UI itself is reached via
+ADB+scrcpy (tunnelled), and programmatically via the Control API (`:8080`).
+
 ### OCI access + finding the Android emulator instance
 
 The injected `OCI_*` secrets (`OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_FINGERPRINT`,
