@@ -1,0 +1,36 @@
+[Unit]
+Description=Cloud Phone Orchestrator (independent control-plane proxy/router)
+Documentation=https://github.com/lehelkovach/android-arm-cloud-phone
+After=network-online.target
+Wants=network-online.target
+
+# This service is intentionally standalone: it does NOT run on a phone instance and
+# is NOT part of cuttlefish-cloud-phone.target. It runs on its own host and proxies
+# requests to one or more per-phone Control APIs (api/server.py on :8080).
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cloud-phone-orchestrator
+ExecStart=/opt/cloud-phone-orchestrator/venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+User=cloudphone
+
+Environment=PYTHONUNBUFFERED=1
+Environment=ORCH_HOST=0.0.0.0
+Environment=ORCH_PORT=8090
+# mock | oci  (oci provisions phones on demand via deploy-from-golden.sh)
+Environment=ORCH_DEPLOY_MODE=mock
+# Token clients must send as "Authorization: Bearer <token>". Set via drop-in or EnvironmentFile.
+Environment=ORCH_API_TOKEN=
+# Max phone instances this orchestrator will manage/route to.
+Environment=ORCH_MAX_INSTANCES=10
+
+# Recommended: keep secrets (ORCH_API_TOKEN, OCI/GOLDEN_IMAGE_ID) out of this unit and in
+#   /etc/cloud-phone/orchestrator.env  -> uncomment the next line.
+# EnvironmentFile=-/etc/cloud-phone/orchestrator.env
+
+ExecStartPost=/bin/bash -c 'for i in {1..10}; do curl -sf http://127.0.0.1:8090/health && exit 0; sleep 2; done; exit 1'
+
+[Install]
+WantedBy=multi-user.target
