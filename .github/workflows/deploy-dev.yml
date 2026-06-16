@@ -1,0 +1,62 @@
+name: Deploy to dev OCI server
+
+# Hot-load the dev OCI server (the Android emulator / control-plane host) on every
+# push to the `dev` branch. This replaces the historical manual
+# "ssh <host> 'cd <app> && git pull' + systemctl restart" step.
+#
+# REQUIRED repo secrets (Settings -> Secrets and variables -> Actions):
+#   DEV_DEPLOY_HOST      Public IP / hostname of the dev OCI instance
+#   DEV_DEPLOY_USER      SSH user (e.g. "ubuntu")
+#   DEV_DEPLOY_SSH_KEY   Private SSH key authorized on the instance (full PEM, with newlines)
+#   DEV_DEPLOY_APP_DIR   Absolute path of the repo checkout on the instance
+# OPTIONAL repo secrets:
+#   DEV_DEPLOY_PORT          SSH port (default 22)
+#   DEV_DEPLOY_RESTART_CMD   Command to restart services after pull
+#                            (default: "sudo systemctl restart cuttlefish-cloud-phone.target || sudo systemctl restart control-api || true")
+#
+# The job no-ops (does not fail) if DEV_DEPLOY_HOST is not set, so the workflow is
+# safe to merge before the secrets/target are configured.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deploy is configured
+        id: cfg
+        run: |
+          if [ -z "${{ secrets.DEV_DEPLOY_HOST }}" ]; then
+            echo "DEV_DEPLOY_HOST not set — skipping deploy. Configure repo secrets to enable."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy over SSH
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          HOST: ${{ secrets.DEV_DEPLOY_HOST }}
+          USER: ${{ secrets.DEV_DEPLOY_USER }}
+          PORT: ${{ secrets.DEV_DEPLOY_PORT }}
+          APP_DIR: ${{ secrets.DEV_DEPLOY_APP_DIR }}
+          SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
+          RESTART_CMD: ${{ secrets.DEV_DEPLOY_RESTART_CMD }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          PORT="${PORT:-22}"
+          RESTART_CMD="${RESTART_CMD:-sudo systemctl restart cuttlefish-cloud-phone.target || sudo systemctl restart control-api || true}"
+          ssh -i ~/.ssh/deploy_key -p "$PORT" \
+            -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            "$USER@$HOST" \
+            "set -e; cd '$APP_DIR'; git fetch --all --prune; git checkout dev; git reset --hard origin/dev; $RESTART_CMD"

@@ -87,6 +87,41 @@ scripts take the target explicitly:
 `PUBLIC_IP=<ip> python tests/test_connectivity.py` and
 `python tests/test_agent_api.py --api-url http://<host>:8080`.
 
+### OCI access + finding the Android emulator instance
+
+The injected `OCI_*` secrets (`OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_FINGERPRINT`,
+`OCI_REGION`, `OCI_COMPARTMENT_OCID`, `OCI_PRIVATE_KEY_B64`) authenticate as the tenancy's
+API user and allow read/manage of compute. Build `~/.oci/config` from them
+(`base64 -d` the key into `key_file`), then e.g.:
+
+```bash
+pip install oci-cli   # not in the update script; installing it downgrades `click` in the venv
+oci compute instance list -c "$OCI_COMPARTMENT_OCID" --all --output table
+oci compute instance list-vnics --instance-id <ocid> --query 'data[0]."public-ip"' --raw-output
+```
+
+Non-obvious facts verified via the OCI API:
+
+- The `KSG_DEV_VM_*` dev VM (`147.224.250.240`) is instance
+  `[REDACTED]-dev-...` and runs a *different* app (containerized API + ArangoDB), not Android.
+- The Android/cloud-phone compute instances (`cloud-phone-gapps-test`, `redroid-camera-build`,
+  `waydroid-test-1`, …) are authorized with a **different SSH key that is NOT in the injected
+  secrets**, so you cannot `ssh`/run commands on them with `KSG_DEV_VM_KEY`. The OCI API still
+  lets you list/start/stop/inspect them. Their control-plane/ADB ports are restricted to the VCN
+  (not reachable from outside), so probe them via SSH from on-box, not over the public IP.
+- `redroid-camera-build` (4 OCPU / 24 GB, the README's Cuttlefish baseline) is the strongest
+  candidate for the active emulator host, but the intended `dev` push target must be confirmed
+  by the owner.
+
+### Auto-deploy on push to `dev`
+
+There is **no** CI/CD auto-deploy configured anywhere in the repo (no `.github/workflows` on any
+historical branch, no webhook). The only historical deploy was manual: `ssh <host> 'cd <app> && git pull'`
+plus `systemctl restart`. `.github/workflows/deploy-dev.yml` adds a gated GitHub Actions workflow
+that hot-loads the dev server on push to `dev`; it no-ops until these repo secrets are set:
+`DEV_DEPLOY_HOST`, `DEV_DEPLOY_USER`, `DEV_DEPLOY_SSH_KEY`, `DEV_DEPLOY_APP_DIR`
+(optional `DEV_DEPLOY_PORT`, `DEV_DEPLOY_RESTART_CMD`). A `dev` branch must also exist.
+
 ### Tests
 
 There is no pytest/CI config or linter configured. Run tests directly from the repo root
