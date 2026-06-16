@@ -50,37 +50,35 @@ Intended promotion model for this project:
 - So the flow is: agent work → merge to `dev` → auto-deploy to dev OCI server → test there →
   promote to the release branch → auto-deploy to release OCI server.
 
-Dev-server access is provided through injected secrets (names, not values):
-`KSG_DEV_VM_HOST`, `KSG_DEV_VM_USER`, `KSG_DEV_VM_PORT`, `KSG_DEV_VM_KEY` (SSH private key),
-`KSG_DEV_VM_APP_DIR`, `KSG_DEV_VM_BRANCH`, `KSG_DEV_VM_API_URL`. Connect read-only with, e.g.:
+**Secret naming (important):** the `KSG_*` secrets (`KSG_DEV_VM_*`) belong to a *different*
+`KSG` project service (not this repo) — do **not** use them for the cloud phone. The cloud-phone service uses
+secrets prefixed `WAYDROID_`, `REDROID_`, or `CLOUD_PHONE_` (e.g. a `CLOUD_PHONE_DEV_VM_SSH_KEY`
+/ `_HOST` / `_USER` / `_APP_DIR`). As of this writing none of those are set yet, so direct SSH to
+the cloud-phone dev box isn't possible from the agent until they are added. The shared `OCI_*`
+secrets (tenancy/compartment/user/fingerprint/region/`OCI_PRIVATE_KEY_B64`) DO work and are how
+the fleet is discovered/managed (see below).
+
+If/when a cloud-phone SSH key secret is provided, note that secrets are stored as a SINGLE LINE
+(newlines stripped); rebuild PEM line breaks before use or ssh/ssh-keygen will reject it:
 
 ```bash
-# KSG_DEV_VM_KEY is stored as a SINGLE LINE (newlines stripped) — rebuild PEM line breaks first,
-# or ssh-keygen/ssh will reject it.
 python3 - <<'PY'
 import os, re, textwrap
-raw = os.environ["KSG_DEV_VM_KEY"].strip()
+raw = os.environ["CLOUD_PHONE_DEV_VM_SSH_KEY"].strip()  # whichever cloud-phone key secret exists
 m = re.search(r"-----BEGIN ([A-Z ]+?)-----(.*?)-----END \1-----", raw, re.S)
 label, body = m.group(1).strip(), re.sub(r"\s+", "", m.group(2))
 open("/tmp/dev_key","w").write(f"-----BEGIN {label}-----\n" + "\n".join(textwrap.wrap(body,70)) + f"\n-----END {label}-----\n")
 import os as o; o.chmod("/tmp/dev_key",0o600)
 PY
-ssh -i /tmp/dev_key -p "$KSG_DEV_VM_PORT" -o StrictHostKeyChecking=no \
-  "$KSG_DEV_VM_USER@$KSG_DEV_VM_HOST" "cd $KSG_DEV_VM_APP_DIR && git rev-parse --abbrev-ref HEAD"
 ```
 
-Non-obvious gotchas / caveats (confirm before relying on these):
+Other caveats:
 
-- The `KSG_DEV_VM_KEY` newline-stripping issue above is required every time; skipping it yields
-  an "invalid format" error from ssh.
-- App services on these VMs bind to localhost, so reach them over SSH
+- App services on the phone VMs bind to localhost / are VCN-restricted, so reach them over SSH
   (`ssh ... curl http://127.0.0.1:<port>/health`) or an SSH tunnel — not directly via the public IP.
-- **Deploy target must be confirmed.** As observed during setup, the VM reachable via
-  `KSG_DEV_VM_*` is currently running a *different* application (a containerized API + ArangoDB,
-  checked out on `main`), and the cloud-phone control plane / RTMP / Cuttlefish stack is **not**
-  deployed there. There is also no `dev`/`main` branch in this repo yet (only `master`) and no
-  secrets for a separate release/production OCI server. Verify the intended cloud-phone dev/release
-  servers and branch names before running cloud-phone deploys or tests against them.
+- GitHub Actions auto-deploy (`.github/workflows/deploy-dev.yml`) uses its own **repository Actions
+  secrets** `DEV_DEPLOY_HOST/USER/SSH_KEY/APP_DIR` (separate from the Cursor env secrets above). The
+  workflow's "Check deploy is configured" step prints which are visible.
 
 To test the running control plane against a real device VM once one exists, the repo's existing
 scripts take the target explicitly:
