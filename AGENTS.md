@@ -85,22 +85,31 @@ scripts take the target explicitly:
 `PUBLIC_IP=<ip> python tests/test_connectivity.py` and
 `python tests/test_agent_api.py --api-url http://<host>:8080`.
 
-### Viewing / controlling the phone UI (scrcpy over ADB)
+### Runtime history (why Cuttlefish; the legacy naming)
 
-The previous/working setup views and controls the Android UI with **`scrcpy` over ADB** (not
-WebRTC or VNC). ADB is the device control path (the Control API also wraps ADB; `ADB_CONNECT`
-defaults to `127.0.0.1:5555`). Typical flow from a laptop:
+This repo is **Cuttlefish-only** now, but the repo name (`redroid-cloud-phone`), several OCI
+instance names (`redroid-camera-build`, `waydroid-test-1`), and old branch docs (scrcpy/VNC,
+`WAYDROID_FALLBACK`, etc.) are **legacy**. Waydroid and redroid were tried first but **could not
+provide a working virtual-camera input** — the camera HAL could not be compiled/included for the
+available Android versions, so nothing could be streamed into the camera. Those approaches were
+**abandoned in favor of Cuttlefish**, which supports camera input. Treat redroid/waydroid
+references as historical; the current/intended stack is Cuttlefish (see `docs/CUTTLEFISH_*`).
+
+### Viewing / controlling the phone UI
+
+Cuttlefish's native remote UI is **WebRTC in a browser** on `8443` (`CF_WEBRTC_PORT`,
+`docs/CUTTLEFISH_PHASE1.md`). **`scrcpy` over ADB** also works (and was used in earlier testing)
+since ADB is exposed (the Control API wraps ADB; `ADB_CONNECT` defaults to `127.0.0.1:5555`).
+ADB/RTMP/Control-API ports aren't public by default, so tunnel over SSH (the SSH key only
+authenticates the VM host login):
 
 ```bash
-# ADB/5555 is not opened publicly by default — tunnel it over SSH to the VM host:
-ssh -i <cloud-phone-key> -L 5555:127.0.0.1:5555 ubuntu@<host>
-# then, locally:
-adb connect 127.0.0.1:5555
-scrcpy            # mirror + control (keyboard/mouse/touch)
+ssh -i <cloud-phone-key> -L 8443:127.0.0.1:8443 -L 5555:127.0.0.1:5555 ubuntu@<host>
+# WebRTC: open https://127.0.0.1:8443 in a browser
+# or scrcpy: adb connect 127.0.0.1:5555 && scrcpy
 ```
 
-So the SSH key only authenticates the VM host login; the Android UI itself is reached via
-ADB+scrcpy (tunnelled), and programmatically via the Control API (`:8080`).
+Programmatic control is via the Control API (`:8080`, `/device/input`, `/device/screenshot`).
 
 ### OCI access + finding the Android emulator instance
 
