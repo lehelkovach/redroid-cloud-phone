@@ -20,6 +20,11 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, request
 
+try:  # works whether run as `python orchestrator/server.py` or imported as a module
+    from orchestrator.launch_config import build_launch_config, LaunchConfig
+except ImportError:  # pragma: no cover
+    from launch_config import build_launch_config, LaunchConfig
+
 app = Flask(__name__)
 
 # Logging
@@ -53,6 +58,8 @@ _ops = {}
 _ops_lock = threading.Lock()
 _leases = {}
 _leases_lock = threading.Lock()
+_fleet_ops = {}
+_fleet_ops_lock = threading.Lock()
 def _require_auth():
     if not ORCH_API_TOKEN:
         return None
@@ -153,7 +160,13 @@ def _create_instance_record(api_url: str, name: str):
     return record
 
 
-def _provision_instance():
+def _provision_instance(launch_config=None):
+    """Provision (or register) an instance.
+
+    `launch_config` is an optional dict (see orchestrator/launch_config.py). In
+    OCI mode it is delivered to the new instance via cloud-init user-data; in
+    mock mode it is applied to the target Control API immediately.
+    """
     with _instances_lock:
         if len(_instances) >= ORCH_MAX_INSTANCES:
             raise RuntimeError(f"Instance limit reached (ORCH_MAX_INSTANCES={ORCH_MAX_INSTANCES})")
@@ -161,7 +174,15 @@ def _provision_instance():
     if ORCH_DEPLOY_MODE == "mock":
         name = f"{ORCH_INSTANCE_NAME_PREFIX}-mock"
         logger.info("Mock provisioning instance -> %s", ORCH_MOCK_API_URL)
-        return _create_instance_record(ORCH_MOCK_API_URL, name)
+        record = _create_instance_record(ORCH_MOCK_API_URL, name)
+        if launch_config:
+            cfg = build_launch_config(record["id"], **_launch_kwargs(launch_config)).to_dict()
+            record["launch_config"] = cfg
+            try:
+                _control_post(ORCH_MOCK_API_URL, "/launch-config/apply", cfg)
+            except Exception:
+                logger.exception("Failed to apply launch config to mock control API")
+        return record
 
     if ORCH_DEPLOY_MODE != "oci":
         raise RuntimeError(f"Unsupported ORCH_DEPLOY_MODE: {ORCH_DEPLOY_MODE}")
@@ -171,6 +192,15 @@ def _provision_instance():
 
     name = f"{ORCH_INSTANCE_NAME_PREFIX}-{time.strftime('%Y%m%d-%H%M%S')}"
     cmd = [ORCH_DEPLOY_SCRIPT, "--image-id", ORCH_GOLDEN_IMAGE_ID, "--name", name, "--wait-check"]
+
+    cfg = None
+    userdata_path = None
+    if launch_config:
+        cfg = build_launch_config(name, golden_image_id=ORCH_GOLDEN_IMAGE_ID, **_launch_kwargs(launch_config))
+        userdata_path = f"/tmp/launch-{name}.userdata"
+        Path(userdata_path).write_text(cfg.to_cloud_init_userdata())
+        cmd += ["--user-data-file", userdata_path]
+
     logger.info("Provisioning instance via OCI: %s", " ".join(cmd))
     subprocess.check_call(cmd)
 
@@ -186,7 +216,23 @@ def _provision_instance():
     logger.info("OCI instance ready name=%s public_ip=%s api_url=%s ocid=%s", name, public_ip, api_url, instance_ocid)
     record = _create_instance_record(api_url, name)
     record["instance_ocid"] = instance_ocid
+    if cfg is not None:
+        record["launch_config"] = cfg.to_dict()
     return record
+
+
+def _launch_kwargs(launch_config):
+    """Extract LaunchConfig kwargs from a request-supplied dict (instance_id is
+    assigned by the orchestrator, so it is ignored here)."""
+    if not isinstance(launch_config, dict):
+        raise ValueError("launch_config must be an object")
+    return {
+        "proxy": launch_config.get("proxy"),
+        "device_identity": launch_config.get("device_identity"),
+        "startup_tasks": launch_config.get("startup_tasks"),
+        "labels": launch_config.get("labels"),
+        "extra": launch_config.get("extra"),
+    }
 
 
 def _terminate_instance(instance_ocid: str):
@@ -349,7 +395,12 @@ def list_instances():
 
 @app.route("/instances", methods=["POST"])
 def create_instance():
-    inst = _provision_instance()
+    body = request.get_json(silent=True) or {}
+    launch_config = body.get("launch_config")
+    try:
+        inst = _provision_instance(launch_config=launch_config)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     return jsonify(inst), 201
 
 
@@ -456,6 +507,112 @@ def phone_job_poll(instance_id, job_id):
         return err
     data = _control_get(inst["api_url"], f"/jobs/{job_id}")
     return jsonify(data)
+
+
+def _run_fleet_operation(fleet_id, instance_ids, payload):
+    """Run the same operation across many instances concurrently. Each instance
+    runs in its own thread; per-instance status is tracked independently so the
+    orchestrator communicates with each phone asynchronously."""
+    with _fleet_ops_lock:
+        fop = _fleet_ops.get(fleet_id)
+        if not fop:
+            return
+        fop["status"] = "running"
+        fop["updated_at"] = time.time()
+
+    def worker(iid):
+        entry = {"instance_id": iid, "status": "running"}
+        with _fleet_ops_lock:
+            fop["instances"][iid] = entry
+        try:
+            with _instances_lock:
+                inst = _instances.get(iid)
+            if not inst:
+                raise RuntimeError("instance not found")
+            api_url = inst["api_url"]
+            _control_get(api_url, "/health")
+            steps = _normalize_steps(payload["steps"]) if payload.get("steps") else _build_login_steps(payload)
+            results = _run_steps(api_url, steps)
+            with _fleet_ops_lock:
+                entry["status"] = "done"
+                entry["results"] = results
+        except Exception as exc:
+            logger.exception("Fleet op worker failed instance=%s", iid)
+            with _fleet_ops_lock:
+                entry["status"] = "failed"
+                entry["error"] = str(exc)
+
+    threads = []
+    for iid in instance_ids:
+        t = threading.Thread(target=worker, args=(iid,), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+    with _fleet_ops_lock:
+        statuses = {e["status"] for e in fop["instances"].values()}
+        if statuses == {"done"}:
+            fop["status"] = "done"
+        elif "done" in statuses:
+            fop["status"] = "partial"
+        else:
+            fop["status"] = "failed"
+        fop["updated_at"] = time.time()
+    logger.info("Fleet op complete id=%s status=%s", fleet_id, fop["status"])
+
+
+@app.route("/fleet/operations", methods=["POST"])
+def create_fleet_operation():
+    """Dispatch an operation to multiple phones asynchronously.
+
+    Body: {"operation":"login"|..., "steps":[...], plus login fields}
+          target selection (optional): {"instance_ids": [...]} or {"all": true}.
+    Defaults to all currently-registered instances.
+    """
+    payload = request.get_json() or {}
+    if payload.get("operation") != "login" and not payload.get("steps"):
+        return jsonify({"error": "operation=login or steps required"}), 400
+    if payload.get("operation") == "login" and not payload.get("app_package"):
+        return jsonify({"error": "app_package required for login operation"}), 400
+
+    requested = payload.get("instance_ids")
+    with _instances_lock:
+        available = list(_instances.keys())
+    if requested:
+        instance_ids = [i for i in requested if i in available]
+        missing = [i for i in requested if i not in available]
+        if missing:
+            return jsonify({"error": "unknown instance_ids", "missing": missing}), 404
+    else:
+        instance_ids = available
+    if not instance_ids:
+        return jsonify({"error": "no target instances"}), 400
+
+    fleet_id = uuid.uuid4().hex
+    fop = {
+        "id": fleet_id,
+        "status": "queued",
+        "created_at": time.time(),
+        "updated_at": time.time(),
+        "instance_ids": instance_ids,
+        "instances": {},
+        "payload": payload,
+    }
+    with _fleet_ops_lock:
+        _fleet_ops[fleet_id] = fop
+
+    threading.Thread(target=_run_fleet_operation, args=(fleet_id, instance_ids, payload), daemon=True).start()
+    return jsonify({"fleet_operation_id": fleet_id, "status": "queued", "targets": instance_ids}), 202
+
+
+@app.route("/fleet/operations/<fleet_id>", methods=["GET"])
+def get_fleet_operation(fleet_id):
+    with _fleet_ops_lock:
+        fop = _fleet_ops.get(fleet_id)
+    if not fop:
+        return jsonify({"error": "fleet operation not found"}), 404
+    return jsonify(fop)
 
 
 @app.route("/health", methods=["GET"])

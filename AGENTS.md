@@ -133,6 +133,18 @@ its own venv, port 8090, token + max-instances via env / `EnvironmentFile`). It 
 cuttlefish-launch + nginx-rtmp + rtmp-bridge + control-api). Deploy the orchestrator on a control
 host (or the dev box) and register the phone instances it should manage.
 
+Launch config + fleet fan-out (added):
+
+- `orchestrator/launch_config.py` defines a per-instance startup config (`instance_id`, `proxy`,
+  `device_identity`, fire-and-forget `startup_tasks`, `labels`, open `extra`) and renders it to
+  cloud-init user-data. `POST /instances` accepts `{"launch_config": {...}}`; in OCI mode the
+  config is delivered via `deploy-from-golden.sh --user-data-file`, in mock mode it is applied to
+  the target Control API. See `config/launch-config.example.json`.
+- The Control API applies it at boot from `LAUNCH_CONFIG_FILE` (default `/etc/cloud-phone/launch.json`)
+  and via `POST /launch-config/apply` / `GET /launch-config` (sets proxy, enqueues startup tasks).
+- Async multi-phone control: `POST /fleet/operations` (targets `instance_ids` or all) dispatches an
+  operation to many phones concurrently; poll `GET /fleet/operations/<id>` for per-instance status.
+
 ### Auto-deploy on push to `dev`
 
 There is **no** CI/CD auto-deploy configured anywhere in the repo (no `.github/workflows` on any

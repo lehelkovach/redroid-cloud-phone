@@ -41,6 +41,9 @@ CONFIG_FILE = os.environ.get("CONFIG_FILE", "/etc/cloud-phone/config.json")
 PROXY_SCRIPT = "/opt/cloud-phone-scripts/proxy-control.sh"
 JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", "3600"))
 JOB_MAX = int(os.environ.get("JOB_MAX", "500"))
+# Per-instance launch config written by the orchestrator (via cloud-init) and
+# applied at boot. See orchestrator/launch_config.py.
+LAUNCH_CONFIG_FILE = os.environ.get("LAUNCH_CONFIG_FILE", "/etc/cloud-phone/launch.json")
 
 # In-memory state
 _state = {
@@ -296,24 +299,11 @@ def get_proxy():
     """Get current proxy configuration"""
     return jsonify(_state["proxy"])
 
-@app.route("/proxy", methods=["POST"])
-@require_auth
-def set_proxy():
+def _set_proxy(data):
+    """Apply a proxy configuration dict and return a result dict.
+
+    Shared by the POST /proxy route and launch-config application.
     """
-    Set proxy configuration
-    
-    Body:
-    {
-        "enabled": true,
-        "type": "socks5",  // http, socks5, transparent
-        "host": "proxy.example.com",
-        "port": 1080,
-        "username": "",  // optional
-        "password": ""   // optional
-    }
-    """
-    data = request.get_json() or {}
-    
     enabled = data.get("enabled", False)
     proxy_type = data.get("type", "socks5")
     host = data.get("host", "")
@@ -322,7 +312,7 @@ def set_proxy():
     password = data.get("password", "")
     
     if enabled and (not host or not port):
-        return jsonify({"error": "host and port required when enabled"}), 400
+        return {"error": "host and port required when enabled"}, 400
     
     success = False
     message = ""
@@ -364,7 +354,7 @@ def set_proxy():
                 success = result.returncode == 0
                 message = result.stdout or result.stderr
             else:
-                return jsonify({"error": "Transparent proxy requires proxy-control.sh"}), 500
+                return {"error": "Transparent proxy requires proxy-control.sh"}, 500
     else:
         # Disable proxy
         run_adb_shell("settings put global http_proxy :0")
@@ -381,11 +371,19 @@ def set_proxy():
             "port": port if enabled else None
         }
     
-    return jsonify({
+    return {
         "success": success,
         "message": message,
         "proxy": _state["proxy"]
-    })
+    }, 200
+
+
+@app.route("/proxy", methods=["POST"])
+@require_auth
+def set_proxy():
+    """Set proxy configuration (see _set_proxy for the body schema)."""
+    result, status = _set_proxy(request.get_json() or {})
+    return jsonify(result), status
 
 @app.route("/proxy", methods=["DELETE"])
 @require_auth
@@ -1115,6 +1113,28 @@ def reset_antidetect():
 # Job Queue Endpoints
 # =============================================================================
 
+def _enqueue_job(job_type, payload):
+    """Create and start an async job; returns the job record. Shared by the
+    POST /jobs route and launch-config startup tasks (fire-and-forget)."""
+    _prune_jobs()
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    job = {
+        "id": job_id,
+        "type": job_type,
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "result": None,
+        "error": None
+    }
+    with _jobs_lock:
+        _jobs[job_id] = job
+    thread = threading.Thread(target=_run_job, args=(job_id, job_type, payload), daemon=True)
+    thread.start()
+    return job
+
+
 @app.route("/jobs", methods=["POST"])
 @require_auth
 def create_job():
@@ -1134,27 +1154,10 @@ def create_job():
     if not job_type:
         return jsonify({"error": "type required"}), 400
 
-    _prune_jobs()
-    job_id = uuid.uuid4().hex
-    now = time.time()
-    job = {
-        "id": job_id,
-        "type": job_type,
-        "status": "queued",
-        "created_at": now,
-        "updated_at": now,
-        "result": None,
-        "error": None
-    }
-    with _jobs_lock:
-        _jobs[job_id] = job
-
-    thread = threading.Thread(target=_run_job, args=(job_id, job_type, payload), daemon=True)
-    thread.start()
-
+    job = _enqueue_job(job_type, payload)
     return jsonify({
-        "job_id": job_id,
-        "status": "queued",
+        "job_id": job["id"],
+        "status": job["status"],
         "type": job_type
     }), 202
 
@@ -1170,6 +1173,99 @@ def get_job(job_id):
     return jsonify(job)
 
 # =============================================================================
+# Launch config (per-instance startup config delivered by the orchestrator)
+# =============================================================================
+
+def apply_launch_config(config):
+    """Apply a launch config dict: set proxy, enqueue fire-and-forget startup
+    tasks, and record the config. Returns a summary dict."""
+    summary = {
+        "instance_id": config.get("instance_id"),
+        "applied": [],
+        "errors": [],
+    }
+
+    proxy = config.get("proxy")
+    if proxy:
+        try:
+            result, status = _set_proxy(proxy)
+            if status == 200 and result.get("success"):
+                summary["applied"].append("proxy")
+            else:
+                summary["errors"].append({"proxy": result})
+        except Exception as exc:
+            logger.exception("launch-config proxy apply failed")
+            summary["errors"].append({"proxy": str(exc)})
+
+    tasks = config.get("startup_tasks") or []
+    job_ids = []
+    for task in tasks:
+        ttype = task.get("type")
+        if not ttype:
+            continue
+        try:
+            job = _enqueue_job(ttype, task.get("payload", {}))
+            job_ids.append(job["id"])
+        except Exception as exc:
+            logger.exception("launch-config startup task failed")
+            summary["errors"].append({"startup_task": str(exc), "type": ttype})
+    if job_ids:
+        summary["applied"].append("startup_tasks")
+        summary["startup_job_ids"] = job_ids
+
+    # device_identity/labels/extra are recorded for downstream use (identity
+    # spoofing is applied via the /device/identity endpoints on demand).
+    _state["launch_config"] = config
+    logger.info("Applied launch config instance_id=%s applied=%s errors=%s",
+                summary["instance_id"], summary["applied"], summary["errors"])
+    return summary
+
+
+def _load_launch_config_file(path=None):
+    path = path or LAUNCH_CONFIG_FILE
+    with open(path) as fh:
+        return json.load(fh)
+
+
+@app.route("/launch-config", methods=["GET"])
+@require_auth
+def get_launch_config():
+    """Return the currently applied launch config (or {})."""
+    return jsonify(_state.get("launch_config") or {})
+
+
+@app.route("/launch-config/apply", methods=["POST"])
+@require_auth
+def apply_launch_config_route():
+    """Apply a launch config from the request body, or from LAUNCH_CONFIG_FILE
+    when no body is provided."""
+    data = request.get_json(silent=True)
+    if not data:
+        try:
+            data = _load_launch_config_file()
+        except FileNotFoundError:
+            return jsonify({"error": f"no body and {LAUNCH_CONFIG_FILE} not found"}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+    return jsonify(apply_launch_config(data))
+
+
+def _maybe_apply_boot_launch_config():
+    """Apply LAUNCH_CONFIG_FILE at startup if present (best-effort)."""
+    try:
+        data = _load_launch_config_file()
+    except FileNotFoundError:
+        return
+    except Exception:
+        logger.exception("Failed to read launch config at boot")
+        return
+    try:
+        apply_launch_config(data)
+    except Exception:
+        logger.exception("Failed to apply launch config at boot")
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -1180,5 +1276,8 @@ if __name__ == "__main__":
     
     print(f"Starting Cloud Phone Control API on {host}:{port}")
     print(f"ADB target: {ADB_CONNECT}")
-    
+
+    # Apply any launch config delivered by the orchestrator (cloud-init) on boot.
+    threading.Thread(target=_maybe_apply_boot_launch_config, daemon=True).start()
+
     app.run(host=host, port=port, debug=debug, threaded=True)

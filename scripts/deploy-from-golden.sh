@@ -12,6 +12,7 @@ MEMORY_GB=24
 WAIT_CHECK=false
 RUN_TESTS=false
 PLATFORM="cuttlefish"
+USER_DATA_FILE=""
 
 COMPARTMENT_ID="${COMPARTMENT_ID:-}"
 SUBNET_ID="${SUBNET_ID:-}"
@@ -45,6 +46,7 @@ Options:
   --platform NAME       cuttlefish (required value)
   --wait-check          Run runtime health check after deploy
   --run-tests           Run ingest verification script after deploy
+  --user-data-file PATH cloud-init user-data (e.g. orchestrator launch config)
   --list-images         List available golden images
   --help                Show help
 EOF
@@ -67,6 +69,7 @@ while [[ $# -gt 0 ]]; do
         --platform) PLATFORM="$2"; shift 2 ;;
         --wait-check) WAIT_CHECK=true; shift ;;
         --run-tests) RUN_TESTS=true; shift ;;
+        --user-data-file) USER_DATA_FILE="$2"; shift 2 ;;
         --list-images) list_golden_images; exit 0 ;;
         --help|-h) usage; exit 0 ;;
         *) log_error "Unknown option: $1"; usage; exit 1 ;;
@@ -84,6 +87,13 @@ if [[ "$OCPUS" -lt 4 ]] || [[ "$MEMORY_GB" -lt 24 ]]; then
     log_warn "Cuttlefish recommended baseline is 4 OCPU / 24GB."
 fi
 
+LAUNCH_EXTRA=()
+if [[ -n "$USER_DATA_FILE" ]]; then
+    [[ -f "$USER_DATA_FILE" ]] || { log_error "user-data file not found: $USER_DATA_FILE"; exit 1; }
+    log_info "Attaching cloud-init user-data: $USER_DATA_FILE"
+    LAUNCH_EXTRA+=(--user-data-file "$USER_DATA_FILE")
+fi
+
 log_info "Launching instance from golden image..."
 INSTANCE_OCID=$(oci compute instance launch "${OCI_AUTH_ARGS[@]}" \
     --compartment-id "$COMPARTMENT_ID" \
@@ -95,6 +105,7 @@ INSTANCE_OCID=$(oci compute instance launch "${OCI_AUTH_ARGS[@]}" \
     --display-name "$INSTANCE_NAME" \
     --ssh-authorized-keys-file "$SSH_KEY_FILE" \
     --assign-public-ip true \
+    "${LAUNCH_EXTRA[@]}" \
     --wait-for-state RUNNING \
     --query 'data.id' \
     --raw-output)

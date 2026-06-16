@@ -1,0 +1,22 @@
+{
+  "instance_id": "assigned-by-orchestrator",
+  "golden_image_id": "ocid1.image.oc1.phx.xxxxxxxx",
+  "proxy": {
+    "enabled": true,
+    "type": "socks5",
+    "host": "10.0.0.9",
+    "port": 1080,
+    "username": "",
+    "password": ""
+  },
+  "device_identity": {
+    "model": "Pixel 6",
+    "manufacturer": "Google"
+  },
+  "startup_tasks": [
+    {"type": "adb_shell", "payload": {"command": "settings put system screen_off_timeout 600000"}},
+    {"type": "app_start", "payload": {"package": "com.android.settings"}}
+  ],
+  "labels": {"role": "dev", "pool": "default"},
+  "extra": {}
+}

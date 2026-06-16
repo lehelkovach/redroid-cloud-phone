@@ -60,3 +60,38 @@ curl -X POST http://<ORCH_IP>:8090/phones/<ID>/input \
 curl http://<ORCH_IP>:8090/phones/<ID>/screenshot \
   -H "Authorization: Bearer $ORCH_API_TOKEN"
 ```
+
+## Per-instance launch config
+
+When provisioning, pass a launch config so the new phone configures itself at boot
+(proxy, device identity, fire-and-forget startup tasks, free-form labels/extra):
+
+```bash
+curl -X POST http://<ORCH_IP>:8090/instances \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"launch_config": {
+        "proxy": {"enabled": true, "type": "socks5", "host": "10.0.0.9", "port": 1080},
+        "startup_tasks": [{"type": "adb_shell", "payload": {"command": "settings put system screen_off_timeout 600000"}}],
+        "labels": {"role": "dev"}
+      }}'
+```
+
+In OCI mode the config is delivered via cloud-init (`deploy-from-golden.sh --user-data-file`)
+and applied by the Control API at boot (`/etc/cloud-phone/launch.json`, or `POST /launch-config/apply`).
+See `config/launch-config.example.json` and `orchestrator/launch_config.py`.
+
+## Async fan-out to several phones
+
+Drive many phones concurrently with one call, then poll aggregate status:
+
+```bash
+# Dispatch to all registered phones (or pass {"instance_ids": [...]})
+curl -X POST http://<ORCH_IP>:8090/fleet/operations \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"operation": "login", "app_package": "com.example.app",
+       "login": {"username": "u", "password": "p"}}'
+
+# Poll per-instance status
+curl http://<ORCH_IP>:8090/fleet/operations/<FLEET_ID> \
+  -H "Authorization: Bearer $ORCH_API_TOKEN"
+```
