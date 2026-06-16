@@ -109,9 +109,29 @@ Non-obvious facts verified via the OCI API:
   secrets**, so you cannot `ssh`/run commands on them with `KSG_DEV_VM_KEY`. The OCI API still
   lets you list/start/stop/inspect them. Their control-plane/ADB ports are restricted to the VCN
   (not reachable from outside), so probe them via SSH from on-box, not over the public IP.
-- `redroid-camera-build` (4 OCPU / 24 GB, the README's Cuttlefish baseline) is the strongest
-  candidate for the active emulator host, but the intended `dev` push target must be confirmed
-  by the owner.
+- **Canonical dev instance: `redroid-camera-build`** (4 OCPU / 24 GB, public IP `152.70.146.56`,
+  OCID `ocid1.instance.oc1.phx.anyhqljrgmifkaqctzrsdrfcqb7v52rrmxcxidwmq2bspmvo7f2ljurhasta`).
+  It is the newest build (2026-02-15) and the only one matching the README's Cuttlefish baseline.
+  Point `DEV_DEPLOY_HOST` / the dev-server secrets at this instance.
+- The older/duplicate phone instances were stopped (not terminated, so they can be restarted) to
+  leave a single dev box: two `cloud-phone-gapps-test` (`137.131.52.136`, `129.146.109.119`) and
+  `waydroid-test-1` (`161.153.55.58`). A separate release instance is expected later (e.g. deployed
+  from a golden image).
+
+### Orchestrator as an independent proxy (multi-instance routing)
+
+Per `docs/AGENT_COORDINATION.md`, the orchestrator (`orchestrator/server.py`, :8090) is meant to
+run as its **own standalone service** — separate from any phone instance — and proxy/route to one
+or more per-phone Control APIs (`api/server.py`, :8080). It already supports this: register phones
+via `POST /instances`, then route by id through `GET|POST /phones/<id>/{status,health,input,screenshot,jobs}`,
+with `Authorization: Bearer $ORCH_API_TOKEN`. `ORCH_DEPLOY_MODE=oci` lets it provision phones
+on demand via `scripts/deploy-from-golden.sh`; `mock` routes to `ORCH_MOCK_API_URL`.
+
+`systemd/orchestrator.service` runs it standalone (working dir `/opt/cloud-phone-orchestrator`,
+its own venv, port 8090, token + max-instances via env / `EnvironmentFile`). It is deliberately
+**not** part of `cuttlefish-cloud-phone.target` (that target is the per-phone stack:
+cuttlefish-launch + nginx-rtmp + rtmp-bridge + control-api). Deploy the orchestrator on a control
+host (or the dev box) and register the phone instances it should manage.
 
 ### Auto-deploy on push to `dev`
 
