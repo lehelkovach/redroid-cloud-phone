@@ -91,6 +91,7 @@ android-arm-cloud-phone/
 ## Documentation
 
 - `docs/DEPLOYMENT.md`
+- `docs/AGENT-MOBILE-ACCESS.md` — **start here for Cursor agents** (live IP, binder boot, SSH tunnel, Gmail path)
 - `docs/CUTTLEFISH_PHASE1.md`
 - `docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md`
 - `docs/CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
