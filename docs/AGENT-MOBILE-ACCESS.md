@@ -47,16 +47,45 @@ To expose the API publicly, add an ingress rule for TCP 8080 (and optionally
 
 Tools: `mobile.health|screenshot|tap|swipe|type|key|home|back|launch|close|apps|shell|focus`.
 
-## Gmail signup path (next)
+## Gmail signup path (status)
 
-1. `mobile.launch { package: "com.android.vending" }` (Play — already has GMS)
-2. Sign in / Create account UI via screenshot + tap/type (and vision when needed)
-3. Phone SMS → `user.ask` for Captain's number + code
-4. Vault new Gmail as `LoginCredential`
-5. Use mailbox for IPRoyal verify email (desktop bootstrap)
+**Installed on `cloud-phone-agent-6c58`:** Play Store (`com.android.vending`),
+GMS/GSF, **Firefox** (`org.mozilla.firefox`). Gmail app APK is *not* required
+for account create — signup is web (`accounts.google.com/signup`) in Firefox.
 
-Play Store currently opens `UnauthenticatedMainActivity` until a Google account
-exists — that is the intended create-account entry.
+### What automation can do
+
+1. `mobile.launch` Play → **SIGN IN** (or open Firefox with the signup URL)
+2. Drive name → birthday/gender with screenshot + tap/type (+ Gemini for coords)
+3. Stop at **phone SMS / CAPTCHA** and hand off
+
+### What still needs a human (cannot VLM-solve)
+
+- Google **phone verification SMS** (your number + code)
+- Any **CAPTCHA** / bot check Google inserts
+- Play payment / later IPRoyal card approval (separate flow)
+
+### Preferred create-account entry
+
+```bash
+# Tunnel API first
+ssh -i ~/.ssh/oci_console -N -L 18080:127.0.0.1:8080 ubuntu@129.146.55.133
+export CLOUD_PHONE_API_URL=http://127.0.0.1:18080
+
+# Open signup in Firefox (more reliable than WebView Browser Tester)
+adb -s 127.0.0.1:5555 shell \
+  'am start -a android.intent.action.VIEW -d "https://accounts.google.com/signup/v2/webcreateaccount?flowName=GlifWebSignIn&flowEntry=SignUp" -p org.mozilla.firefox'
+
+# Or from osl-oc-agent:
+node scripts/mobile_gmail_signup_assist.mjs
+```
+
+Play Store `UnauthenticatedMainActivity` → SIGN IN also reaches Google create-
+account, but often resolves into `org.chromium.webview_shell`, whose address bar
+steals `input text`. Prefer Firefox.
+
+After account exists: vault as private `LoginCredential`, then use the mailbox
+for IPRoyal email OTP / job-site bootstrap.
 
 ## API note
 
