@@ -189,7 +189,14 @@ def _do_screenshot_base64():
         capture_output=True, timeout=30
     )
     if result.returncode == 0 and result.stdout:
-        return {"success": True, "image_base64": base64.b64encode(result.stdout).decode()}
+        encoded = base64.b64encode(result.stdout).decode("ascii")
+        # Both keys: repo clients expect image_base64; older deploys used image.
+        return {
+            "success": True,
+            "image_base64": encoded,
+            "image": encoded,
+            "mime": "image/png",
+        }
     return {"success": False, "error": "Failed to capture screenshot"}
 
 
