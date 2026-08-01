@@ -7,8 +7,14 @@ Agent-side twin: `osl-oc-agent/docs/MOBILEIO-DOGFOOD.md`.
 
 ## Live instance pointers
 
-See `docs/AGENT-MOBILE-ACCESS.md` for the current agent-accessible VM (IP, SSH,
-binder boot gotcha, tunnel). Prefer that over older `cloud-phone-dev` hosts.
+See `docs/AGENT-MOBILE-ACCESS.md` and `docs/OCI-LIVE-TOPOLOGY.md`.
+
+| Role | Host | Tunnel |
+|------|------|--------|
+| Phone + Control API | `129.146.55.133` (`10.0.1.127`) | `-L 18080:127.0.0.1:8080` |
+| Orchestrator | `129.146.105.26` | `-L 18090:127.0.0.1:8090` |
+
+Prefer these over older `cloud-phone-dev` (`129.146.70.170`, different SSH key).
 
 ## Offline (this Cloud VM / laptop)
 

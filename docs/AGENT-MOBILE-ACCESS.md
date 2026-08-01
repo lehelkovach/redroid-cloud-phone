@@ -1,20 +1,25 @@
 # Agent access — OCI Redroid cloud phone
 
-## Live instance (this session)
+Full topology: [`docs/OCI-LIVE-TOPOLOGY.md`](./OCI-LIVE-TOPOLOGY.md).
 
-| Field | Value |
-|-------|--------|
-| OCI name | `cloud-phone-agent-6c58` |
-| Public IP | `129.146.55.133` |
-| Image | `cloud-phone-gapps-v1` (Redroid 11 + Play/GMS) |
-| Shape | VM.Standard.A1.Flex 4 OCPU / 24GB |
-| Control API | `http://129.146.55.133:8080` |
-| ADB | `129.146.55.133:5555` |
-| SSH | `ssh -i ~/.ssh/oci_console ubuntu@129.146.55.133` |
+## Live instances (this session)
+
+| Field | Phone | Orchestrator |
+|-------|--------|--------------|
+| OCI name | `cloud-phone-agent-6c58` | `cloud-phone-orch-6c58` |
+| Public IP | `129.146.55.133` | `129.146.105.26` |
+| Private IP | `10.0.1.127` | `10.0.1.123` |
+| Image / role | Redroid 11 + Play/GMS + Control API | Orchestrator (`:8090`, mock mode) |
+| Shape | VM.Standard.A1.Flex 4 OCPU / 24GB | VM.Standard.A1.Flex 1 OCPU / 6GB |
+| Control API | `http://127.0.0.1:8080` (tunnel) | registers `http://10.0.1.127:8080` |
+| ADB | host `:5555` → container `:5554` (adbd) | n/a |
+| SSH | `ssh -i ~/.ssh/oci_console ubuntu@129.146.55.133` | `ssh -i ~/.ssh/oci_console ubuntu@129.146.105.26` |
 
 > Older `cloud-phone-dev` (`129.146.70.170`) is running but its SSH key is
 > `cloud-phone-dev-agent` (not in this Cursor environment). Prefer the
 > agent-accessible VM above, or inject the private key as a secret.
+>
+> **Cuttlefish is not what these VMs run.** A1.Flex has no `/dev/kvm`. See topology doc.
 
 ## Boot gotcha (critical)
 
@@ -38,12 +43,14 @@ Cloud Agent / laptop use an SSH tunnel:
 
 ```bash
 ssh -i ~/.ssh/oci_console -N -L 18080:127.0.0.1:8080 ubuntu@129.146.55.133
+ssh -i ~/.ssh/oci_console -N -L 18090:127.0.0.1:8090 ubuntu@129.146.105.26
 export CLOUD_PHONE_API_URL=http://127.0.0.1:18080
+export CLOUD_PHONE_ORCH_URL=http://127.0.0.1:18090
 node scripts/mobile_phone_smoke.mjs   # in osl-oc-agent
 ```
 
-To expose the API publicly, add an ingress rule for TCP 8080 (and optionally
-5555) on the phone subnet's security list / NSG.
+Host iptables on the phone REJECT everything except SSH (+ VCN `:8080` for the
+orchestrator). Do not expect public `:8080` to work without opening that rule.
 
 Tools: `mobile.health|screenshot|tap|swipe|type|key|home|back|launch|close|apps|shell|focus`.
 
