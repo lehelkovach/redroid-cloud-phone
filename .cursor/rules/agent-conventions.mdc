@@ -1,0 +1,16 @@
+---
+description: Repository continuity and safe agent workflow
+alwaysApply: true
+---
+
+- Read the applicable `AGENTS.md` files before working.
+- Use one branch or worktree per task and preserve unrelated changes.
+- Keep task state and acceptance criteria in the issue; keep verification in the PR.
+- Use a uniquely named `.AGENT/handoffs/` file only for temporary cross-session state.
+- Do not create or maintain a shared action log or run-once queue.
+- Never print or commit secrets; document secret names only.
+
+- This repo is part of the `knowshowgo +8` Cursor environment. Cross-repo env handoff:
+  `osl-oc-agent/.AGENT/handoffs/CURSOR-ENV-HANDOFF.md`.
+- Gitflow: branch from `dev`, PR into `dev`. Validate on the OCI dev host before promoting.
+- Do not confuse `KSG_*` secrets with cloud-phone secrets — different projects.

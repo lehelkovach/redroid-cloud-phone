@@ -1,0 +1,12 @@
+---
+description: Baseline agent conventions for redroid-cloud-phone
+alwaysApply: true
+---
+
+- Read `AGENTS.md` (repo instructions) and `.AGENT/agent.md` at the start of work.
+- This repo is part of the `knowshowgo +8` environment; the canonical cross-repo
+  handoff is `osl-oc-agent/.AGENT/handoffs/CURSOR-ENV-HANDOFF.md`.
+- Gitflow: branch from the integration branch, PR back into it, one logical
+  change per branch. Do not merge PRs or push to protected branches unless told.
+- Never print or commit secret values. Prefer editing existing files.
+- Keep `.AGENT/agent-action-log.md` current as you work.
