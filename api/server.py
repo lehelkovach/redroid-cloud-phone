@@ -22,6 +22,7 @@ import logging
 import threading
 import uuid
 from functools import wraps
+from xml.etree import ElementTree
 from flask import Flask, request, jsonify, Response
 
 try:  # works run as `python api/server.py` or imported
@@ -201,6 +202,65 @@ def _do_screenshot_base64():
     if result.returncode == 0 and result.stdout:
         return {"success": True, "image_base64": base64.b64encode(result.stdout).decode()}
     return {"success": False, "error": "Failed to capture screenshot"}
+
+
+_UI_DUMP_DEVICE_PATH = "/sdcard/osl_ui_dump.xml"
+
+
+def _fetch_ui_xml(timeout=30, attempts=3):
+    """Dump the current window hierarchy and return its XML text.
+
+    `uiautomator dump` fails with "could not get idle state" while the UI is
+    still animating, so retry a few times before giving up.
+    """
+    last_error = ""
+    for attempt in range(attempts):
+        dumped = subprocess.run(
+            ["adb", "-s", ADB_CONNECT, "shell",
+             f"uiautomator dump {_UI_DUMP_DEVICE_PATH}"],
+            capture_output=True, text=True, timeout=timeout
+        )
+        combined = f"{dumped.stdout} {dumped.stderr}".strip()
+        if "dumped to" in combined:
+            # exec-out keeps the payload byte-exact (no CRLF translation).
+            cat = subprocess.run(
+                ["adb", "-s", ADB_CONNECT, "exec-out", "cat", _UI_DUMP_DEVICE_PATH],
+                capture_output=True, timeout=timeout
+            )
+            if cat.returncode == 0 and cat.stdout:
+                return True, cat.stdout.decode("utf-8", errors="replace"), ""
+            last_error = "could not read UI dump from device"
+        else:
+            last_error = combined or "uiautomator dump produced no output"
+        if attempt + 1 < attempts:
+            time.sleep(0.6)
+    _state["last_adb_error"] = last_error
+    logger.warning("UI dump failed: %s", last_error)
+    return False, "", last_error
+
+
+def _current_focus_window():
+    """Focused window name, or "" when it cannot be determined."""
+    success, out, _ = run_adb_shell("dumpsys window")
+    if not success:
+        return ""
+    return ui_control.parse_current_focus(out)
+
+
+def _do_ui_dump(interactive_only=False, include_xml=False):
+    """Return the on-screen element tree as labeled, tappable JSON."""
+    ok, xml, error = _fetch_ui_xml()
+    if not ok:
+        return {"success": False, "error": error, "elements": [], "count": 0}
+    try:
+        parsed = ui_control.parse_ui_hierarchy(xml, interactive_only=interactive_only)
+    except ElementTree.ParseError as e:
+        return {"success": False, "error": f"unparsable UI dump: {e}",
+                "elements": [], "count": 0}
+    result = {"success": True, "focus": _current_focus_window(), **parsed}
+    if include_xml:
+        result["xml"] = xml
+    return result
 
 
 def _handle_job(job_type, payload):
@@ -668,6 +728,36 @@ def screenshot_base64():
     return jsonify(result), status
 
 # =============================================================================
+# UI Read Endpoints (element-level reads)
+# =============================================================================
+
+def _truthy(value):
+    return str(value or "").lower() in ("1", "true", "yes", "on")
+
+
+@app.route("/device/ui", methods=["GET"])
+@require_auth
+def device_ui():
+    """Current screen as labeled UI elements (agent `read_ui` surface).
+
+    Query: `interactive_only=1` keeps only actionable nodes, `include_xml=1`
+    appends the raw uiautomator dump.
+    """
+    result = _do_ui_dump(
+        interactive_only=_truthy(request.args.get("interactive_only")),
+        include_xml=_truthy(request.args.get("include_xml")),
+    )
+    return jsonify(result), 200 if result.get("success") else 503
+
+
+@app.route("/device/focus", methods=["GET"])
+@require_auth
+def device_focus():
+    """Focused window/activity, without the pipe-in-adb-shell failure mode."""
+    focus = _current_focus_window()
+    return jsonify({"success": bool(focus), "focus": focus})
+
+# =============================================================================
 # App Management Endpoints
 # =============================================================================
 
@@ -684,23 +774,56 @@ def list_apps():
         "count": len(packages)
     })
 
+def _resolve_launch_activity(package):
+    """Resolve a package's launcher component, or None when it has none.
+
+    `cmd package resolve-activity` exits 0 and prints "No activity found" for a
+    package that is absent or has no launcher entry, so the output has to be
+    validated rather than trusted.
+    """
+    success, out, _ = run_adb_shell(f"cmd package resolve-activity --brief {package}")
+    if not success:
+        return None
+    for line in reversed(out.splitlines()):
+        candidate = line.strip()
+        if candidate.startswith(f"{package}/"):
+            return candidate
+    return None
+
+
 @app.route("/apps/<package>/start", methods=["POST"])
 @require_auth
 def start_app(package):
-    """Start an app by package name"""
-    # Get main activity
-    success, out, _ = run_adb_shell(
-        f"cmd package resolve-activity --brief {package} | tail -n 1"
+    """Start an app by package name.
+
+    Reports failure when the package has no launchable activity (e.g. Play
+    Store on an image without GMS) instead of reporting a launch that never
+    happened.
+    """
+    activity = _resolve_launch_activity(package)
+    if activity:
+        success, out, err = run_adb_shell(f"am start -n {activity}")
+        combined = f"{out}\n{err}"
+        if success and "Error" not in combined and "Exception" not in combined:
+            return jsonify({"success": True, "activity": activity})
+        return jsonify({
+            "success": False,
+            "activity": activity,
+            "error": (err or out or "am start failed").strip(),
+        }), 502
+
+    # Fallback: monkey can launch some packages that resolve-activity misses.
+    success, out, err = run_adb_shell(
+        f"monkey -p {package} -c android.intent.category.LAUNCHER 1"
     )
-    
-    if success and out:
-        activity = out.strip()
-        run_adb_shell(f"am start -n {activity}")
-        return jsonify({"success": True, "activity": activity})
-    
-    # Fallback: use monkey
-    run_adb_shell(f"monkey -p {package} -c android.intent.category.LAUNCHER 1")
-    return jsonify({"success": True, "package": package})
+    combined = f"{out}\n{err}"
+    if success and "No activities found" not in combined and "Error" not in combined:
+        return jsonify({"success": True, "package": package, "via": "monkey"})
+    return jsonify({
+        "success": False,
+        "package": package,
+        "error": f"no launchable activity for {package} (not installed?)",
+    }), 404
 
 @app.route("/apps/<package>/stop", methods=["POST"])
 @require_auth

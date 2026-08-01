@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional, Tuple
+from xml.etree import ElementTree
 
 VALID_BACKENDS = ("adb", "appium")
 
@@ -142,3 +143,103 @@ def _resolve_named(cmd, size, xk, yk, xpk, ypk):
     if xk not in cmd or yk not in cmd:
         raise UIError(f"both {xk} and {yk} required (or {xpk}/{ypk})")
     return to_pixels(cmd[xk], w), to_pixels(cmd[yk], h)
+
+
+# ---------------------------------------------------------------------------
+# Element-level reads (window hierarchy → labeled, tappable elements)
+# ---------------------------------------------------------------------------
+
+BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
+
+
+def parse_bounds(raw: Optional[str]):
+    """Parse a uiautomator `bounds="[x1,y1][x2,y2]"` attribute.
+
+    Returns `(box, center)`, or `(None, None)` when unparsable.
+    """
+    match = BOUNDS_RE.match(raw or "")
+    if not match:
+        return None, None
+    x1, y1, x2, y2 = (int(v) for v in match.groups())
+    box = {"x1": x1, "y1": y1, "x2": x2, "y2": y2,
+           "width": x2 - x1, "height": y2 - y1}
+    return box, {"x": (x1 + x2) // 2, "y": (y1 + y2) // 2}
+
+
+def _flag(node, name: str) -> bool:
+    return node.get(name, "false") == "true"
+
+
+def parse_ui_hierarchy(xml: str, interactive_only: bool = False) -> Dict:
+    """Turn a `uiautomator dump` XML document into labeled UI elements.
+
+    Each element carries the text/content-desc/resource-id an agent can reason
+    about plus a `center` it can tap, which is what makes element-level acting
+    possible instead of blind coordinates.
+
+    Zero-area nodes are dropped. Pure layout containers (no label, no
+    resource-id, nothing actionable) are dropped too so the payload stays small
+    enough to hand to an LLM; `interactive_only` narrows it further to nodes
+    that can actually be acted on.
+    """
+    root = ElementTree.fromstring(xml)
+    elements: List[Dict] = []
+    for index, node in enumerate(root.iter("node")):
+        box, center = parse_bounds(node.get("bounds"))
+        if box is None or box["width"] <= 0 or box["height"] <= 0:
+            continue
+        text = node.get("text", "")
+        content_desc = node.get("content-desc", "")
+        resource_id = node.get("resource-id", "")
+        clazz = node.get("class", "")
+        clickable = _flag(node, "clickable")
+        editable = clazz.endswith("EditText")
+        actionable = (
+            clickable
+            or editable
+            or _flag(node, "long-clickable")
+            or _flag(node, "checkable")
+            or _flag(node, "scrollable")
+        )
+        if interactive_only:
+            if not actionable:
+                continue
+        elif not (actionable or text or content_desc or resource_id):
+            continue
+        elements.append({
+            "index": index,
+            "class": clazz,
+            "resource_id": resource_id,
+            "text": text,
+            "content_desc": content_desc,
+            "package": node.get("package", ""),
+            "bounds": box,
+            "center": center,
+            "clickable": clickable,
+            "editable": editable,
+            "enabled": _flag(node, "enabled"),
+            "focused": _flag(node, "focused"),
+            "checkable": _flag(node, "checkable"),
+            "checked": _flag(node, "checked"),
+            "scrollable": _flag(node, "scrollable"),
+            "selected": _flag(node, "selected"),
+            "password": _flag(node, "password"),
+            "label": text or content_desc or resource_id.rsplit("/", 1)[-1] or clazz,
+        })
+    return {
+        "count": len(elements),
+        "elements": elements,
+        "rotation": root.get("rotation", "0"),
+    }
+
+
+def parse_current_focus(dumpsys_window: str) -> str:
+    """Extract the `mCurrentFocus=...` line from `dumpsys window` output.
+
+    Callers must pass unpiped output: `adb shell "dumpsys window | head"` kills
+    the upstream process on the closed pipe and reports a spurious error.
+    """
+    for line in (dumpsys_window or "").splitlines():
+        if "mCurrentFocus" in line:
+            return line.strip()
+    return ""
