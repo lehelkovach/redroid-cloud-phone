@@ -306,11 +306,61 @@ def get_proxy():
     """Get current proxy configuration"""
     return jsonify(_state["proxy"])
 
+def _parse_proxy_url(url):
+    """Parse IPRoyal-style proxy URL into host/port/user/pass/type.
+
+    Accepts: http://user:pass@host:port | socks5://… | host:port
+    """
+    from urllib.parse import urlparse, unquote
+    raw = str(url or "").strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = "http://" + raw
+    u = urlparse(raw)
+    if not u.hostname or not u.port:
+        return None
+    scheme = (u.scheme or "http").lower()
+    if scheme not in ("http", "https", "socks5", "socks"):
+        scheme = "http"
+    if scheme == "socks":
+        scheme = "socks5"
+    if scheme == "https":
+        scheme = "http"
+    return {
+        "type": scheme,
+        "host": u.hostname,
+        "port": int(u.port),
+        "username": unquote(u.username) if u.username else "",
+        "password": unquote(u.password) if u.password else "",
+    }
+
+
 def _set_proxy(data):
     """Apply a proxy configuration dict and return a result dict.
 
     Shared by the POST /proxy route and launch-config application.
+
+    Body accepts either discrete fields or a single IPRoyal-style `url`:
+      {"enabled": true, "url": "http://user:pass@geo.iproyal.com:12321"}
+      {"enabled": true, "type": "http", "host": "…", "port": 12321, "username": "…", "password": "…"}
+    Env fallback (when enabled and no host/url): IPROYAL_PROXY / CLOUD_PHONE_PROXY.
     """
+    data = dict(data or {})
+    # URL form (IPRoyal)
+    if data.get("url") and not data.get("host"):
+        parsed = _parse_proxy_url(data["url"])
+        if not parsed:
+            return {"error": "invalid proxy url"}, 400
+        data.update(parsed)
+        data.setdefault("enabled", True)
+    # Env fallback for dogfood when founder sets IPROYAL_PROXY on the VM
+    if data.get("enabled") and not data.get("host"):
+        env_url = os.environ.get("IPROYAL_PROXY") or os.environ.get("CLOUD_PHONE_PROXY") or ""
+        parsed = _parse_proxy_url(env_url)
+        if parsed:
+            data.update(parsed)
+
     enabled = data.get("enabled", False)
     proxy_type = data.get("type", "socks5")
     host = data.get("host", "")
@@ -319,7 +369,7 @@ def _set_proxy(data):
     password = data.get("password", "")
     
     if enabled and (not host or not port):
-        return {"error": "host and port required when enabled"}, 400
+        return {"error": "host and port required when enabled (or set IPROYAL_PROXY)"}, 400
     
     success = False
     message = ""
