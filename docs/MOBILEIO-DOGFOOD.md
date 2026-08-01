@@ -31,8 +31,12 @@ sudo modprobe ashmem_linux
 sudo mkdir -p /dev/binderfs && sudo mount -t binder binder /dev/binderfs || true
 sudo docker restart redroid
 adb connect 127.0.0.1:5555
-adb devices
+adb devices   # expect "device" — if "offline", remount binderfs + restart redroid
 ```
+
+Overnight probe (`129.146.55.133`): Control API `/health` reported
+`adb_connected:true` but `adb devices` showed `offline` — fix binder before
+gesture smoke.
 
 ### 1. Tunnel APIs
 
