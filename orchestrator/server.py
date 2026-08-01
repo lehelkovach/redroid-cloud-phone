@@ -63,6 +63,11 @@ _leases = {}
 _leases_lock = threading.Lock()
 _fleet_ops = {}
 _fleet_ops_lock = threading.Lock()
+# One-phone-per-user sessions: owner_user_id -> session record
+_user_sessions = {}
+_user_sessions_lock = threading.Lock()
+
+
 def _require_auth():
     if not ORCH_API_TOKEN:
         return None
@@ -86,10 +91,12 @@ def _normalize_steps(steps):
         if not isinstance(step, dict):
             raise ValueError("each step must be an object")
         action = step.get("action")
-        if action not in {"start_app", "input_text", "key", "tap", "sleep_ms"}:
+        if action not in {"start_app", "input_text", "key", "tap", "swipe", "sleep_ms"}:
             raise ValueError(f"Unsupported action: {action}")
         if action == "start_app" and not step.get("package"):
             raise ValueError("start_app requires package")
+        if action == "swipe" and not all(k in step for k in ("x1", "y1", "x2", "y2")):
+            raise ValueError("swipe requires x1,y1,x2,y2")
     return steps
 
 
@@ -309,6 +316,16 @@ def _run_steps(api_url: str, steps):
             x = int(step.get("x", 500))
             y = int(step.get("y", 500))
             results.append(_control_post(api_url, "/device/input", {"type": "tap", "x": x, "y": y}))
+        elif action == "swipe":
+            payload = {
+                "type": "swipe",
+                "x1": int(step["x1"]),
+                "y1": int(step["y1"]),
+                "x2": int(step["x2"]),
+                "y2": int(step["y2"]),
+                "duration": int(step.get("duration", 300)),
+            }
+            results.append(_control_post(api_url, "/device/input", payload))
         elif action == "sleep_ms":
             time.sleep(int(step.get("duration", 500)) / 1000.0)
             results.append({"success": True, "sleep_ms": step.get("duration", 500)})
@@ -469,6 +486,158 @@ def lease_instance(instance_id):
 def release_instance(instance_id):
     _clear_lease(instance_id)
     return jsonify({"success": True, "instance_id": instance_id})
+
+
+def _session_expired(sess):
+    return not sess or float(sess.get("expires_at", 0)) < time.time()
+
+
+def _find_instance_for_owner(owner_user_id):
+    """Return an instance the owner already leases, or an unleased instance."""
+    with _instances_lock:
+        instances = list(_instances.values())
+    # Prefer instance already leased to this owner
+    for inst in instances:
+        if _is_lease_valid(inst["id"], owner=owner_user_id):
+            return inst, "owned"
+    # Else first unleased instance
+    for inst in instances:
+        if not _is_lease_valid(inst["id"]):
+            return inst, "free"
+    return None, "none"
+
+
+def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=False):
+    """
+    One phone per user: renew existing session, or lease a free phone.
+    Never shares a phone across two active owners.
+    """
+    if not owner_user_id:
+        raise ValueError("owner_user_id required")
+    ttl_seconds = max(int(ttl_seconds), 10)
+
+    with _user_sessions_lock:
+        existing = _user_sessions.get(owner_user_id)
+        if existing and not _session_expired(existing):
+            existing["expires_at"] = time.time() + ttl_seconds
+            existing["ttl_seconds"] = ttl_seconds
+            inst_id = existing["instance_id"]
+            renewed = {**existing, "renewed": True}
+        else:
+            existing = None
+            renewed = None
+            inst_id = None
+
+    if renewed is not None:
+        _set_lease(inst_id, owner_user_id, ttl_seconds)
+        logger.info("Renewed session owner=%s instance=%s", owner_user_id, inst_id)
+        return renewed
+
+    inst, kind = _find_instance_for_owner(owner_user_id)
+    if inst is None:
+        # Distinguish empty fleet vs every phone already leased to someone else.
+        with _instances_lock:
+            fleet_size = len(_instances)
+        any_foreign_lease = False
+        with _instances_lock:
+            for other in _instances.values():
+                if _is_lease_valid(other["id"]) and not _is_lease_valid(other["id"], owner=owner_user_id):
+                    any_foreign_lease = True
+                    break
+        if fleet_size and any_foreign_lease and not provision:
+            raise RuntimeError("phone already leased to another user")
+        if provision or ORCH_DEPLOY_MODE == "mock":
+            try:
+                inst = _provision_instance()
+            except RuntimeError as exc:
+                if any_foreign_lease:
+                    raise RuntimeError("phone already leased to another user") from exc
+                raise RuntimeError(f"no free phone available for owner: {exc}") from exc
+            kind = "provisioned"
+        else:
+            raise RuntimeError("no free phone available for owner (provision=true to create)")
+
+    if _is_lease_valid(inst["id"]) and not _is_lease_valid(inst["id"], owner=owner_user_id):
+        raise RuntimeError("phone already leased to another user")
+
+    _set_lease(inst["id"], owner_user_id, ttl_seconds)
+    sess = {
+        "owner_user_id": owner_user_id,
+        "instance_id": inst["id"],
+        "api_url": inst["api_url"],
+        "name": inst.get("name"),
+        "ttl_seconds": ttl_seconds,
+        "created_at": time.time(),
+        "expires_at": time.time() + ttl_seconds,
+        "mode": inst.get("mode"),
+        "allocated": kind,
+    }
+    with _user_sessions_lock:
+        # Another request may have won the race for this owner
+        again = _user_sessions.get(owner_user_id)
+        if again and not _session_expired(again):
+            return {**again, "renewed": True}
+        _user_sessions[owner_user_id] = sess
+    logger.info("Acquired session owner=%s instance=%s kind=%s", owner_user_id, inst["id"], kind)
+    return {**sess, "renewed": False}
+
+
+def _release_user_session(owner_user_id):
+    with _user_sessions_lock:
+        sess = _user_sessions.pop(owner_user_id, None)
+    if not sess:
+        return None
+    _clear_lease(sess["instance_id"])
+    logger.info("Released session owner=%s instance=%s", owner_user_id, sess["instance_id"])
+    return sess
+
+
+@app.route("/sessions", methods=["GET"])
+def list_sessions():
+    with _user_sessions_lock:
+        sessions = []
+        for owner, sess in list(_user_sessions.items()):
+            if _session_expired(sess):
+                _user_sessions.pop(owner, None)
+                _clear_lease(sess["instance_id"])
+            else:
+                sessions.append(sess)
+        return jsonify({"success": True, "sessions": sessions, "count": len(sessions)})
+
+
+@app.route("/sessions", methods=["POST"])
+def create_session():
+    """Acquire or renew a one-phone-per-user session."""
+    data = request.get_json(silent=True) or {}
+    owner = data.get("owner_user_id") or data.get("owner") or data.get("user_id")
+    ttl = int(data.get("ttl_seconds", 3600))
+    provision = bool(data.get("provision", False))
+    try:
+        sess = _acquire_user_session(owner, ttl_seconds=ttl, provision=provision)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    return jsonify({"success": True, "session": sess}), 200
+
+
+@app.route("/sessions/<owner_user_id>", methods=["GET"])
+def get_session(owner_user_id):
+    with _user_sessions_lock:
+        sess = _user_sessions.get(owner_user_id)
+    if not sess or _session_expired(sess):
+        if sess:
+            _release_user_session(owner_user_id)
+        return jsonify({"success": False, "error": "session not found"}), 404
+    return jsonify({"success": True, "session": sess})
+
+
+@app.route("/sessions/<owner_user_id>", methods=["DELETE"])
+def delete_session(owner_user_id):
+    sess = _release_user_session(owner_user_id)
+    if not sess:
+        return jsonify({"success": False, "error": "session not found"}), 404
+    return jsonify({"success": True, "released": True, "session": sess})
 
 
 def _require_instance(instance_id):

@@ -99,6 +99,10 @@ android-arm-cloud-phone/
 ## Documentation
 
 - `docs/DEPLOYMENT.md`
+- `docs/OCI-LIVE-TOPOLOGY.md` — live OCI IPs (phone + orchestrator), tunnels, Redroid ADB gotchas
+- `docs/AGENT-MOBILE-ACCESS.md` — Cursor agent access (IP, binder boot, SSH tunnel)
+- `docs/MOBILEIO-DOGFOOD.md` — morning checklist: sessions, swipe, mock Tinder, IPRoyal
+- `fixtures/mock-tinder/` — fake-credential login UI for mobileio QA
 - `docs/CUTTLEFISH_PHASE1.md`
 - `docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md`
 - `docs/CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
