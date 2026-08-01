@@ -125,6 +125,40 @@ Fake login: `bs@example.com` / `fake-password-not-real`.
 If Play allows `com.tinder` install: launch → screenshot → tap/type/swipe →
 **stop at SMS/CAPTCHA** (`user.ask`). Never automate with real user secrets in demos.
 
+### 7. Travel / lodging ladder (Play → app)
+
+Prefer the agent-side offline mock when adbd is flaky:
+
+```bash
+cd ../osl-oc-agent
+node scripts/mobile_travel_ladder_demo.mjs
+```
+
+Live (phone up + tunnel):
+
+1. `node scripts/mobile_phone_smoke.mjs` — require **Play Store launch** (`com.android.vending`).
+2. In Play, search **Airbnb / VRBO / HomeToGo / Booking**.
+3. Install/Open → Google Sign-In as `lehelsaiagent@gmail.com`.
+4. **STOP** at SMS / CAPTCHA / payment. Never complete a paid booking unattended.
+5. Airbnb **web** is out of scope for WebIO; mobile install exploration only.
+
+Do not commit Google passwords or proxy URLs with credentials.
+
+### Lab probe (2026-08-09)
+
+| Check | Result |
+|-------|--------|
+| SSH phone `129.146.55.133` | OK |
+| Orch `129.146.105.26:8090` | OK |
+| Control API `/health` after fixing `ADB_CONNECT=127.0.0.1:5555` | healthy |
+| Play Store `POST /apps/com.android.vending/start` | success |
+| Screenshot / stable `adb devices` | **flaky** (device-not-found after connect) |
+| Full gesture dogfood | **blocked on phone lab** until adbd stays `device` |
+
+Gotcha: `/etc/systemd/system/control-api.service.d/serial.conf` must use
+`ADB_CONNECT=127.0.0.1:5555` (host publish). `172.17.0.2:5554` is the container
+port and routinely leaves the API degraded.
+
 ## Env cheat sheet
 
 | Variable | Where | Purpose |

@@ -31,10 +31,16 @@ sudo modprobe ashmem_linux
 sudo mkdir -p /dev/binderfs && sudo mount -t binder binder /dev/binderfs
 sudo docker restart redroid
 adb connect 127.0.0.1:5555
+adb devices   # must show "device" — "connected to" alone is not enough
 ```
 
 `redroid-binder.service` was enabled on `cloud-phone-agent-6c58` so this
 survives reboot.
+
+**Control API ADB target:** use `ADB_CONNECT=127.0.0.1:5555` (docker-proxy on the
+host). A drop-in pinning `172.17.0.2:5554` makes `/health` report the wrong
+target and screenshots fail with `device not found` even when Play launch
+occasionally succeeds.
 
 ## Networking
 
