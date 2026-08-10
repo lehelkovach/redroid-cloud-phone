@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Mock Tinder</title>
+  <style>
+    :root {
+      --bg: #1a1a1e;
+      --card: #2a2a32;
+      --accent: #fe3c72;
+      --text: #f5f5f7;
+      --muted: #9a9aa3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(120% 80% at 50% 0%, #3a2030 0%, var(--bg) 55%);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12vw 8vw;
+    }
+    h1 {
+      font-size: 1.6rem;
+      letter-spacing: 0.04em;
+      margin: 0 0 0.25rem;
+      color: var(--accent);
+    }
+    .sub { color: var(--muted); font-size: 0.85rem; margin-bottom: 2rem; text-align: center; }
+    #login, #deck { width: min(100%, 360px); }
+    label { display: block; font-size: 0.75rem; color: var(--muted); margin: 0.75rem 0 0.25rem; }
+    input {
+      width: 100%;
+      padding: 0.9rem 1rem;
+      border-radius: 12px;
+      border: 1px solid #444;
+      background: var(--card);
+      color: var(--text);
+      font-size: 1rem;
+    }
+    button {
+      width: 100%;
+      margin-top: 1.25rem;
+      padding: 1rem;
+      border: 0;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #ff7854, var(--accent));
+      color: white;
+      font-weight: 700;
+      font-size: 1rem;
+    }
+    .err { color: #ff8a8a; min-height: 1.2rem; font-size: 0.85rem; margin-top: 0.5rem; }
+    .card {
+      height: 55vh;
+      border-radius: 20px;
+      background: linear-gradient(160deg, #5a3a4a, var(--card));
+      display: flex;
+      align-items: flex-end;
+      padding: 1.25rem;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.35);
+      touch-action: none;
+      user-select: none;
+    }
+    .hint { margin-top: 1rem; color: var(--muted); font-size: 0.8rem; text-align: center; }
+    #deck { display: none; }
+    body.logged-in #login { display: none; }
+    body.logged-in #deck { display: block; }
+  </style>
+</head>
+<body>
+  <h1>Mock Tinder</h1>
+  <p class="sub">Fixture UI for mobileio QA — fake credentials only.<br/>Never use real accounts here.</p>
+
+  <section id="login">
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="off" placeholder="bs@example.com" />
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="off" placeholder="fake-password-not-real" />
+    <button id="loginBtn" type="button">Log in</button>
+    <p class="err" id="err"></p>
+  </section>
+
+  <section id="deck">
+    <div class="card" id="card">Swipe left / right<br/><strong id="swipeCount">0</strong> swipes</div>
+    <p class="hint">mobile.swipe drives this card. Logged in as <span id="who"></span>.</p>
+  </section>
+
+  <script>
+    const FAKE_EMAIL = "bs@example.com";
+    const FAKE_PASS = "fake-password-not-real";
+    const err = document.getElementById("err");
+    const card = document.getElementById("card");
+    let swipes = 0;
+    let startX = null;
+
+    document.getElementById("loginBtn").onclick = () => {
+      const email = document.getElementById("email").value.trim();
+      const pass = document.getElementById("password").value;
+      if (email === FAKE_EMAIL && pass === FAKE_PASS) {
+        document.body.classList.add("logged-in");
+        document.getElementById("who").textContent = email;
+        err.textContent = "";
+      } else {
+        err.textContent = "Use fake creds: bs@example.com / fake-password-not-real";
+      }
+    };
+
+    function bump() {
+      swipes += 1;
+      document.getElementById("swipeCount").textContent = String(swipes);
+      card.style.transform = "";
+    }
+
+    card.addEventListener("pointerdown", (e) => { startX = e.clientX; card.setPointerCapture(e.pointerId); });
+    card.addEventListener("pointermove", (e) => {
+      if (startX == null) return;
+      const dx = e.clientX - startX;
+      card.style.transform = `translateX(${dx}px) rotate(${dx / 40}deg)`;
+    });
+    card.addEventListener("pointerup", (e) => {
+      if (startX == null) return;
+      const dx = e.clientX - startX;
+      startX = null;
+      if (Math.abs(dx) > 80) bump();
+      else card.style.transform = "";
+    });
+  </script>
+</body>
+</html>
