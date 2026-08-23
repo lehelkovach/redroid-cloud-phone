@@ -54,6 +54,83 @@ curl http://localhost:8080/health
 
 ## Endpoints
 
+### UI Read Operations (`api/server.py`)
+
+These are the endpoints an LLM agent should reach for first: they turn the
+screen into named elements, so the agent taps a labeled control instead of
+guessing coordinates off a screenshot.
+
+#### GET /device/ui
+Current window hierarchy as labeled, tappable elements (from `uiautomator dump`).
+
+**Query Parameters:**
+- `interactive_only=1` — keep only actionable nodes (clickable / editable /
+  long-clickable / checkable / scrollable)
+- `include_xml=1` — also return the raw uiautomator XML
+
+**Response:**
+```json
+{
+  "success": true,
+  "count": 3,
+  "rotation": "0",
+  "focus": "mCurrentFocus=Window{... org.chromium.webview_shell/...WebViewBrowserActivity}",
+  "elements": [
+    {
+      "index": 4,
+      "class": "android.widget.EditText",
+      "resource_id": "org.chromium.webview_shell:id/url_field",
+      "text": "about:blank",
+      "content_desc": "",
+      "package": "org.chromium.webview_shell",
+      "label": "about:blank",
+      "bounds": {"x1": 0, "y1": 74, "x2": 1106, "y2": 146, "width": 1106, "height": 72},
+      "center": {"x": 553, "y": 110},
+      "clickable": true, "editable": true, "enabled": true, "focused": true,
+      "checkable": false, "checked": false, "scrollable": false,
+      "selected": false, "password": false
+    }
+  ]
+}
+```
+
+`label` is the first of `text`, `content-desc`, the short `resource-id`, or the
+class name — a single field the agent can match on. `center` is the tap point.
+
+Returns `503` with `success: false` and an empty `elements` list when the dump
+cannot be taken (no device attached, or `uiautomator` never reached idle).
+
+**Agent Tool Definition:**
+```yaml
+name: read_ui
+description: Read the current screen as labeled UI elements with tap coordinates
+parameters:
+  interactive_only: Only return elements that can be tapped or typed into
+returns:
+  elements: List of elements with label, resource_id, bounds, center, flags
+  focus: Currently focused window/activity
+```
+
+Typical agent loop: `GET /device/ui?interactive_only=1` → pick the element whose
+`label` matches the goal → `POST /device/input {"type":"tap", ...element.center}`
+→ `POST /device/input {"type":"text", ...}` → `GET /device/ui` to confirm the
+value landed.
+
+---
+
+#### GET /device/focus
+Focused window/activity.
+
+```json
+{"success": true, "focus": "mCurrentFocus=Window{... com.android.settings/...Settings}"}
+```
+
+Prefer this over `POST /adb/shell` with a pipe: `adb shell "dumpsys window | head"`
+kills the upstream process on the closed pipe, so the piped form returns an empty
+string plus a spurious `grep: Invalid argument`.
+
+---
+
 ### Screen Operations
 
 #### GET /screen/info
@@ -319,6 +396,25 @@ List installed apps.
     "count": 2
   }
 }
+```
+
+---
+
+#### POST /apps/{package}/start
+Launch an app (`api/server.py`; `api/agent_api.py` names the same thing `/launch`).
+
+Returns `404` with `success: false` when the package has no launchable activity —
+`com.android.vending` on an image without GMS, for example. Earlier builds
+reported `success: true` with `"activity": "No activity found"`, which made a
+missing Play Store look like a successful launch.
+
+**Example:**
+```
+POST /apps/com.android.settings/start
+→ {"success": true, "activity": "com.android.settings/.Settings"}
+
+POST /apps/com.android.vending/start
+→ 404 {"success": false, "error": "no launchable activity for com.android.vending (not installed?)"}
 ```
 
 ---

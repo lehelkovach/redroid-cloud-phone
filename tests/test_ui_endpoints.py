@@ -76,6 +76,29 @@ def main():
         if "success" not in r.json():
             print(f"ui/screen missing success: {r.json()}", file=sys.stderr); return 1
 
+        # element-level read: no device here, so it must fail loudly (503) with
+        # an empty element list rather than pretend the screen is empty.
+        r = requests.get(f"{base}/device/ui", timeout=20)
+        body = r.json()
+        if r.status_code != 503 or body.get("success") is not False:
+            print(f"device/ui should 503 without a device: {r.status_code} {body}",
+                  file=sys.stderr); return 1
+        for key in ("elements", "count", "error"):
+            if key not in body:
+                print(f"device/ui missing {key}: {body}", file=sys.stderr); return 1
+
+        r = requests.get(f"{base}/device/focus", timeout=10)
+        if r.status_code != 200 or "focus" not in r.json():
+            print(f"device/focus wrong: {r.status_code} {r.text}", file=sys.stderr); return 1
+
+        # A package with no launchable activity must report failure, not a
+        # phantom success (this is what hid the missing Play Store).
+        r = requests.post(f"{base}/apps/com.android.vending/start", timeout=20)
+        body = r.json()
+        if r.status_code not in (404, 502) or body.get("success") is not False:
+            print(f"apps/start should fail for unlaunchable package: "
+                  f"{r.status_code} {body}", file=sys.stderr); return 1
+
         print("Control API UI commandlet endpoints test passed.")
         return 0
     finally:

@@ -1,5 +1,11 @@
 # Android ARM Cloud Phone (OCI ARM64)
 
+> **Runtime reality check:** the deployed lab runs **Redroid in Docker**, not
+> Cuttlefish — OCI `VM.Standard.A1.Flex` exposes no `/dev/kvm`, so Cuttlefish
+> cannot boot there. `docs/MOBILE_LAB_STATE.md` records the measured state of
+> the live lab (services, auth, firewall, UI-read options, known gaps); the
+> `CUTTLEFISH_*.md` docs below describe the design target.
+
 This repository is now focused on a single stack:
 
 - Cuttlefish Android on OCI ARM64
@@ -98,6 +104,7 @@ android-arm-cloud-phone/
 
 ## Documentation
 
+- `docs/MOBILE_LAB_STATE.md` — measured state of the live lab (start here)
 - `docs/DEPLOYMENT.md`
 - `docs/CUTTLEFISH_PHASE1.md`
 - `docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md`
