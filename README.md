@@ -15,6 +15,7 @@ This repository is now focused on a single stack:
 - Naming is now generalized for runtime swap flexibility (`android-arm-cloud-phone`).
 - Default SSH key naming is `~/.ssh/android_arm_cloud_phone_oci(.pub)`.
 - Clean-machine recovery is documented in `docs/CLEANROOM_BOOTSTRAP.md`.
+- **GApps / Play Services are required for useful Mobile IO and are missing on tip** — see [`docs/GAPPS.md`](docs/GAPPS.md). Spoof props ≠ GMS.
 
 ## Canonical commands
 
