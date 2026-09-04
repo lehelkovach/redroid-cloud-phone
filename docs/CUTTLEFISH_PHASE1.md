@@ -1,5 +1,7 @@
 # Cuttlefish Phase 1 (OCI ARM64 PoC)
 
+Cuttlefish is the **ingest** runtime (virtual camera/mic). GApps/Play phones are **Redroid** — see [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md). Do not bake Play into this image.
+
 This phase proves Cuttlefish can run on OCI ARM64 with:
 
 - host virtualization enabled (`/dev/kvm`)

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-Orchestrator service for Cuttlefish cloud phone instances.
+Orchestrator for cloud phone instances.
+
+Runtimes (see docs/RUNTIME-SPLIT.md):
+- redroid: Docker Android phones with GApps (Play / mobile IO)
+- oci/cuttlefish: KVM ingest VMs (nginx-rtmp + virtual camera/mic)
+- mock: in-process fake Control API target
 
 Features:
-- Provision instance on-demand (mock or OCI via deploy-from-golden.sh)
-- Queue operations (login flow or custom steps)
-- Relay commands to Control API
+- Provision on-demand (mock, redroid-up.sh, or OCI golden)
+- One-phone-per-user sessions (Playwright-like acquire/release)
+- Queue operations and relay to Control API
 """
 
 import json
@@ -31,7 +36,8 @@ logging.basicConfig(
 logger = logging.getLogger("orchestrator")
 
 # Config
-ORCH_DEPLOY_MODE = os.environ.get("ORCH_DEPLOY_MODE", "mock")  # mock | oci
+# mock | redroid | oci  (oci = Cuttlefish golden VMs for ingest)
+ORCH_DEPLOY_MODE = os.environ.get("ORCH_DEPLOY_MODE", "mock")
 ORCH_MOCK_API_URL = os.environ.get("ORCH_MOCK_API_URL", "http://127.0.0.1:8080")
 ORCH_API_TOKEN = os.environ.get("ORCH_API_TOKEN", "")
 ORCH_API_TIMEOUT = int(os.environ.get("ORCH_API_TIMEOUT", "30"))
@@ -42,6 +48,11 @@ ORCH_DEPLOY_SCRIPT = os.environ.get(
     "ORCH_DEPLOY_SCRIPT",
     str(Path(__file__).resolve().parents[1] / "scripts" / "deploy-from-golden.sh")
 )
+ORCH_REDROID_UP_SCRIPT = os.environ.get(
+    "ORCH_REDROID_UP_SCRIPT",
+    str(Path(__file__).resolve().parents[1] / "scripts" / "redroid-up.sh")
+)
+ORCH_REDROID_ADB_PORT_BASE = int(os.environ.get("ORCH_REDROID_ADB_PORT_BASE", "5555"))
 ORCH_OCI_PROFILE = os.environ.get("ORCH_OCI_PROFILE", "DEFAULT")
 ORCH_OCI_CONFIG = os.environ.get("ORCH_OCI_CONFIG", str(Path.home() / ".oci" / "config"))
 ORCH_OCI_AUTH = os.environ.get("ORCH_OCI_AUTH", "security_token")
@@ -53,6 +64,12 @@ _ops = {}
 _ops_lock = threading.Lock()
 _leases = {}
 _leases_lock = threading.Lock()
+_user_sessions = {}
+_user_sessions_lock = threading.Lock()
+_adb_port_lock = threading.Lock()
+_next_adb_port = ORCH_REDROID_ADB_PORT_BASE
+
+
 def _require_auth():
     if not ORCH_API_TOKEN:
         return None
@@ -113,30 +130,52 @@ def _is_lease_valid(instance_id, owner=None):
     return True
 
 
-def _control_headers():
+def _control_headers(instance=None):
     headers = {"Content-Type": "application/json"}
     if ORCH_API_TOKEN:
         headers["Authorization"] = f"Bearer {ORCH_API_TOKEN}"
+    adb = (instance or {}).get("adb_connect")
+    if adb:
+        headers["X-Cloud-Phone-Adb"] = adb
     return headers
 
 
-def _control_post(api_url: str, path: str, payload=None):
+def _control_post(api_url: str, path: str, payload=None, instance=None):
     url = f"{api_url}{path}"
     logger.info("Control POST %s payload=%s", url, payload)
-    resp = requests.post(url, json=payload, headers=_control_headers(), timeout=ORCH_API_TIMEOUT)
+    resp = requests.post(
+        url, json=payload, headers=_control_headers(instance), timeout=ORCH_API_TIMEOUT
+    )
     resp.raise_for_status()
     return resp.json()
 
 
-def _control_get(api_url: str, path: str):
+def _control_get(api_url: str, path: str, instance=None):
     url = f"{api_url}{path}"
     logger.info("Control GET %s", url)
-    resp = requests.get(url, headers=_control_headers(), timeout=ORCH_API_TIMEOUT)
+    resp = requests.get(url, headers=_control_headers(instance), timeout=ORCH_API_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
 
-def _create_instance_record(api_url: str, name: str):
+def _runtime_for_mode(mode=None):
+    mode = mode or ORCH_DEPLOY_MODE
+    if mode == "redroid":
+        return "redroid"
+    if mode == "oci":
+        return "cuttlefish"
+    return "mock"
+
+
+def _allocate_adb_port():
+    global _next_adb_port
+    with _adb_port_lock:
+        port = _next_adb_port
+        _next_adb_port += 1
+        return port
+
+
+def _create_instance_record(api_url: str, name: str, runtime=None, adb_connect=None, extra=None):
     inst_id = uuid.uuid4().hex
     record = {
         "id": inst_id,
@@ -145,12 +184,46 @@ def _create_instance_record(api_url: str, name: str):
         "created_at": time.time(),
         "last_used": time.time(),
         "mode": ORCH_DEPLOY_MODE,
+        "runtime": runtime or _runtime_for_mode(),
+        "adb_connect": adb_connect,
         "instance_ocid": None,
+        "gapps": None,
     }
+    if extra:
+        record.update(extra)
     with _instances_lock:
         _instances[inst_id] = record
-    logger.info("Instance registered id=%s name=%s api_url=%s mode=%s", inst_id, name, api_url, ORCH_DEPLOY_MODE)
+    logger.info(
+        "Instance registered id=%s name=%s api_url=%s mode=%s runtime=%s adb=%s",
+        inst_id, name, api_url, ORCH_DEPLOY_MODE, record["runtime"], adb_connect,
+    )
     return record
+
+
+def _provision_redroid():
+    port = _allocate_adb_port()
+    name = f"{ORCH_INSTANCE_NAME_PREFIX}-{port}"
+    cmd = [
+        ORCH_REDROID_UP_SCRIPT,
+        "--name", name,
+        "--adb-port", str(port),
+        "--json",
+    ]
+    if os.environ.get("ORCH_REDROID_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        cmd.append("--dry-run")
+    logger.info("Provisioning Redroid container: %s", " ".join(cmd))
+    out = subprocess.check_output(cmd, text=True)
+    line = out.strip().splitlines()[-1] if out.strip() else "{}"
+    data = json.loads(line)
+    adb = data.get("adb_connect") or f"127.0.0.1:{port}"
+    api_url = os.environ.get("ORCH_REDROID_API_URL", ORCH_MOCK_API_URL)
+    return _create_instance_record(
+        api_url,
+        name,
+        runtime="redroid",
+        adb_connect=adb,
+        extra={"container": data.get("name"), "image": data.get("image")},
+    )
 
 
 def _provision_instance():
@@ -159,9 +232,17 @@ def _provision_instance():
             raise RuntimeError(f"Instance limit reached (ORCH_MAX_INSTANCES={ORCH_MAX_INSTANCES})")
 
     if ORCH_DEPLOY_MODE == "mock":
-        name = f"{ORCH_INSTANCE_NAME_PREFIX}-mock"
+        name = f"{ORCH_INSTANCE_NAME_PREFIX}-mock-{len(_instances) + 1}"
         logger.info("Mock provisioning instance -> %s", ORCH_MOCK_API_URL)
-        return _create_instance_record(ORCH_MOCK_API_URL, name)
+        return _create_instance_record(
+            ORCH_MOCK_API_URL,
+            name,
+            runtime="mock",
+            adb_connect="mock://phone",
+        )
+
+    if ORCH_DEPLOY_MODE == "redroid":
+        return _provision_redroid()
 
     if ORCH_DEPLOY_MODE != "oci":
         raise RuntimeError(f"Unsupported ORCH_DEPLOY_MODE: {ORCH_DEPLOY_MODE}")
@@ -220,7 +301,7 @@ def _get_or_create_instance(instance_id=None):
     return _provision_instance()
 
 
-def _run_steps(api_url: str, steps):
+def _run_steps(api_url: str, steps, instance=None):
     results = []
     for step in steps:
         action = step.get("action")
@@ -229,17 +310,23 @@ def _run_steps(api_url: str, steps):
             package = step.get("package")
             if not package:
                 raise ValueError("start_app requires package")
-            results.append(_control_post(api_url, f"/apps/{package}/start"))
+            results.append(_control_post(api_url, f"/apps/{package}/start", instance=instance))
         elif action == "input_text":
             text = step.get("text", "")
-            results.append(_control_post(api_url, "/device/input", {"type": "text", "text": text}))
+            results.append(_control_post(
+                api_url, "/device/input", {"type": "text", "text": text}, instance=instance
+            ))
         elif action == "key":
             keycode = int(step.get("keycode", 66))
-            results.append(_control_post(api_url, "/device/input", {"type": "key", "keycode": keycode}))
+            results.append(_control_post(
+                api_url, "/device/input", {"type": "key", "keycode": keycode}, instance=instance
+            ))
         elif action == "tap":
             x = int(step.get("x", 500))
             y = int(step.get("y", 500))
-            results.append(_control_post(api_url, "/device/input", {"type": "tap", "x": x, "y": y}))
+            results.append(_control_post(
+                api_url, "/device/input", {"type": "tap", "x": x, "y": y}, instance=instance
+            ))
         elif action == "sleep_ms":
             time.sleep(int(step.get("duration", 500)) / 1000.0)
             results.append({"success": True, "sleep_ms": step.get("duration", 500)})
@@ -285,13 +372,13 @@ def _run_operation(op_id, payload):
         logger.info("Operation started id=%s payload=%s", op_id, payload)
         instance = _get_or_create_instance(payload.get("instance_id"))
         api_url = instance["api_url"]
-        _control_get(api_url, "/health")
+        _control_get(api_url, "/health", instance=instance)
 
         if payload.get("steps"):
             steps = _normalize_steps(payload["steps"])
         else:
             steps = _build_login_steps(payload)
-        results = _run_steps(api_url, steps)
+        results = _run_steps(api_url, steps, instance=instance)
 
         with _ops_lock:
             op["status"] = "done"
@@ -359,9 +446,17 @@ def delete_instance(instance_id):
         inst = _instances.get(instance_id)
     if not inst:
         return jsonify({"error": "instance not found"}), 404
+    if inst.get("runtime") == "redroid" and inst.get("name"):
+        try:
+            subprocess.check_call(
+                [ORCH_REDROID_UP_SCRIPT, "--name", inst["name"], "--down"],
+            )
+        except Exception as exc:
+            logger.warning("redroid down failed: %s", exc)
     if inst.get("mode") != "oci":
         with _instances_lock:
             _instances.pop(instance_id, None)
+        _clear_lease(instance_id)
         return jsonify({"success": True, "message": "instance removed"}), 200
 
     try:
@@ -405,7 +500,7 @@ def phone_status(instance_id):
     inst, err = _require_instance(instance_id)
     if err:
         return err
-    data = _control_get(inst["api_url"], "/status")
+    data = _control_get(inst["api_url"], "/status", instance=inst)
     return jsonify(data)
 
 
@@ -414,7 +509,7 @@ def phone_health(instance_id):
     inst, err = _require_instance(instance_id)
     if err:
         return err
-    data = _control_get(inst["api_url"], "/health")
+    data = _control_get(inst["api_url"], "/health", instance=inst)
     return jsonify(data)
 
 
@@ -426,7 +521,7 @@ def phone_input(instance_id):
     data = request.get_json() or {}
     payload = {"type": data.get("type", "tap")}
     payload.update(data)
-    result = _control_post(inst["api_url"], "/device/input", payload)
+    result = _control_post(inst["api_url"], "/device/input", payload, instance=inst)
     return jsonify(result)
 
 
@@ -435,7 +530,7 @@ def phone_screenshot(instance_id):
     inst, err = _require_instance(instance_id)
     if err:
         return err
-    data = _control_get(inst["api_url"], "/device/screenshot/base64")
+    data = _control_get(inst["api_url"], "/device/screenshot/base64", instance=inst)
     return jsonify(data)
 
 
@@ -445,7 +540,7 @@ def phone_job_submit(instance_id):
     if err:
         return err
     payload = request.get_json() or {}
-    data = _control_post(inst["api_url"], "/jobs", payload)
+    data = _control_post(inst["api_url"], "/jobs", payload, instance=inst)
     return jsonify(data), 202
 
 
@@ -454,13 +549,137 @@ def phone_job_poll(instance_id, job_id):
     inst, err = _require_instance(instance_id)
     if err:
         return err
-    data = _control_get(inst["api_url"], f"/jobs/{job_id}")
+    data = _control_get(inst["api_url"], f"/jobs/{job_id}", instance=inst)
     return jsonify(data)
+
+
+def _session_from_instance(owner_user_id, inst, ttl_seconds, purpose=None):
+    return {
+        "owner_user_id": owner_user_id,
+        "instance_id": inst["id"],
+        "api_url": inst.get("api_url"),
+        "adb_connect": inst.get("adb_connect"),
+        "runtime": inst.get("runtime") or _runtime_for_mode(),
+        "ttl_seconds": ttl_seconds,
+        "purpose": purpose,
+        "name": inst.get("name"),
+    }
+
+
+def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=False, purpose=None):
+    if not owner_user_id:
+        raise ValueError("owner_user_id required")
+    ttl_seconds = max(int(ttl_seconds), 10)
+
+    with _user_sessions_lock:
+        existing = _user_sessions.get(owner_user_id)
+        if existing:
+            inst_id = existing.get("instance_id")
+            if inst_id and _is_lease_valid(inst_id, owner=owner_user_id):
+                _set_lease(inst_id, owner_user_id, ttl_seconds)
+                existing["ttl_seconds"] = ttl_seconds
+                if purpose:
+                    existing["purpose"] = purpose
+                logger.info("Renewed session owner=%s instance=%s", owner_user_id, inst_id)
+                return existing, False
+
+    with _instances_lock:
+        free = None
+        held_by_other = False
+        for inst in _instances.values():
+            if _is_lease_valid(inst["id"], owner=owner_user_id):
+                free = inst
+                break
+            if _is_lease_valid(inst["id"]):
+                held_by_other = True
+                continue
+            if free is None:
+                free = inst
+
+    if free is None:
+        if provision or not held_by_other:
+            free = _provision_instance()
+        else:
+            raise RuntimeError("phone in use")
+
+    if _is_lease_valid(free["id"]) and not _is_lease_valid(free["id"], owner=owner_user_id):
+        raise RuntimeError("phone in use")
+
+    _set_lease(free["id"], owner_user_id, ttl_seconds)
+    sess = _session_from_instance(owner_user_id, free, ttl_seconds, purpose)
+    with _user_sessions_lock:
+        _user_sessions[owner_user_id] = sess
+    logger.info(
+        "Acquired session owner=%s instance=%s runtime=%s purpose=%s",
+        owner_user_id, free["id"], sess["runtime"], purpose,
+    )
+    return sess, True
+
+
+def _release_user_session(owner_user_id):
+    with _user_sessions_lock:
+        sess = _user_sessions.pop(owner_user_id, None)
+    if not sess:
+        return None
+    _clear_lease(sess.get("instance_id"))
+    logger.info("Released session owner=%s instance=%s", owner_user_id, sess.get("instance_id"))
+    return sess
+
+
+@app.route("/sessions", methods=["GET"])
+def list_sessions():
+    with _user_sessions_lock:
+        items = list(_user_sessions.values())
+    return jsonify({"count": len(items), "sessions": items})
+
+
+@app.route("/sessions", methods=["POST"])
+def create_session():
+    data = request.get_json() or {}
+    owner = data.get("owner_user_id") or data.get("owner") or data.get("user_id")
+    ttl = int(data.get("ttl_seconds") or data.get("ttl") or 3600)
+    provision = bool(data.get("provision"))
+    purpose = data.get("purpose")
+    try:
+        sess, created = _acquire_user_session(owner, ttl, provision=provision, purpose=purpose)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        status = 409 if "in use" in str(exc) else 500
+        return jsonify({"error": str(exc)}), status
+    return jsonify({"success": True, "session": sess, "created": created}), (201 if created else 200)
+
+
+@app.route("/sessions/<owner_user_id>", methods=["GET"])
+def get_session(owner_user_id):
+    with _user_sessions_lock:
+        sess = _user_sessions.get(owner_user_id)
+    if not sess:
+        return jsonify({"error": "session not found"}), 404
+    if sess.get("instance_id") and not _is_lease_valid(sess["instance_id"], owner=owner_user_id):
+        _release_user_session(owner_user_id)
+        return jsonify({"error": "session expired"}), 404
+    return jsonify(sess)
+
+
+@app.route("/sessions/<owner_user_id>", methods=["DELETE"])
+def delete_session(owner_user_id):
+    sess = _release_user_session(owner_user_id)
+    if not sess:
+        return jsonify({"error": "session not found"}), 404
+    return jsonify({"success": True, "released": sess})
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "instances": len(_instances), "max_instances": ORCH_MAX_INSTANCES})
+    return jsonify({
+        "status": "ok",
+        "instances": len(_instances),
+        "sessions": len(_user_sessions),
+        "max_instances": ORCH_MAX_INSTANCES,
+        "deploy_mode": ORCH_DEPLOY_MODE,
+        "runtime": _runtime_for_mode(),
+    })
 
 
 if __name__ == "__main__":

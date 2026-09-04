@@ -13,6 +13,7 @@ Enhanced API server for Cuttlefish cloud phone control including:
 
 import os
 import json
+import re
 import subprocess
 import shlex
 import time
@@ -58,9 +59,25 @@ _jobs_lock = threading.Lock()
 # Helpers
 # =============================================================================
 
+_ADB_TARGET_RE = re.compile(r"^[A-Za-z0-9._:\[\]-]+$")
+
+
+def current_adb_connect():
+    """Per-request serial (orchestrator multi-phone) or process default."""
+    hdr = ""
+    try:
+        hdr = (request.headers.get("X-Cloud-Phone-Adb") or "").strip()
+    except RuntimeError:
+        hdr = ""
+    if hdr and _ADB_TARGET_RE.match(hdr) and len(hdr) < 128:
+        return hdr
+    return ADB_CONNECT
+
+
 def run_adb(*args, timeout=30):
     """Run ADB command and return (success, stdout, stderr)"""
-    cmd = ["adb", "-s", ADB_CONNECT] + list(args)
+    target = current_adb_connect()
+    cmd = ["adb", "-s", target] + list(args)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         success = result.returncode == 0
@@ -85,13 +102,14 @@ def run_adb_shell(command, timeout=30):
 
 def ensure_adb_connected():
     """Ensure ADB is connected to device"""
+    target = current_adb_connect()
     success, out, _ = run_adb("devices")
-    if ADB_CONNECT in out and "device" in out:
+    if target in out and "device" in out:
         _state["connected"] = True
         return True
     
     # Try to connect
-    success, out, err = run_adb("connect", ADB_CONNECT)
+    success, out, err = run_adb("connect", target)
     if success and "connected" in out.lower():
         _state["connected"] = True
         return True
@@ -249,14 +267,33 @@ def _run_job(job_id, job_type, payload):
 # Health & Status Endpoints
 # =============================================================================
 
+def _gapps_status():
+    """Play/GMS packages. Spoof props do not count."""
+    mapping = {
+        "gms": "com.google.android.gms",
+        "play_store": "com.android.vending",
+        "gsf": "com.google.android.gsf",
+    }
+    found = {}
+    for key, pkg in mapping.items():
+        ok, stdout, _ = run_adb_shell(f"pm path {pkg}")
+        found[key] = bool(ok and "package:" in (stdout or ""))
+    found["ready"] = bool(found["gms"] and found["play_store"])
+    return found
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint"""
     connected = ensure_adb_connected()
+    gapps = _gapps_status() if connected else {
+        "gms": False, "play_store": False, "gsf": False, "ready": False,
+    }
     return jsonify({
         "status": "healthy" if connected else "degraded",
         "adb_connected": connected,
-        "adb_target": ADB_CONNECT,
+        "adb_target": current_adb_connect(),
+        "gapps": gapps,
         "state": _state
     })
 
@@ -283,7 +320,8 @@ def status():
         "battery": battery.split(":")[-1].strip() if battery else "unknown",
         "screen_state": "on" if "ON" in screen else "off" if screen else "unknown",
         "proxy": _state["proxy"],
-        "location": _state["location"]
+        "location": _state["location"],
+        "gapps": _gapps_status(),
     })
 
 # =============================================================================

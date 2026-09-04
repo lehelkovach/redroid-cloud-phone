@@ -1,0 +1,20 @@
+[Unit]
+Description=Redroid Android phone container (GApps / mobile IO)
+Documentation=docs/RUNTIME-SPLIT.md
+After=docker.service network-online.target
+Requires=docker.service
+PartOf=redroid-cloud-phone.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/redroid-cloud-phone
+Environment=REDROID_NAME=redroid
+Environment=ADB_PORT=5555
+ExecStart=/opt/cloud-phone-scripts/redroid-up.sh
+ExecStop=/opt/cloud-phone-scripts/redroid-up.sh --down
+TimeoutStartSec=180
+TimeoutStopSec=60
+
+[Install]
+WantedBy=redroid-cloud-phone.target

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Minimal CLI for Cuttlefish cloud phone operations.
+# CLI for Cuttlefish ingest hosts and Redroid GApps phones.
+# See docs/RUNTIME-SPLIT.md
 
 set -euo pipefail
 
@@ -8,29 +9,38 @@ SCRIPTS_DIR="$ROOT_DIR/scripts"
 
 usage() {
     cat <<'EOF'
-cloud-phone (cuttlefish-only)
+cloud-phone
+
+Cuttlefish = virtual camera/mic ingest (nginx-rtmp + v4l2 sinks).
+Redroid    = GApps phone containers for mobile IO. No camera HAL here.
 
 Usage:
   ./cloud-phone <command> [options]
 
-Commands:
+Cuttlefish (ingest):
   deploy            Create/reuse OCI host and install Cuttlefish stack
   deploy-golden     Deploy a single host from golden image
   deploy-fleet      Deploy multiple hosts from one golden image
   verify-ingest     Verify runtime + RTMP video/audio ingest
   create-golden     Create golden image from configured source instance
   prepare-golden    Prepare current host for image capture
+
+Redroid (GApps phones):
+  redroid-up        Start a Redroid container (Playwright-like phone)
+  redroid-down      Stop and remove a Redroid container
+  gapps-install     Install operator-supplied GApps zip into Redroid
+  gapps-check       Validate Play/GMS packages on ADB
+
+Control plane:
   api-run           Run control API locally
   orchestrator-run  Run orchestrator locally
   help              Show this help
 
 Examples:
+  ./cloud-phone redroid-up --name phone-1 --adb-port 5555
+  GAPPS_ZIP=/opt/gapps/gapps.zip ./cloud-phone gapps-install --name phone-1
   ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
-  ./cloud-phone deploy-golden --image-id <ocid> --name phone-1
-  ./cloud-phone deploy-fleet --image-id <ocid> --count 5 --parallel 2 --verify-ingest
   ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
-  ./cloud-phone api-run
-  ./cloud-phone orchestrator-run
 EOF
 }
 
@@ -61,6 +71,18 @@ case "$cmd" in
         ;;
     prepare-golden)
         run_script "$SCRIPTS_DIR/prepare-golden-image.sh" --platform cuttlefish "$@"
+        ;;
+    redroid-up)
+        run_script "$SCRIPTS_DIR/redroid-up.sh" "$@"
+        ;;
+    redroid-down)
+        run_script "$SCRIPTS_DIR/redroid-up.sh" --down "$@"
+        ;;
+    gapps-install)
+        run_script "$SCRIPTS_DIR/install-gapps-redroid.sh" "$@"
+        ;;
+    gapps-check)
+        run_script "$SCRIPTS_DIR/install-gapps-redroid.sh" --validate-only "$@"
         ;;
     api-run)
         python3 "$ROOT_DIR/api/server.py" "$@"

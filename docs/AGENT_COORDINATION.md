@@ -5,7 +5,15 @@ Agent-to-agent coordination is handled by a separate service:
 `https://github.com/lehelkovach/iac-bus`.
 
 See that repository for bus auth, endpoints, and deployment details.
-The orchestrator here only manages and routes to cloud phone instances.
+The orchestrator here manages Redroid GApps phones and Cuttlefish ingest VMs
+(see `docs/RUNTIME-SPLIT.md`). Playwright-like acquire:
+
+```bash
+curl -X POST http://<ORCH_IP>:8090/sessions \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"owner_user_id":"alice","purpose":"play","ttl_seconds":3600,"provision":true}'
+```
 
 ## Clean environment setup
 
