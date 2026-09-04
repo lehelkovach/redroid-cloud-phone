@@ -15,6 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="${REDROID_COMPOSE_FILE:-$PROJECT_ROOT/docker/redroid-compose.yml}"
 
+# shellcheck source=lib/log.sh
+source "$SCRIPT_DIR/lib/log.sh"
+LOG_TYPE=RDR
+
 NAME="${REDROID_NAME:-redroid}"
 ADB_PORT="${ADB_PORT:-5555}"
 IMAGE="${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}"
@@ -62,7 +66,7 @@ if [[ ! "$ADB_PORT" =~ ^[0-9]+$ ]] || [[ "$ADB_PORT" -lt 1 ]] || [[ "$ADB_PORT" 
     exit 1
 fi
 
-log() { echo "[redroid-up] $*" >&2; }
+log() { log_info "$*"; }
 
 emit_json() {
     local status="$1"

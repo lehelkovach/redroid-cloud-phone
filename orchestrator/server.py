@@ -14,9 +14,9 @@ Features:
 """
 
 import json
-import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -25,15 +25,21 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, request
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
+from cloudphone_logging import configure as _configure_logging  # noqa: E402
+
+try:
+    from orchestrator import procedures as proc
+except ImportError:  # running server.py directly
+    import procedures as proc
+
 app = Flask(__name__)
 
-# Logging
-LOG_LEVEL = os.environ.get("ORCH_LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-logger = logging.getLogger("orchestrator")
+# Logging — labeled so unified logs can be filtered by origin (see docs/LOGGING.md)
+LOG_LEVEL = os.environ.get("ORCH_LOG_LEVEL", os.environ.get("LOG_LEVEL", "INFO")).upper()
+logger = _configure_logging("orchestrator", log_type="ORC", level=LOG_LEVEL)
+redroid_logger = logger.bind("RDR")
+cvd_logger = logger.bind("CVD")
 
 # Config
 # mock | redroid | oci  (oci = Cuttlefish golden VMs for ingest)
@@ -211,7 +217,7 @@ def _provision_redroid():
     ]
     if os.environ.get("ORCH_REDROID_DRY_RUN", "").lower() in {"1", "true", "yes"}:
         cmd.append("--dry-run")
-    logger.info("Provisioning Redroid container: %s", " ".join(cmd))
+    redroid_logger.info("Provisioning container: %s", " ".join(cmd))
     out = subprocess.check_output(cmd, text=True)
     line = out.strip().splitlines()[-1] if out.strip() else "{}"
     data = json.loads(line)
@@ -252,7 +258,7 @@ def _provision_instance():
 
     name = f"{ORCH_INSTANCE_NAME_PREFIX}-{time.strftime('%Y%m%d-%H%M%S')}"
     cmd = [ORCH_DEPLOY_SCRIPT, "--image-id", ORCH_GOLDEN_IMAGE_ID, "--name", name, "--wait-check"]
-    logger.info("Provisioning instance via OCI: %s", " ".join(cmd))
+    cvd_logger.info("Provisioning instance via OCI: %s", " ".join(cmd))
     subprocess.check_call(cmd)
 
     info_path = Path(f"/tmp/instance-{name}.json")
@@ -452,7 +458,7 @@ def delete_instance(instance_id):
                 [ORCH_REDROID_UP_SCRIPT, "--name", inst["name"], "--down"],
             )
         except Exception as exc:
-            logger.warning("redroid down failed: %s", exc)
+            redroid_logger.warning("down failed: %s", exc)
     if inst.get("mode") != "oci":
         with _instances_lock:
             _instances.pop(instance_id, None)
@@ -551,6 +557,190 @@ def phone_job_poll(instance_id, job_id):
         return err
     data = _control_get(inst["api_url"], f"/jobs/{job_id}", instance=inst)
     return jsonify(data)
+
+
+def _build_adapters(instance):
+    """Wire the surfaces this orchestrator can actually reach.
+
+    `mobile` is always available (Control API). `web` and `chrome` are reached
+    through an agent-side driver URL; when unset the surface is simply absent,
+    so a procedure naming it fails validation instead of silently no-op'ing.
+    """
+    adapters = {
+        proc.MOBILE: proc.MobileAdapter(
+            control_post=_control_post_for_instance,
+            control_get=_control_get_for_instance,
+            instance=instance,
+        )
+    }
+
+    driver_url = os.environ.get("ORCH_WEB_DRIVER_URL", "")
+    if driver_url:
+        adapters[proc.WEB] = proc.WebAdapter(_remote_driver(driver_url, proc.WEB))
+
+    bridge_url = os.environ.get("ORCH_CHROME_BRIDGE_URL", "")
+    if bridge_url:
+        adapters[proc.CHROME] = proc.ChromeAdapter(_remote_driver(bridge_url, proc.CHROME))
+
+    if os.environ.get("ORCH_ENABLE_CONSOLE", "").lower() in {"1", "true", "yes"}:
+        adapters[proc.CONSOLE] = proc.ConsoleAdapter(_console_runner)
+
+    return adapters
+
+
+def _control_post_for_instance(path, payload=None, instance=None):
+    return _control_post(instance["api_url"], path, payload, instance=instance)
+
+
+def _control_get_for_instance(path, instance=None):
+    return _control_get(instance["api_url"], path, instance=instance)
+
+
+def _remote_driver(base_url, surface):
+    """POST the canonical step to an agent-side driver and return its JSON."""
+    def drive(action, step):
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/{surface}/step",
+            json={"action": action, "step": step},
+            headers=_control_headers(),
+            timeout=ORCH_API_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    return drive
+
+
+def _console_runner(action, step):
+    if action == "read":
+        return {"success": True, "stdout": ""}
+    completed = subprocess.run(
+        step.get("command", ""),
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=int(step.get("timeout_s", 60)),
+    )
+    return {
+        "success": completed.returncode == 0,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+        "exit_code": completed.returncode,
+    }
+
+
+@app.route("/procedures/surfaces", methods=["GET"])
+def procedure_surfaces():
+    adapters = _build_adapters({"api_url": ORCH_MOCK_API_URL})
+    return jsonify({
+        "surfaces": proc.surface_capabilities(adapters),
+        "actions": sorted(proc.ACTIONS),
+        "sensitive": sorted(proc.SENSITIVE_ACTIONS),
+    })
+
+
+@app.route("/procedures/validate", methods=["POST"])
+def procedure_validate():
+    data = request.get_json() or {}
+    instance = None
+    if data.get("instance_id"):
+        instance, err = _require_instance(data["instance_id"])
+        if err:
+            return err
+    adapters = _build_adapters(instance or {"api_url": ORCH_MOCK_API_URL})
+    try:
+        steps = proc.validate_procedure(
+            data.get("steps") or [],
+            adapters,
+            default_surface=data.get("surface", proc.MOBILE),
+            approve=bool(data.get("approve")),
+        )
+    except proc.ApprovalRequiredError as exc:
+        return jsonify({"valid": False, "needs_approval": True, "error": str(exc)}), 200
+    except proc.ProcedureError as exc:
+        return jsonify({"valid": False, "error": str(exc)}), 400
+    return jsonify({"valid": True, "steps": steps, "count": len(steps)})
+
+
+def _run_procedure_operation(op_id, payload):
+    with _ops_lock:
+        op = _ops.get(op_id)
+        if not op:
+            return
+        op["status"] = "running"
+        op["updated_at"] = time.time()
+
+    try:
+        instance = _get_or_create_instance(payload.get("instance_id"))
+        adapters = _build_adapters(instance)
+        steps = payload.get("steps")
+        if not steps:
+            steps = proc.login_procedure(
+                payload.get("app_package") or payload.get("url"),
+                (payload.get("login") or {}).get("username", ""),
+                (payload.get("login") or {}).get("password", ""),
+                surface=payload.get("surface", proc.MOBILE),
+                password_label=(payload.get("login") or {}).get("password_label"),
+            )
+        outcome = proc.run_procedure(
+            steps,
+            adapters,
+            default_surface=payload.get("surface", proc.MOBILE),
+            approve=bool(payload.get("approve")),
+            logger=logger,
+        )
+        with _ops_lock:
+            op["status"] = "done" if outcome["status"] == "done" else "failed"
+            op["result"] = {"instance": instance, **outcome}
+            op["error"] = outcome.get("error")
+            op["updated_at"] = time.time()
+        logger.info("Procedure %s finished status=%s", op_id, op["status"])
+    except proc.ApprovalRequiredError as exc:
+        with _ops_lock:
+            op["status"] = "needs_approval"
+            op["error"] = str(exc)
+            op["updated_at"] = time.time()
+    except Exception as exc:
+        logger.exception("Procedure failed")
+        with _ops_lock:
+            op["status"] = "failed"
+            op["error"] = str(exc)
+            op["updated_at"] = time.time()
+
+
+@app.route("/procedures", methods=["POST"])
+def create_procedure_run():
+    payload = request.get_json() or {}
+    if not payload.get("steps") and not (payload.get("app_package") or payload.get("url")):
+        return jsonify({"error": "steps or app_package/url required"}), 400
+
+    op_id = uuid.uuid4().hex
+    with _ops_lock:
+        _ops[op_id] = {
+            "id": op_id,
+            "kind": "procedure",
+            "status": "queued",
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "payload": payload,
+        }
+    logger.info("Queued procedure id=%s surface=%s", op_id, payload.get("surface", proc.MOBILE))
+
+    if payload.get("sync"):
+        _run_procedure_operation(op_id, payload)
+        with _ops_lock:
+            return jsonify(_ops[op_id])
+
+    threading.Thread(target=_run_procedure_operation, args=(op_id, payload), daemon=True).start()
+    return jsonify({"procedure_id": op_id, "status": "queued"}), 202
+
+
+@app.route("/procedures/<op_id>", methods=["GET"])
+def get_procedure_run(op_id):
+    with _ops_lock:
+        op = _ops.get(op_id)
+    if not op:
+        return jsonify({"error": "procedure not found"}), 404
+    return jsonify(op)
 
 
 def _session_from_instance(owner_user_id, inst, ttl_seconds, purpose=None):

@@ -34,11 +34,13 @@ Redroid (GApps phones):
 Control plane:
   api-run           Run control API locally
   orchestrator-run  Run orchestrator locally
+  test              Run test suites (--coverage, --suite, --list, --live)
   help              Show this help
 
 Examples:
   ./cloud-phone redroid-up --name phone-1 --adb-port 5555
   GAPPS_ZIP=/opt/gapps/gapps.zip ./cloud-phone gapps-install --name phone-1
+  ./cloud-phone test --coverage
   ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
   ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
 EOF
@@ -83,6 +85,9 @@ case "$cmd" in
         ;;
     gapps-check)
         run_script "$SCRIPTS_DIR/install-gapps-redroid.sh" --validate-only "$@"
+        ;;
+    test)
+        run_script "$SCRIPTS_DIR/run-tests.sh" "$@"
         ;;
     api-run)
         python3 "$ROOT_DIR/api/server.py" "$@"

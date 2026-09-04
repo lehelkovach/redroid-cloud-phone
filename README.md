@@ -53,6 +53,32 @@ pip install -r api/requirements.txt -r orchestrator/requirements.txt
 ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
 ```
 
+## Procedures — one script, four surfaces
+
+A procedure is a list of steps in one shared vocabulary; a surface adapter
+decides how each step reaches the world (`mobile`, `web`, `chrome`, `console`).
+Unsupported actions fail validation before step 1 touches a device, and
+`install` / `submit` / `purchase` stay approval-gated.
+
+```bash
+curl -s $ORCH/procedures/surfaces | jq        # what each surface can do
+curl -X POST $ORCH/procedures -d '{"sync":true,"steps":[...]}'
+```
+
+Details: [`docs/PROCEDURES.md`](docs/PROCEDURES.md).
+
+## Tests
+
+```bash
+./cloud-phone test                 # all offline suites — no device, no OCI
+./cloud-phone test --coverage      # + coverage, fails under 60%
+./cloud-phone test --list
+```
+
+Includes a full mobile e2e scenario (proxy → signup → capped swipe → match →
+hour-delayed, approval-gated follow-up) against a simulated phone.
+[`docs/TESTING.md`](docs/TESTING.md) · [`docs/LOGGING.md`](docs/LOGGING.md).
+
 ## Project structure
 
 ```text
@@ -60,9 +86,14 @@ android-arm-cloud-phone/
 ├── cloud-phone
 ├── api/
 ├── orchestrator/
+├── api/cloudphone_logging.py      # labeled logging
+├── orchestrator/procedures.py     # surface-agnostic steps
+├── orchestrator/rules.py          # swipe budget, follow-up timing
 ├── docker/redroid-compose.yml
 ├── scripts/redroid-up.sh
 ├── scripts/install-gapps-redroid.sh
+├── scripts/run-tests.sh
+├── scripts/lib/log.sh
 ├── systemd/redroid-container.service
 ├── systemd/cuttlefish-*.service
 └── docs/RUNTIME-SPLIT.md
@@ -72,6 +103,9 @@ android-arm-cloud-phone/
 
 - `docs/RUNTIME-SPLIT.md` — why two images
 - `docs/GAPPS.md` — Play install on Redroid only
+- `docs/PROCEDURES.md` — step vocabulary, surfaces, approval gates
+- `docs/TESTING.md` — suites, coverage, the mobile e2e scenario
+- `docs/LOGGING.md` — label scheme and filtering
 - `docs/DEPLOYMENT.md` — Cuttlefish ingest deploy
 - `docs/CUTTLEFISH_PHASE1.md` / `CUTTLEFISH_PHASE2_RTMP_BRIDGE.md` / `CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
 - `docs/API_REFERENCE.md` / `docs/AGENT_COORDINATION.md`

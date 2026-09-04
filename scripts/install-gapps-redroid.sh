@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+_GAPPS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/log.sh
+source "$_GAPPS_SCRIPT_DIR/lib/log.sh"
+LOG_TYPE=GAP
+
 NAME="${REDROID_NAME:-redroid}"
 ADB_SERIAL="${ADB_CONNECT:-127.0.0.1:5555}"
 GAPPS_DIR="${GAPPS_DIR:-/opt/gapps}"
@@ -42,8 +47,7 @@ Options:
 EOF
 }
 
-log_info() { echo "[gapps] $*"; }
-log_err() { echo "[gapps] ERROR: $*" >&2; }
+log_err() { log_error "$*"; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

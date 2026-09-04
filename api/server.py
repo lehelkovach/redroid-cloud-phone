@@ -27,13 +27,15 @@ from flask import Flask, request, jsonify, Response
 
 app = Flask(__name__)
 
-# Logging
+# Logging — labeled so unified logs can be filtered by origin (see docs/LOGGING.md)
+try:
+    from cloudphone_logging import configure as _configure_logging
+except ImportError:  # running as a package (tests, orchestrator imports)
+    from api.cloudphone_logging import configure as _configure_logging
+
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-logger = logging.getLogger("control_api")
+logger = _configure_logging("control_api", log_type="API", level=LOG_LEVEL)
+adb_logger = logger.bind("ADB")
 
 # Configuration
 ADB_CONNECT = os.environ.get("ADB_CONNECT", "127.0.0.1:5555")
@@ -85,15 +87,17 @@ def run_adb(*args, timeout=30):
         stderr = result.stderr.strip()
         if not success:
             _state["last_adb_error"] = stderr or stdout or "adb command failed"
-            logger.warning("ADB command failed: %s | stderr=%s", " ".join(cmd), _state["last_adb_error"])
+            adb_logger.warning("failed: %s | stderr=%s", " ".join(cmd), _state["last_adb_error"])
+        else:
+            adb_logger.debug("ok: %s", " ".join(cmd))
         return success, stdout, stderr
     except subprocess.TimeoutExpired:
         _state["last_adb_error"] = "adb command timed out"
-        logger.warning("ADB command timed out: %s", " ".join(cmd))
+        adb_logger.warning("timed out: %s", " ".join(cmd))
         return False, "", "Command timed out"
     except Exception as e:
         _state["last_adb_error"] = str(e)
-        logger.exception("ADB command exception: %s", " ".join(cmd))
+        adb_logger.exception("exception: %s", " ".join(cmd))
         return False, "", str(e)
 
 def run_adb_shell(command, timeout=30):
@@ -117,7 +121,7 @@ def ensure_adb_connected():
     _state["connected"] = False
     if err or out:
         _state["last_adb_error"] = err or out
-        logger.warning("ADB connect failed: %s", _state["last_adb_error"])
+        adb_logger.warning("connect failed: %s", _state["last_adb_error"])
     return False
 
 def require_auth(f):
@@ -181,11 +185,109 @@ def _do_screen_action(action):
     return {"success": True, "action": action}
 
 
+_BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+
+
+def _parse_ui_elements(xml_text):
+    """Flatten a `uiautomator dump` hierarchy into labeled, tappable elements.
+
+    Coordinates come back as the centre of the node's bounds, because tapping a
+    corner lands outside rounded or padded widgets.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    elements = []
+    for node in root.iter("node"):
+        attrib = node.attrib
+        label = (attrib.get("text") or attrib.get("content-desc") or "").strip()
+        resource_id = attrib.get("resource-id", "")
+        if not label and not resource_id:
+            continue
+        match = _BOUNDS_RE.match(attrib.get("bounds", ""))
+        if not match:
+            continue
+        left, top, right, bottom = (int(g) for g in match.groups())
+        elements.append({
+            "label": label,
+            "resource_id": resource_id,
+            "clickable": attrib.get("clickable") == "true",
+            "focused": attrib.get("focused") == "true",
+            "password": attrib.get("password") == "true",
+            "x": (left + right) // 2,
+            "y": (top + bottom) // 2,
+            "bounds": [left, top, right, bottom],
+        })
+    return elements
+
+
+def _read_ui_tree():
+    ensure_adb_connected()
+    ok, stdout, stderr = run_adb_shell("uiautomator dump /dev/tty")
+    if not ok:
+        return {"success": False, "error": stderr or stdout or "uiautomator dump failed"}
+    start = stdout.find("<?xml")
+    if start == -1:
+        start = stdout.find("<hierarchy")
+    if start == -1:
+        return {"success": False, "error": "no UI hierarchy in dump output"}
+    elements = _parse_ui_elements(stdout[start:])
+    return {"success": True, "count": len(elements), "elements": elements}
+
+
+def _find_by_label(elements, label):
+    """Pick the element a human would mean by `label`.
+
+    Clickability outranks exactness: a form's caption ("Email") often matches
+    the query more exactly than the input beside it, but tapping the caption
+    does nothing. Among equally tappable candidates, the exact label wins so
+    "Sign up" does not select "Sign up with Google".
+    """
+    wanted = str(label or "").strip().lower()
+    if not wanted:
+        return None
+
+    candidates = []
+    for element in elements:
+        text = element["label"].lower()
+        resource_id = element["resource_id"].lower()
+        exact = text == wanted
+        if not (exact or wanted in text or wanted in resource_id):
+            continue
+        candidates.append((element["clickable"], exact, element))
+
+    if not candidates:
+        return None
+    # Stable sort keeps document order among otherwise equal candidates.
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2]
+
+
+def _do_tap_label(label):
+    tree = _read_ui_tree()
+    if not tree.get("success"):
+        return tree
+    element = _find_by_label(tree["elements"], label)
+    if not element:
+        available = [e["label"] for e in tree["elements"] if e["label"]][:12]
+        return {"success": False, "error": f"no element labeled '{label}'",
+                "available": available}
+    run_adb_shell(f"input tap {element['x']} {element['y']}")
+    return {"success": True, "type": "tap_label", "label": label,
+            "x": element["x"], "y": element["y"], "matched": element}
+
+
 def _do_device_input(data):
     input_type = data.get("type", "tap")
     if input_type == "tap":
         x, y = data.get("x", 500), data.get("y", 500)
         run_adb_shell(f"input tap {x} {y}")
+    elif input_type == "tap_label":
+        return _do_tap_label(data.get("label"))
     elif input_type == "swipe":
         x1, y1 = data.get("x1", 100), data.get("y1", 100)
         x2, y2 = data.get("x2", 500), data.get("y2", 500)
@@ -678,6 +780,13 @@ def device_input():
     """
     data = request.get_json() or {}
     return jsonify(_do_device_input(data))
+
+@app.route("/device/ui", methods=["GET", "POST"])
+@require_auth
+def device_ui():
+    """Labeled elements with tap centres, so procedures address by label."""
+    result = _read_ui_tree()
+    return jsonify(result), (200 if result.get("success") else 500)
 
 @app.route("/device/screenshot", methods=["GET"])
 @require_auth

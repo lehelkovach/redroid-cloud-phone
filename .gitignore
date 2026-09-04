@@ -79,6 +79,10 @@ dist/
 test-results.log
 deploy-*.log
 *.log
+.test-reports/
+.coverage
+coverage.xml
+htmlcov/
 
 # OS Files
 .DS_Store
