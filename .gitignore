@@ -19,6 +19,11 @@ oci_config
 .env.local
 .env.*.local
 
+# Operator-supplied GApps blobs (never commit)
+gapps.zip
+**/gapps.zip
+/opt/gapps/
+
 # Instance-specific (may contain IPs)
 instance_ip.txt
 instance_ocid.txt
@@ -72,6 +77,10 @@ dist/
 test-results.log
 deploy-*.log
 *.log
+.test-reports/
+.coverage
+coverage.xml
+htmlcov/
 
 # OS Files
 .DS_Store

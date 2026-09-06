@@ -38,13 +38,14 @@ Either runtime:
 Control plane:
   api-run           Run control API locally
   orchestrator-run  Run orchestrator locally
-  test              TDD ladder (unit → integration → e2e). See docs/TESTING.md
+  test              Offline suites + dual-pool ladder (--coverage, --suite, --list, --live)
   help              Show this help
 
 Examples:
   ./cloud-phone deploy-redroid --name redroid-source --ocpus 2 --memory 8
   GAPPS_ZIP=/opt/gapps/gapps.zip ./cloud-phone gapps-install --name redroid
   ./cloud-phone deploy-golden --platform redroid --image-id <ocid> --name phone-1
+  ./cloud-phone test --coverage
   ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
   ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
 EOF

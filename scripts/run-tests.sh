@@ -1,191 +1,232 @@
 #!/bin/bash
-# TDD ladder runner for cloud-phone.
+# Unified test runner with coverage + dual-pool ladder suites.
 #
-#   ./cloud-phone test              # rungs 0–3 (offline)
-#   ./cloud-phone test --rung 3     # dual-pool e2e only
-#   ./cloud-phone test --list
-#   ./cloud-phone test --live       # also R4 (needs CLOUD_PHONE_LIVE=1 + API)
+#   ./cloud-phone test                # offline suites (no device, no OCI)
+#   ./cloud-phone test --coverage     # + line coverage report
+#   ./cloud-phone test --suite procedures
+#   ./cloud-phone test --suite runtime-pool
+#   ./cloud-phone test --live --api-url http://127.0.0.1:8080
 #
-# Offline rungs never touch Docker, OCI, or a proprietary GApps zip.
+# Offline suites never touch a phone, Docker, or OCI, so they are safe in CI.
+# Live suites need a reachable Control API and are skipped unless --live.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-PYTHON="${PYTHON:-python3}"
-RUNG=""
-LIVE="false"
-VERBOSE="-v"
-SHOW_LOGS="true"
-REPORT_DIR="${TEST_REPORT_DIR:-$PROJECT_ROOT/.test-reports}"
-LIST="false"
-SUITE_TIMEOUT="${SUITE_TIMEOUT:-90}"
-
-# Capture user LOG_LEVEL before log.sh defaults it to INFO.
-USER_LOG_LEVEL="${LOG_LEVEL:-}"
-export CLOUD_PHONE_VERBOSE="${CLOUD_PHONE_VERBOSE:-1}"
-export LOG_LEVEL="${USER_LOG_LEVEL:-DEBUG}"
-export ORCH_LOG_LEVEL="${ORCH_LOG_LEVEL:-DEBUG}"
-
-if [[ -f "$SCRIPT_DIR/lib/log.sh" ]]; then
-    # shellcheck source=lib/log.sh
-    source "$SCRIPT_DIR/lib/log.sh"
-    LOG_TYPE=TST
-    LOG_LEVEL="${USER_LOG_LEVEL:-DEBUG}"
-else
-    log_info() { echo "[INFO] $*"; }
-    log_error() { echo "[ERROR] $*" >&2; }
-fi
+source "$SCRIPT_DIR/lib/log.sh"
+LOG_TYPE=TST
 
 cd "$PROJECT_ROOT"
 
-# name:test_file.py  (unittest discover -p)
-RUNG0=(
-    "gapps-zip:test_gapps_zip.py"
-    "gapps-health:test_gapps_health.py"
-    "orchestrator-unit:test_orchestrator_unit.py"
-    "scripts-contract:test_scripts_contract.py"
-    "logging:test_logging.py"
-    "ui-control:test_ui_control.py"
+OFFLINE_SUITES=(
+    "logging:tests.test_logging"
+    "control-api:tests.test_control_api"
+    "procedures:tests.test_procedures"
+    "orchestrator:tests.test_orchestrator_unit"
+    "sessions:tests.test_user_sessions"
+    "gapps:tests.test_gapps_zip"
+    "gapps-health:tests.test_gapps_health"
+    "scripts-contract:tests.test_scripts_contract"
+    "ui-control:tests.test_ui_control"
+    "runtime-pool:tests.test_runtime_pool"
+    "mobile-e2e:tests.test_mobile_e2e_scenario"
+    "procedure-api:tests.test_procedure_api"
 )
-RUNG1=(
-    "runtime-pool:test_runtime_pool.py"
-    "control-api:test_control_api.py"
+
+SCRIPT_SUITES=(
+    "orchestrator-integration:tests/test_orchestrator_integration.py"
+    "orchestrator-e2e:tests/test_orchestrator_e2e.py"
+    "ladder-e2e:tests/test_ladder_e2e.py"
 )
-RUNG2=(
-    "orchestrator-integration:test_orchestrator_integration.py"
-    "orchestrator-e2e:test_orchestrator_e2e.py"
-)
-RUNG3=(
-    "ladder-e2e:test_ladder_e2e.py"
-)
-RUNG4=(
-    "live:test_live.py"
-)
+
+COVERAGE="false"
+FAIL_UNDER="${COVERAGE_FAIL_UNDER:-80}"
+SUITE=""
+LIVE="false"
+API_URL="${CLOUD_PHONE_API_URL:-http://127.0.0.1:8080}"
+VERBOSE=""
+REPORT_DIR="${TEST_REPORT_DIR:-$PROJECT_ROOT/.test-reports}"
 
 usage() {
     cat <<'EOF'
 Usage: ./scripts/run-tests.sh [OPTIONS]
 
-  --rung N        0=unit 1=component 2=process-integration 3=dual-pool-e2e 4=live
-  --live          Include rung 4 (or set CLOUD_PHONE_LIVE=1)
-  --list          Print the ladder
-  --quiet         Less unittest noise, hide labeled log excerpts
-  --verbose       Unittest -v and dump ADB/Appium/commandlet/VNC log lines
-  --show-logs     Dump labeled log excerpts after each suite
-  --report-dir D  Log directory (default .test-reports)
+  --coverage           Measure line coverage (needs `coverage`)
+  --fail-under N       Coverage floor, default 80 (COVERAGE_FAIL_UNDER)
+  --suite NAME         Run one suite (see --list)
+  --list               List suites
+  --live               Also run suites needing a real Control API
+  --api-url URL        Control API for --live
+  --verbose            Per-test output
+  --report-dir DIR     Where to write logs (default .test-reports)
+  --rung N             Alias for a ladder slice (0=unit … 3=dual-pool e2e, 4=live)
   --help
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --rung) RUNG="${2:-}"; shift 2 ;;
+        --coverage) COVERAGE="true"; shift ;;
+        --fail-under) FAIL_UNDER="${2:-80}"; shift 2 ;;
+        --suite) SUITE="${2:-}"; shift 2 ;;
         --live) LIVE="true"; shift ;;
-        --list) LIST="true"; shift ;;
-        --quiet) VERBOSE=""; SHOW_LOGS="false"; shift ;;
-        --verbose|-v) VERBOSE="-v"; SHOW_LOGS="true"; shift ;;
-        --show-logs) SHOW_LOGS="true"; shift ;;
+        --api-url) API_URL="${2:-}"; shift 2 ;;
+        --verbose|-v) VERBOSE="-v"; shift ;;
         --report-dir) REPORT_DIR="${2:-}"; shift 2 ;;
+        --rung)
+            case "${2:-}" in
+                0) SUITE="logging" ;;
+                1) SUITE="runtime-pool" ;;
+                2) SUITE="orchestrator-integration" ;;
+                3) SUITE="ladder-e2e" ;;
+                4) LIVE="true"; SUITE="agent-api" ;;
+                *) log_error "unknown rung $2"; exit 1 ;;
+            esac
+            shift 2
+            ;;
+        --list)
+            for entry in "${OFFLINE_SUITES[@]}"; do echo "  ${entry%%:*} (offline)"; done
+            for entry in "${SCRIPT_SUITES[@]}"; do echo "  ${entry%%:*} (offline, script)"; done
+            echo "  agent-api (live)"
+            echo "  connectivity (live)"
+            echo "  live (CLOUD_PHONE_LIVE=1, tests.test_live)"
+            exit 0
+            ;;
         --help|-h) usage; exit 0 ;;
         *) log_error "Unknown option: $1"; usage; exit 1 ;;
     esac
 done
 
-print_ladder() {
-    cat <<'EOF'
-TDD ladder (offline through R3):
-
-  R0 unit                 GApps zip, purpose mapping, script contracts, labeled logs, UI commandlets
-  R1 component            Orchestrator pool (Flask test client) + Control API (patched ADB, Appium/VNC logs)
-  R2 process integration  Real orchestrator process + one fake Control API
-  R3 dual-pool e2e        Redroid(GApps) + Cuttlefish(ingest) processes, sessions, Play launch, verbose IO logs
-  R4 live                 Real Control API (CLOUD_PHONE_LIVE=1) — skipped offline
-EOF
-    echo
-    echo "Suites:"
-    for entry in "${RUNG0[@]}"; do echo "  rung0  ${entry%%:*}"; done
-    for entry in "${RUNG1[@]}"; do echo "  rung1  ${entry%%:*}"; done
-    for entry in "${RUNG2[@]}"; do echo "  rung2  ${entry%%:*}"; done
-    for entry in "${RUNG3[@]}"; do echo "  rung3  ${entry%%:*}"; done
-    for entry in "${RUNG4[@]}"; do echo "  rung4  ${entry%%:*} (live)"; done
-}
-
-if [[ "$LIST" == "true" ]]; then
-    print_ladder
-    exit 0
-fi
-
-suites_for_rung() {
-    case "$1" in
-        0) printf '%s\n' "${RUNG0[@]}" ;;
-        1) printf '%s\n' "${RUNG1[@]}" ;;
-        2) printf '%s\n' "${RUNG2[@]}" ;;
-        3) printf '%s\n' "${RUNG3[@]}" ;;
-        4) printf '%s\n' "${RUNG4[@]}" ;;
-        *) return 1 ;;
-    esac
-}
-
-RUNGS=(0 1 2 3)
-if [[ -n "$RUNG" ]]; then
-    RUNGS=("$RUNG")
-fi
-if [[ "$LIVE" == "true" || "${CLOUD_PHONE_LIVE:-}" == "1" ]]; then
-    if [[ -z "$RUNG" ]]; then
-        RUNGS=(0 1 2 3 4)
-    fi
-fi
-
 mkdir -p "$REPORT_DIR"
-failed=0
-ran=0
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-echo "TDD ladder using $PYTHON"
-print_ladder
-echo
-
-for rung in "${RUNGS[@]}"; do
-    if [[ "$rung" == "4" && "$LIVE" != "true" && "${CLOUD_PHONE_LIVE:-}" != "1" ]]; then
-        log_info "skip R4 live (set --live or CLOUD_PHONE_LIVE=1)"
-        continue
+PYTHON="${PYTHON:-python3}"
+COVERAGE_BIN=""
+if [[ "$COVERAGE" == "true" ]]; then
+    if "$PYTHON" -m coverage --version >/dev/null 2>&1; then
+        COVERAGE_BIN="$PYTHON -m coverage"
+        $COVERAGE_BIN erase >/dev/null 2>&1 || true
+    else
+        log_warn "coverage not installed (pip install coverage); running without it"
+        COVERAGE="false"
     fi
-    echo "======== R${rung} ========"
-    while IFS= read -r entry; do
-        [[ -z "$entry" ]] && continue
-        name="${entry%%:*}"
-        file="${entry##*:}"
-        log="${REPORT_DIR}/r${rung}-${name}.log"
-        echo "-- ${name} ($file)"
-        log_info "r${rung} ${name} verbose=${CLOUD_PHONE_VERBOSE} log_level=${LOG_LEVEL}"
-        if command -v timeout >/dev/null 2>&1; then
-            if ! timeout "$SUITE_TIMEOUT" "$PYTHON" -m unittest discover -s tests -p "$file" $VERBOSE >"$log" 2>&1; then
-                echo "FAIL ${name}  (log: $log)"
-                tail -40 "$log" || true
-                failed=$((failed + 1))
-            else
-                echo "PASS ${name}"
-            fi
-        elif ! "$PYTHON" -m unittest discover -s tests -p "$file" $VERBOSE >"$log" 2>&1; then
-            echo "FAIL ${name}  (log: $log)"
-            tail -40 "$log" || true
-            failed=$((failed + 1))
-        else
-            echo "PASS ${name}"
-        fi
-        if [[ "$SHOW_LOGS" == "true" ]]; then
-            echo "--- labeled logs (${name}) ---"
-            grep -E '\[(ADB|CMD|APM|VNC|API|ORC|TST)\]' "$log" | tail -80 || true
-        fi
-        ran=$((ran + 1))
-    done < <(suites_for_rung "$rung")
+fi
+
+PASS=0
+FAIL=0
+FAILED_SUITES=()
+
+run_python_suite() {
+    local name="$1" target="$2" kind="$3"
+    local logfile="$REPORT_DIR/${name}.log"
+    log_info "suite ${name} (${kind})"
+
+    if [[ "$COVERAGE" == "true" ]]; then
+        $COVERAGE_BIN run --append -m unittest "$target" $VERBOSE >"$logfile" 2>&1
+    else
+        "$PYTHON" -m unittest "$target" $VERBOSE >"$logfile" 2>&1
+    fi
+    local status=$?
+
+    if [[ $status -eq 0 ]]; then
+        local count
+        count="$(grep -oE '^Ran [0-9]+' "$logfile" | tail -1 | awk '{print $2}')"
+        log_info "  PASS ${name} (${count:-?} tests)"
+        PASS=$((PASS + 1))
+    else
+        log_error "  FAIL ${name} — see ${logfile}"
+        tail -25 "$logfile" >&2
+        FAIL=$((FAIL + 1))
+        FAILED_SUITES+=("$name")
+    fi
+}
+
+run_script_suite() {
+    local name="$1" path="$2"
+    local logfile="$REPORT_DIR/${name}.log"
+    log_info "suite ${name} (offline, script)"
+
+    if [[ "$COVERAGE" == "true" ]]; then
+        $COVERAGE_BIN run --append "$path" >"$logfile" 2>&1
+    else
+        "$PYTHON" "$path" >"$logfile" 2>&1
+    fi
+    local status=$?
+
+    if [[ $status -eq 0 ]]; then
+        log_info "  PASS ${name}"
+        PASS=$((PASS + 1))
+    else
+        log_error "  FAIL ${name} — see ${logfile}"
+        tail -25 "$logfile" >&2
+        FAIL=$((FAIL + 1))
+        FAILED_SUITES+=("$name")
+    fi
+}
+
+matches() {
+    [[ -z "$SUITE" || "$SUITE" == "$1" ]]
+}
+
+for entry in "${OFFLINE_SUITES[@]}"; do
+    name="${entry%%:*}"
+    target="${entry#*:}"
+    matches "$name" && run_python_suite "$name" "$target" "offline"
 done
 
-echo
-if [[ "$failed" -gt 0 ]]; then
-    log_error "ladder failed: ${failed}/${ran} suites red"
-    exit 1
+for entry in "${SCRIPT_SUITES[@]}"; do
+    name="${entry%%:*}"
+    path="${entry#*:}"
+    matches "$name" && run_script_suite "$name" "$path"
+done
+
+if [[ "$LIVE" == "true" ]]; then
+    if matches "agent-api"; then
+        log_info "suite agent-api (live -> $API_URL)"
+        if "$PYTHON" tests/test_agent_api.py --api-url "$API_URL" \
+                >"$REPORT_DIR/agent-api.log" 2>&1; then
+            log_info "  PASS agent-api"; PASS=$((PASS + 1))
+        else
+            log_error "  FAIL agent-api — see $REPORT_DIR/agent-api.log"
+            FAIL=$((FAIL + 1)); FAILED_SUITES+=("agent-api")
+        fi
+    fi
+    if matches "live"; then
+        log_info "suite live (CLOUD_PHONE_LIVE=1 -> $API_URL)"
+        if CLOUD_PHONE_LIVE=1 CLOUD_PHONE_API_URL="$API_URL" \
+                "$PYTHON" -m unittest tests.test_live $VERBOSE \
+                >"$REPORT_DIR/live.log" 2>&1; then
+            log_info "  PASS live"; PASS=$((PASS + 1))
+        else
+            log_error "  FAIL live — see $REPORT_DIR/live.log"
+            FAIL=$((FAIL + 1)); FAILED_SUITES+=("live")
+        fi
+    fi
+else
+    log_info "skipping live suites (pass --live with a reachable Control API)"
 fi
-echo "ladder green: ${ran} suites"
-exit 0
+
+COVERAGE_STATUS=0
+if [[ "$COVERAGE" == "true" ]]; then
+    log_info "coverage report (fail-under=${FAIL_UNDER}%)"
+    $COVERAGE_BIN report \
+        --include='api/*,orchestrator/*' \
+        --omit='*/test_*,*/venv/*,*/.venv/*' \
+        --fail-under="$FAIL_UNDER" | tee "$REPORT_DIR/coverage.txt" >&2
+    COVERAGE_STATUS=${PIPESTATUS[0]}
+    $COVERAGE_BIN html --include='api/*,orchestrator/*' \
+        -d "$REPORT_DIR/htmlcov" >/dev/null 2>&1 || true
+    $COVERAGE_BIN xml -o "$REPORT_DIR/coverage.xml" >/dev/null 2>&1 || true
+    if [[ $COVERAGE_STATUS -ne 0 ]]; then
+        log_error "coverage below ${FAIL_UNDER}%"
+    fi
+fi
+
+echo "" >&2
+if [[ $FAIL -eq 0 && $COVERAGE_STATUS -eq 0 ]]; then
+    log_info "SUMMARY suites=${PASS} failed=0 reports=${REPORT_DIR}"
+    exit 0
+fi
+log_error "SUMMARY suites_passed=${PASS} failed=${FAIL} [${FAILED_SUITES[*]:-}] reports=${REPORT_DIR}"
+exit 1

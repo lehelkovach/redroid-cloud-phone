@@ -3,6 +3,11 @@
 
 import unittest
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from fixtures.fake_control import make_control_app
 from harness import FlaskThread, OrchestratorProc, find_free_port
 

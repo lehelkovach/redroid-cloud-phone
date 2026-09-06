@@ -1,33 +1,51 @@
+# Offline test + coverage gate. No device, no Docker, no OCI credentials.
+#
+# If a run fails in 2-3 seconds with steps=0 and BlobNotFound logs, that is a
+# GitHub Actions *budget* block, not a test failure: Settings -> Billing ->
+# Budgets. Do not debug it as a code problem.
 name: CI
-
-# Offline TDD ladder (R0–R3). Does not boot Docker, OCI, or a GApps zip.
 
 on:
   push:
+    branches: [master, "cursor/**"]
   pull_request:
+    branches: [master]
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  ladder:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install control-plane deps
-        run: pip install -r api/requirements.txt -r orchestrator/requirements.txt
-      - name: TDD ladder R0–R3
-        run: ./cloud-phone test --quiet
-        timeout-minutes: 6
-      - name: Upload rung logs
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r api/requirements.txt -r orchestrator/requirements.txt coverage
+
+      - name: Shell syntax
+        run: |
+          for script in scripts/*.sh scripts/lib/*.sh cloud-phone; do
+            bash -n "$script" || exit 1
+          done
+
+      - name: Tests + coverage
+        run: ./scripts/run-tests.sh --coverage --fail-under 60 --verbose
+
+      - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
           path: .test-reports/
+          retention-days: 7
           if-no-files-found: ignore

@@ -60,12 +60,30 @@ pip install -r api/requirements.txt -r orchestrator/requirements.txt
 ## Tests
 
 ```bash
-./cloud-phone test              # TDD ladder R0–R3 (offline)
-./cloud-phone test --rung 3     # dual-pool e2e only
+./cloud-phone test                 # all offline suites — no device, no OCI
+./cloud-phone test --coverage      # + coverage, fails under 60% in CI
 ./cloud-phone test --list
+./cloud-phone test --suite ladder-e2e
 ```
 
-Offline rungs do not need Docker, a GApps zip, or OCI. Live guest checks are R4 (`--live`). See [`docs/TESTING.md`](docs/TESTING.md) and [`docs/LOGGING.md`](docs/LOGGING.md) (`[ADB]` commanders, `[APM]` Appium, `[CMD]` commandlets, `[VNC]` viewports).
+Includes the dual-pool ladder (Redroid vs Cuttlefish) and a mobile e2e scenario
+(proxy → signup → capped swipe) against a simulated phone.
+[`docs/TESTING.md`](docs/TESTING.md) · [`docs/LOGGING.md`](docs/LOGGING.md)
+(`[ADB]` commanders, `[APM]` Appium, `[CMD]` commandlets, `[VNC]` viewports).
+
+## Procedures — one script, four surfaces
+
+A procedure is a list of steps in one shared vocabulary; a surface adapter
+decides how each step reaches the world (`mobile`, `web`, `chrome`, `console`).
+Unsupported actions fail validation before step 1 touches a device, and
+`install` / `submit` / `purchase` stay approval-gated.
+
+```bash
+curl -s $ORCH/procedures/surfaces | jq
+curl -X POST $ORCH/procedures -d '{"sync":true,"steps":[...]}'
+```
+
+Details: [`docs/PROCEDURES.md`](docs/PROCEDURES.md).
 
 ## Project structure
 
@@ -74,11 +92,16 @@ android-arm-cloud-phone/
 ├── cloud-phone
 ├── api/
 ├── orchestrator/          # default purpose=automation → Redroid pool
+├── orchestrator/procedures.py
+├── orchestrator/rules.py
+├── api/cloudphone_logging.py
 ├── docker/redroid-compose.yml
 ├── scripts/redroid-up.sh
 ├── scripts/install-gapps-redroid.sh
 ├── scripts/install-redroid-cloud-phone.sh
 ├── scripts/deploy-redroid-oci.sh
+├── scripts/run-tests.sh
+├── scripts/lib/log.sh
 ├── systemd/redroid-*.service
 ├── systemd/cuttlefish-*.service
 └── docs/RUNTIME-SPLIT.md
@@ -88,8 +111,12 @@ android-arm-cloud-phone/
 
 - `docs/RUNTIME-SPLIT.md` — why two images; orchestrator pool
 - `docs/GAPPS.md` — Play install on Redroid only
+- `docs/PROCEDURES.md` — step vocabulary, surfaces, approval gates
+- `docs/AUTH-AND-HEALTH.md` — the three tokens, and why `healthy` used to lie
+- `docs/OPS-ORCHESTRATOR.md` — lab IP/port/token **names**
+- `docs/TESTING.md` — offline suites, coverage, dual-pool ladder R0–R4
+- `docs/LOGGING.md` — label scheme and filtering
 - `docs/DEPLOYMENT.md` — Cuttlefish ingest deploy
 - `docs/CUTTLEFISH_PHASE1.md` / `CUTTLEFISH_PHASE2_RTMP_BRIDGE.md` / `CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
-- `docs/TESTING.md` — TDD ladder R0–R4
 - `docs/CLEANROOM_BOOTSTRAP.md`
 - `FUTURE_CONSIDERATIONS_CAMERA_STACK.md` — parked HAL-on-container notes

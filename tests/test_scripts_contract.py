@@ -105,9 +105,9 @@ class CloudPhoneCliTests(unittest.TestCase):
             self.skipTest("run-tests.sh not present")
         r = run(["bash", str(runner), "--list"])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("rung0", r.stdout)
-        self.assertIn("rung3", r.stdout)
         self.assertIn("logging", r.stdout)
+        self.assertIn("runtime-pool", r.stdout)
+        self.assertIn("ladder-e2e", r.stdout)
         self.assertIn("ui-control", r.stdout)
 
 

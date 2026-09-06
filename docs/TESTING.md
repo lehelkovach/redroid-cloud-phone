@@ -1,20 +1,22 @@
 # Testing — TDD ladder
 
 Two runtimes (Redroid+GApps automation vs Cuttlefish ingest) are proven by a
-**runged ladder**, not a single `unittest discover` dump. Offline rungs never
-touch Docker, OCI, or a proprietary Play zip.
+**runged ladder**, not a single `unittest discover` dump. Offline suites never touch Docker, OCI, or a proprietary Play zip.
+CI runs `./cloud-phone test --coverage --fail-under 60`. Procedure and
+auth suites from the runtime-split track are included alongside the
+dual-pool ladder.
 
 ```bash
-./cloud-phone test                 # R0–R3
-./cloud-phone test --rung 3        # dual-pool e2e only
+./cloud-phone test                 # all offline suites
+./cloud-phone test --coverage      # + line coverage (CI fail-under 60)
+./cloud-phone test --suite ladder-e2e
 ./cloud-phone test --list
-./cloud-phone test --live          # + R4 against a real Control API
+./cloud-phone test --live          # + live Control API suites
 PYTHON=/usr/bin/python3 ./cloud-phone test
 ```
 
-Logs: `.test-reports/r<N>-<suite>.log`. The runner sets `CLOUD_PHONE_VERBOSE=1`
-and prints labeled `[ADB]` / `[CMD]` / `[APM]` / `[VNC]` excerpts after each
-suite (`--quiet` hides them). See [`LOGGING.md`](./LOGGING.md).
+Logs: `.test-reports/<suite>.log`. Filter labeled `[ADB]` / `[CMD]` / `[APM]` / `[VNC]`
+lines from those reports. See [`LOGGING.md`](./LOGGING.md).
 
 ## Rungs
 

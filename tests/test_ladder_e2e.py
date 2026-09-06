@@ -7,8 +7,11 @@ proprietary GApps zip. Live bake is R4 (`CLOUD_PHONE_LIVE=1`).
 
 import os
 import subprocess
+import sys
 import time
 import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fixtures.fake_control import make_control_app
 from harness import ROOT, FlaskThread, OrchestratorProc, find_free_port
