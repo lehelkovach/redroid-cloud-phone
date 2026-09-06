@@ -55,6 +55,8 @@ REDROID_GOLDEN_IMAGE_ID=<ocid> ./cloud-phone deploy-fleet --platform redroid --c
 
 Never commit a GApps zip. Details: [`GAPPS.md`](./GAPPS.md).
 
+Proof of the split is the TDD ladder in [`TESTING.md`](./TESTING.md) (`./cloud-phone test`, R0–R3 offline).
+
 ## Non-goals
 
 - Do not restore `docker/Dockerfile.camera` / v4l2loopback-into-Redroid, or Magisk-on-Cuttlefish as a Play shortcut.

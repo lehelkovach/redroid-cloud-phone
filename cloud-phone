@@ -38,6 +38,7 @@ Either runtime:
 Control plane:
   api-run           Run control API locally
   orchestrator-run  Run orchestrator locally
+  test              TDD ladder (unit → integration → e2e). See docs/TESTING.md
   help              Show this help
 
 Examples:
@@ -100,6 +101,9 @@ case "$cmd" in
         ;;
     orchestrator-run)
         python3 "$ROOT_DIR/orchestrator/server.py" "$@"
+        ;;
+    test)
+        run_script "$SCRIPTS_DIR/run-tests.sh" "$@"
         ;;
     help|-h|--help)
         usage

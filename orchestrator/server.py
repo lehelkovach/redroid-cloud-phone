@@ -58,6 +58,7 @@ logger = logging.getLogger("orchestrator")
 # oci: Redroid golden for automation (default), Cuttlefish golden for camera
 ORCH_DEPLOY_MODE = os.environ.get("ORCH_DEPLOY_MODE", "mock")
 ORCH_MOCK_API_URL = os.environ.get("ORCH_MOCK_API_URL", "http://127.0.0.1:8080")
+ORCH_MOCK_CAMERA_API_URL = os.environ.get("ORCH_MOCK_CAMERA_API_URL", "")
 ORCH_API_TOKEN = os.environ.get("ORCH_API_TOKEN", "")
 ORCH_API_TIMEOUT = int(os.environ.get("ORCH_API_TIMEOUT", "30"))
 ORCH_INSTANCE_NAME_PREFIX = os.environ.get("ORCH_INSTANCE_NAME_PREFIX", "orchestrated-phone")
@@ -227,6 +228,12 @@ def _runtime_limit(runtime):
     return ORCH_MAX_INSTANCES
 
 
+def _mock_api_url(runtime):
+    if runtime == RUNTIME_CUTTLEFISH and ORCH_MOCK_CAMERA_API_URL:
+        return ORCH_MOCK_CAMERA_API_URL
+    return ORCH_MOCK_API_URL
+
+
 def _golden_image_for(runtime):
     if runtime == RUNTIME_REDROID:
         return ORCH_REDROID_GOLDEN_IMAGE_ID or ORCH_GOLDEN_IMAGE_ID
@@ -325,10 +332,11 @@ def _provision_instance(purpose=None, runtime=None):
             )
 
     if ORCH_DEPLOY_MODE == "mock":
+        api_url = _mock_api_url(runtime)
         name = f"{ORCH_INSTANCE_NAME_PREFIX}-{runtime}-mock-{_count_runtime(runtime) + 1}"
-        logger.info("Mock provisioning %s (%s) -> %s", runtime, purpose, ORCH_MOCK_API_URL)
+        logger.info("Mock provisioning %s (%s) -> %s", runtime, purpose, api_url)
         return _create_instance_record(
-            ORCH_MOCK_API_URL,
+            api_url,
             name,
             runtime=runtime,
             purpose=purpose,

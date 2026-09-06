@@ -48,6 +48,8 @@ class RuntimePoolTests(unittest.TestCase):
         orch.ORCH_MAX_INSTANCES = 5
         orch.ORCH_MAX_REDROID_INSTANCES = 3
         orch.ORCH_MAX_CUTTLEFISH_INSTANCES = 2
+        orch.ORCH_MOCK_API_URL = "http://127.0.0.1:8080"
+        orch.ORCH_MOCK_CAMERA_API_URL = ""
         orch.ORCH_REDROID_GOLDEN_IMAGE_ID = "ocid1.image.redroid"
         orch.ORCH_CUTTLEFISH_GOLDEN_IMAGE_ID = "ocid1.image.cuttlefish"
         self.client = orch.app.test_client()
@@ -132,6 +134,14 @@ class RuntimePoolTests(unittest.TestCase):
         self.assertEqual(body["default_purpose"], PURPOSE_AUTOMATION)
         self.assertEqual(body["pool"]["automation"]["total"], 1)
         self.assertEqual(body["pool"]["camera"]["total"], 0)
+
+    def test_mock_camera_uses_separate_api_url(self):
+        orch.ORCH_MOCK_API_URL = "http://127.0.0.1:18080"
+        orch.ORCH_MOCK_CAMERA_API_URL = "http://127.0.0.1:18081"
+        phone = orch._provision_instance(purpose="automation")
+        cam = orch._provision_instance(purpose="camera")
+        self.assertEqual(phone["api_url"], "http://127.0.0.1:18080")
+        self.assertEqual(cam["api_url"], "http://127.0.0.1:18081")
 
     def test_oci_automation_passes_redroid_platform(self):
         orch.ORCH_DEPLOY_MODE = "oci"

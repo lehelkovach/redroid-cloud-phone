@@ -24,10 +24,8 @@ instance_ip.txt
 instance_ocid.txt
 *.ip
 
-# Logs
-*.log
-logs/
-*.log.*
+# Test reports
+.test-reports/
 
 # Temporary Files
 tmp/

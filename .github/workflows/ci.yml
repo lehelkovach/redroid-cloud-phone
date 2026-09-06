@@ -1,0 +1,27 @@
+name: CI
+
+# Offline TDD ladder (R0–R3). Does not boot Docker, OCI, or a GApps zip.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ladder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install control-plane deps
+        run: pip install -r api/requirements.txt -r orchestrator/requirements.txt
+      - name: TDD ladder R0–R3
+        run: ./cloud-phone test
+      - name: Upload rung logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: .test-reports/
+          if-no-files-found: ignore

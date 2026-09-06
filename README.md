@@ -58,10 +58,12 @@ pip install -r api/requirements.txt -r orchestrator/requirements.txt
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+./cloud-phone test              # TDD ladder R0–R3 (offline)
+./cloud-phone test --rung 3     # dual-pool e2e only
+./cloud-phone test --list
 ```
 
-Offline suites need the control-plane venv (`pip install -r api/requirements.txt -r orchestrator/requirements.txt`). They do not need Docker, a GApps zip, or OCI.
+Offline rungs do not need Docker, a GApps zip, or OCI. Live guest checks are R4 (`--live`). See [`docs/TESTING.md`](docs/TESTING.md).
 
 ## Project structure
 
@@ -86,6 +88,6 @@ android-arm-cloud-phone/
 - `docs/GAPPS.md` — Play install on Redroid only
 - `docs/DEPLOYMENT.md` — Cuttlefish ingest deploy
 - `docs/CUTTLEFISH_PHASE1.md` / `CUTTLEFISH_PHASE2_RTMP_BRIDGE.md` / `CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
-- `docs/API_REFERENCE.md` / `docs/AGENT_COORDINATION.md`
+- `docs/TESTING.md` — TDD ladder R0–R4
 - `docs/CLEANROOM_BOOTSTRAP.md`
 - `FUTURE_CONSIDERATIONS_CAMERA_STACK.md` — parked HAL-on-container notes
