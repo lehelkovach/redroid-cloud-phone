@@ -84,7 +84,7 @@ deploy-*.log
 ehthumbs.db
 Desktop.ini
 
-# Backup files
-*.bak
-*.backup
-*~
+# GApps blobs (never commit)
+gapps.zip
+*.apk
+/opt/gapps/

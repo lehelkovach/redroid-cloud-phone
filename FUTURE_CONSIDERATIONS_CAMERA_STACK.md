@@ -2,6 +2,8 @@
 
 This document captures future-facing guidance only. It does not change the current implementation plan.
 
+**Current split:** Redroid is the GApps automation pool; Cuttlefish is the ingest image. Do not retry camera HAL on Redroid — see [`docs/RUNTIME-SPLIT.md`](docs/RUNTIME-SPLIT.md).
+
 ## 1) Building a Docker Android ARM64 image with a working virtual camera HAL
 
 To make a container-first Android image reliably expose cameras to Android apps, these pieces must all match:

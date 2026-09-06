@@ -1,18 +1,20 @@
 #!/bin/bash
-# Prepare a Cuttlefish OCI instance for custom image capture.
+# Prepare an OCI instance for custom image capture.
+# --platform redroid     stop Docker Redroid + control API
+# --platform cuttlefish  stop KVM ingest stack
 
 set -euo pipefail
 
-PLATFORM="cuttlefish"
+PLATFORM="redroid"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --platform)
-            PLATFORM="${2:-cuttlefish}"
+            PLATFORM="${2:-redroid}"
             shift 2
             ;;
         --help|-h)
-            echo "Usage: sudo $0 [--platform cuttlefish]"
+            echo "Usage: sudo $0 [--platform redroid|cuttlefish]"
             exit 0
             ;;
         *)
@@ -22,20 +24,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ "$PLATFORM" == "cuttlefish" ]] || { echo "Only cuttlefish platform is supported."; exit 1; }
+[[ "$PLATFORM" == "cuttlefish" || "$PLATFORM" == "redroid" ]] || {
+    echo "Unsupported platform: $PLATFORM"
+    exit 1
+}
 [[ $EUID -eq 0 ]] || { echo "Run as root (sudo)."; exit 1; }
 
 echo "=========================================="
-echo "Preparing Cuttlefish instance for imaging"
+echo "Preparing $PLATFORM instance for imaging"
 echo "=========================================="
 
-echo "[1/6] Stopping Cuttlefish services..."
-systemctl stop cuttlefish-cloud-phone.target || true
-systemctl stop cuttlefish-rtmp-bridge.service || true
-systemctl stop cuttlefish-launch.service || true
-systemctl stop nginx-rtmp.service || true
-cvd stop --clear_instance_dirs --instance_name "${CF_INSTANCE_NAME:-cvd-arm64-1}" >/dev/null 2>&1 || true
-rm -rf /tmp/cuttlefish-* /tmp/cvd* /tmp/cf-* 2>/dev/null || true
+if [[ "$PLATFORM" == "redroid" ]]; then
+    echo "[1/6] Stopping Redroid services..."
+    systemctl stop redroid-cloud-phone.target || true
+    systemctl stop control-api-redroid.service || true
+    systemctl stop redroid-container.service || true
+    docker ps -aq --filter name=redroid | xargs -r docker stop || true
+else
+    echo "[1/6] Stopping Cuttlefish services..."
+    systemctl stop cuttlefish-cloud-phone.target || true
+    systemctl stop cuttlefish-rtmp-bridge.service || true
+    systemctl stop cuttlefish-launch.service || true
+    systemctl stop nginx-rtmp.service || true
+    cvd stop --clear_instance_dirs --instance_name "${CF_INSTANCE_NAME:-cvd-arm64-1}" >/dev/null 2>&1 || true
+    rm -rf /tmp/cuttlefish-* /tmp/cvd* /tmp/cf-* 2>/dev/null || true
+fi
 
 echo "[2/6] Cleaning logs..."
 journalctl --vacuum-time=1d || true
@@ -65,3 +78,6 @@ echo "Preparation complete."
 echo "Next:"
 echo "  1) Shutdown instance: sudo shutdown -h now"
 echo "  2) Create OCI custom image from this instance"
+if [[ "$PLATFORM" == "redroid" ]]; then
+    echo "Do not bake a Cuttlefish/KVM overlay onto this Redroid golden."
+fi

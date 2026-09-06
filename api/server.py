@@ -249,14 +249,34 @@ def _run_job(job_id, job_type, payload):
 # Health & Status Endpoints
 # =============================================================================
 
+def _gapps_status():
+    """Play/GMS packages. Spoof props do not count."""
+    mapping = {
+        "gms": "com.google.android.gms",
+        "play_store": "com.android.vending",
+        "gsf": "com.google.android.gsf",
+    }
+    found = {}
+    for key, pkg in mapping.items():
+        ok, stdout, _ = run_adb_shell(f"pm path {pkg}")
+        found[key] = bool(ok and "package:" in (stdout or ""))
+    found["ready"] = bool(found.get("gms") and found.get("play_store"))
+    return found
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint"""
     connected = ensure_adb_connected()
+    gapps = _gapps_status() if connected else {
+        "gms": False, "play_store": False, "gsf": False, "ready": False,
+    }
     return jsonify({
         "status": "healthy" if connected else "degraded",
         "adb_connected": connected,
         "adb_target": ADB_CONNECT,
+        "runtime": os.environ.get("CLOUD_PHONE_RUNTIME", "unknown"),
+        "gapps": gapps,
         "state": _state
     })
 
@@ -283,7 +303,8 @@ def status():
         "battery": battery.split(":")[-1].strip() if battery else "unknown",
         "screen_state": "on" if "ON" in screen else "off" if screen else "unknown",
         "proxy": _state["proxy"],
-        "location": _state["location"]
+        "location": _state["location"],
+        "gapps": _gapps_status(),
     })
 
 # =============================================================================

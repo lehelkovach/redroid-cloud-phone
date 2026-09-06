@@ -1,0 +1,8 @@
+[Unit]
+Description=Redroid cloud phone (GApps automation containers)
+Documentation=docs/RUNTIME-SPLIT.md
+Wants=redroid-container.service control-api.service
+After=redroid-container.service
+
+[Install]
+WantedBy=multi-user.target

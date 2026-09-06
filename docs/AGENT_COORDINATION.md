@@ -5,7 +5,7 @@ Agent-to-agent coordination is handled by a separate service:
 `https://github.com/lehelkovach/iac-bus`.
 
 See that repository for bus auth, endpoints, and deployment details.
-The orchestrator here only manages and routes to cloud phone instances.
+The orchestrator here manages a **pool of Redroid GApps phones** (default) and spawns **Cuttlefish ingest VMs** only when a session asks for `purpose=camera`. See [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md).
 
 ## Clean environment setup
 
@@ -45,6 +45,21 @@ Interact with a specific phone by ID via orchestrator routing:
 ```bash
 # Status
 curl http://<ORCH_IP>:8090/phones/<ID>/status \
+  -H "Authorization: Bearer $ORCH_API_TOKEN"
+
+# Acquire a GApps automation phone (default)
+curl -X POST http://<ORCH_IP>:8090/sessions \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"owner_user_id":"alice"}'
+
+# Acquire a Cuttlefish ingest host for a camera stream
+curl -X POST http://<ORCH_IP>:8090/sessions \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"owner_user_id":"alice","purpose":"camera"}'
+
+curl http://<ORCH_IP>:8090/pool \
   -H "Authorization: Bearer $ORCH_API_TOKEN"
 
 # Input

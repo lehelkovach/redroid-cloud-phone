@@ -1,17 +1,19 @@
 #!/bin/bash
-# Deploy Cuttlefish Cloud Phone from OCI golden image.
+# Deploy a cloud-phone host from an OCI golden image.
+# --platform redroid  → GApps automation pool (default for orchestrator)
+# --platform cuttlefish → nginx-rtmp camera ingest
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-INSTANCE_NAME="cuttlefish-phone-$(date +%Y%m%d-%H%M%S)"
+INSTANCE_NAME=""
 GOLDEN_IMAGE_ID="${GOLDEN_IMAGE_ID:-}"
-OCPUS=4
-MEMORY_GB=24
+OCPUS=""
+MEMORY_GB=""
 WAIT_CHECK=false
 RUN_TESTS=false
-PLATFORM="cuttlefish"
+PLATFORM="redroid"
 
 COMPARTMENT_ID="${COMPARTMENT_ID:-}"
 SUBNET_ID="${SUBNET_ID:-}"
@@ -39,12 +41,12 @@ Usage: ./scripts/deploy-from-golden.sh [OPTIONS]
 
 Options:
   --name NAME           Instance name
-  --image-id OCID       Golden image OCID (or set GOLDEN_IMAGE_ID env)
-  --ocpus N             OCPUs (default: 4)
-  --memory N            Memory in GB (default: 24)
-  --platform NAME       cuttlefish (required value)
+  --image-id OCID       Golden image OCID (or set GOLDEN_IMAGE_ID / REDROID_GOLDEN_IMAGE_ID)
+  --ocpus N             OCPUs (redroid default 2, cuttlefish default 4)
+  --memory N            Memory in GB (redroid default 8, cuttlefish default 24)
+  --platform NAME       redroid (default, automation pool) | cuttlefish (camera ingest)
   --wait-check          Run runtime health check after deploy
-  --run-tests           Run ingest verification script after deploy
+  --run-tests           Run post-deploy verification
   --list-images         List available golden images
   --help                Show help
 EOF
@@ -54,7 +56,7 @@ list_golden_images() {
     [[ -n "$COMPARTMENT_ID" ]] || { log_error "COMPARTMENT_ID required for --list-images"; exit 1; }
     oci compute image list "${OCI_AUTH_ARGS[@]}" \
         --compartment-id "$COMPARTMENT_ID" \
-        --query 'data[?starts_with("display-name", `cloud-phone-cuttlefish`)].[display-name,id,"time-created"]' \
+        --query 'data[?starts_with("display-name", `cloud-phone-`)].[display-name,id,"time-created"]' \
         --output table
 }
 
@@ -73,14 +75,33 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ "$PLATFORM" == "cuttlefish" ]] || { log_error "Only --platform cuttlefish is supported."; exit 1; }
+if [[ "$PLATFORM" != "cuttlefish" && "$PLATFORM" != "redroid" ]]; then
+    log_error "Unsupported --platform $PLATFORM (redroid|cuttlefish)."
+    exit 1
+fi
+if [[ -z "$GOLDEN_IMAGE_ID" && "$PLATFORM" == "redroid" ]]; then
+    GOLDEN_IMAGE_ID="${REDROID_GOLDEN_IMAGE_ID:-}"
+fi
+if [[ -z "$GOLDEN_IMAGE_ID" && "$PLATFORM" == "cuttlefish" ]]; then
+    GOLDEN_IMAGE_ID="${CUTTLEFISH_GOLDEN_IMAGE_ID:-${GOLDEN_IMAGE_ID:-}}"
+fi
 [[ -n "$GOLDEN_IMAGE_ID" ]] || { log_error "GOLDEN_IMAGE_ID or --image-id is required."; exit 1; }
 [[ -n "$COMPARTMENT_ID" ]] || { log_error "COMPARTMENT_ID required."; exit 1; }
 [[ -n "$SUBNET_ID" ]] || { log_error "SUBNET_ID required."; exit 1; }
 [[ -n "$AVAILABILITY_DOMAIN" ]] || { log_error "AVAILABILITY_DOMAIN required."; exit 1; }
 [[ -f "$SSH_KEY_FILE" ]] || { log_error "SSH key not found: $SSH_KEY_FILE"; exit 1; }
 
-if [[ "$OCPUS" -lt 4 ]] || [[ "$MEMORY_GB" -lt 24 ]]; then
+if [[ -z "$INSTANCE_NAME" ]]; then
+    INSTANCE_NAME="${PLATFORM}-phone-$(date +%Y%m%d-%H%M%S)"
+fi
+if [[ -z "$OCPUS" ]]; then
+    if [[ "$PLATFORM" == "redroid" ]]; then OCPUS=2; else OCPUS=4; fi
+fi
+if [[ -z "$MEMORY_GB" ]]; then
+    if [[ "$PLATFORM" == "redroid" ]]; then MEMORY_GB=8; else MEMORY_GB=24; fi
+fi
+
+if [[ "$PLATFORM" == "cuttlefish" ]] && { [[ "$OCPUS" -lt 4 ]] || [[ "$MEMORY_GB" -lt 24 ]]; }; then
     log_warn "Cuttlefish recommended baseline is 4 OCPU / 24GB."
 fi
 
@@ -118,17 +139,33 @@ for _ in {1..60}; do
     sleep 2
 done
 
-log_info "Starting Cuttlefish target..."
-$SSH_CMD ubuntu@"$PUBLIC_IP" 'sudo systemctl start cuttlefish-cloud-phone.target'
+PURPOSE="automation"
+SYSTEMD_TARGET="redroid-cloud-phone.target"
+if [[ "$PLATFORM" == "cuttlefish" ]]; then
+    PURPOSE="camera"
+    SYSTEMD_TARGET="cuttlefish-cloud-phone.target"
+fi
+
+log_info "Starting $SYSTEMD_TARGET..."
+$SSH_CMD ubuntu@"$PUBLIC_IP" "sudo systemctl start $SYSTEMD_TARGET"
 
 if [[ "$WAIT_CHECK" == "true" ]]; then
     log_info "Running runtime validation..."
-    $SSH_CMD ubuntu@"$PUBLIC_IP" "/opt/cloud-phone-scripts/cuttlefish-phase1-validate.sh --local" || true
+    if [[ "$PLATFORM" == "redroid" ]]; then
+        $SSH_CMD ubuntu@"$PUBLIC_IP" "/opt/cloud-phone-scripts/verify-redroid-phone.sh --local" || true
+    else
+        $SSH_CMD ubuntu@"$PUBLIC_IP" "/opt/cloud-phone-scripts/cuttlefish-phase1-validate.sh --local" || true
+    fi
 fi
 
 if [[ "$RUN_TESTS" == "true" ]]; then
-    log_info "Running ingest verification..."
-    "$SCRIPT_DIR/verify-cuttlefish-ingest.sh" --vm "$PUBLIC_IP" || true
+    if [[ "$PLATFORM" == "redroid" ]]; then
+        log_info "Running Redroid phone verification..."
+        "$SCRIPT_DIR/verify-redroid-phone.sh" --vm "$PUBLIC_IP" || true
+    else
+        log_info "Running ingest verification..."
+        "$SCRIPT_DIR/verify-cuttlefish-ingest.sh" --vm "$PUBLIC_IP" || true
+    fi
 fi
 
 cat > "/tmp/instance-$INSTANCE_NAME.json" <<EOF
@@ -137,17 +174,23 @@ cat > "/tmp/instance-$INSTANCE_NAME.json" <<EOF
   "instance_ocid": "$INSTANCE_OCID",
   "public_ip": "$PUBLIC_IP",
   "golden_image": "$GOLDEN_IMAGE_ID",
-  "platform": "cuttlefish",
+  "platform": "$PLATFORM",
+  "purpose": "$PURPOSE",
   "deployed_at": "$(date -Iseconds)"
 }
 EOF
 
 echo ""
 echo -e "${BLUE}========================================${NC}"
-echo "  Deployment Complete"
+echo "  Deployment Complete ($PLATFORM / $PURPOSE)"
 echo -e "${BLUE}========================================${NC}"
 echo "Instance: $INSTANCE_NAME"
 echo "IP:       $PUBLIC_IP"
 echo "OCID:     $INSTANCE_OCID"
-echo "WebRTC:   https://$PUBLIC_IP:8443"
-echo "RTMP In:  rtmp://$PUBLIC_IP/live (key: cam)"
+if [[ "$PLATFORM" == "cuttlefish" ]]; then
+    echo "WebRTC:   https://$PUBLIC_IP:8443"
+    echo "RTMP In:  rtmp://$PUBLIC_IP/live (key: cam)"
+else
+    echo "Control:  http://$PUBLIC_IP:8080/health"
+    echo "ADB:      $PUBLIC_IP:5555"
+fi

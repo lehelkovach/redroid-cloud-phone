@@ -1,39 +1,40 @@
 # Android ARM Cloud Phone (OCI ARM64)
 
-This repository is now focused on a single stack:
+Two runtimes, two jobs. Do not merge them. Canonical write-up: [`docs/RUNTIME-SPLIT.md`](docs/RUNTIME-SPLIT.md).
 
-- Cuttlefish Android on OCI ARM64
-- OBS RTMP ingest via `nginx-rtmp`
-- FFmpeg bridge to Cuttlefish front/back camera sinks and mic sink
-- Golden image deployment for multi-device fleets
-- Control API and orchestrator for multi-phone automation
+| Runtime | Job |
+|---|---|
+| **Redroid** (Docker) | **Default orchestrator pool** — GApps / Play phones for `mobile.*` automation |
+| **Cuttlefish** (KVM) | On-demand camera/mic ingest: nginx-rtmp, FFmpeg bridge, v4l2-class sinks |
 
-## Updates and notes
+Virtual camera HAL on Redroid/Waydroid **failed** (ABI/VNDK). That is why ingest stays on Cuttlefish. We are **not** retrying HAL-on-container. Waydroid stays parked.
 
-- Runtime is Cuttlefish-only; legacy runtime-specific assumptions were removed.
-- Control-plane support is included (`api/` + `orchestrator/`) and deployable from repo.
-- Naming is now generalized for runtime swap flexibility (`android-arm-cloud-phone`).
-- Default SSH key naming is `~/.ssh/android_arm_cloud_phone_oci(.pub)`.
-- Clean-machine recovery is documented in `docs/CLEANROOM_BOOTSTRAP.md`.
-
-## Canonical commands
+## Redroid — GApps automation pool (default spawn)
 
 ```bash
-# Deploy fresh OCI instance and install cuttlefish stack
-./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
+./cloud-phone deploy-redroid --name redroid-source --ocpus 2 --memory 8
+GAPPS_ZIP=/path/to/MindTheGapps-arm64.zip ./cloud-phone gapps-install --name redroid
+./cloud-phone gapps-check --adb 127.0.0.1:5555
+COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <IP> cloud-phone-redroid-gapps-v1 redroid
 
-# Verify runtime + ingest (video+audio)
-./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
-
-# Create golden image from configured source
-COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <OCI_PUBLIC_IP> cloud-phone-cuttlefish-v1 cuttlefish
-
-# Deploy one from golden
-GOLDEN_IMAGE_ID=<image_ocid> ./cloud-phone deploy-golden --name phone-1 --wait-check
-
-# Deploy many from same golden image
-GOLDEN_IMAGE_ID=<image_ocid> ./cloud-phone deploy-fleet --count 5 --parallel 2 --verify-ingest
+# Orchestrator reuses idle Redroid VMs; POST /sessions defaults to this pool
+REDROID_GOLDEN_IMAGE_ID=<ocid> ORCH_DEPLOY_MODE=oci ./cloud-phone orchestrator-run
+# POST /sessions  {"owner_user_id":"alice"}
+# POST /sessions  {"owner_user_id":"alice","purpose":"camera"}   # Cuttlefish ingest instead
 ```
+
+Never commit a GApps zip. Empty `/opt/gapps/gapps.zip` is rejected. Details: [`docs/GAPPS.md`](docs/GAPPS.md).
+
+## Cuttlefish — ingest (spawn only when a camera stream is needed)
+
+```bash
+./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
+./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
+COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <OCI_PUBLIC_IP> cloud-phone-cuttlefish-v1 cuttlefish
+CUTTLEFISH_GOLDEN_IMAGE_ID=<ocid> ./cloud-phone deploy-fleet --platform cuttlefish --count 2 --verify-ingest
+```
+
+Do **not** bake Play/GMS into the Cuttlefish golden.
 
 ## After machine wipe (quick path)
 
@@ -42,59 +43,49 @@ git clone <your-repo-url> android-arm-cloud-phone
 cd android-arm-cloud-phone
 cp .env.example .env
 
-# Optional: local control-plane venv
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r api/requirements.txt -r orchestrator/requirements.txt
 
-# Deploy and validate
+# Automation phones (no KVM):
+./cloud-phone redroid-up --dry-run --json --name phone-1
+
+# Ingest host (needs /dev/kvm):
 ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
 ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
 ```
 
-## Project structure (current)
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Offline suites need the control-plane venv (`pip install -r api/requirements.txt -r orchestrator/requirements.txt`). They do not need Docker, a GApps zip, or OCI.
+
+## Project structure
 
 ```text
 android-arm-cloud-phone/
 ├── cloud-phone
 ├── api/
-│   ├── server.py
-│   └── requirements.txt
-├── orchestrator/
-│   ├── server.py
-│   └── requirements.txt
-├── scripts/
-│   ├── deploy-cuttlefish-oci.sh
-│   ├── install-cuttlefish-cloud-phone.sh
-│   ├── deploy-from-golden.sh
-│   ├── deploy-golden-fleet.sh
-│   ├── create-golden-image.sh
-│   ├── prepare-golden-image.sh
-│   ├── cuttlefish-phase1-setup.sh
-│   ├── cuttlefish-phase1-validate.sh
-│   ├── cuttlefish-rtmp-bridge.sh
-│   ├── test-cuttlefish-rtmp-bridge.sh
-│   └── verify-cuttlefish-ingest.sh
-├── systemd/
-│   ├── cuttlefish-cloud-phone.target
-│   ├── cuttlefish-launch.service
-│   ├── cuttlefish-rtmp-bridge.service
-│   ├── control-api.service
-│   └── nginx-rtmp.service
-└── docs/
-    ├── DEPLOYMENT.md
-    ├── CUTTLEFISH_PHASE1.md
-    ├── CUTTLEFISH_PHASE2_RTMP_BRIDGE.md
-    └── CUTTLEFISH_OCI_GOLDEN_IMAGE.md
+├── orchestrator/          # default purpose=automation → Redroid pool
+├── docker/redroid-compose.yml
+├── scripts/redroid-up.sh
+├── scripts/install-gapps-redroid.sh
+├── scripts/install-redroid-cloud-phone.sh
+├── scripts/deploy-redroid-oci.sh
+├── systemd/redroid-*.service
+├── systemd/cuttlefish-*.service
+└── docs/RUNTIME-SPLIT.md
 ```
 
 ## Documentation
 
-- `docs/DEPLOYMENT.md`
-- `docs/CUTTLEFISH_PHASE1.md`
-- `docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md`
-- `docs/CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
-- `docs/API_REFERENCE.md`
-- `docs/AGENT_COORDINATION.md`
+- `docs/RUNTIME-SPLIT.md` — why two images; orchestrator pool
+- `docs/GAPPS.md` — Play install on Redroid only
+- `docs/DEPLOYMENT.md` — Cuttlefish ingest deploy
+- `docs/CUTTLEFISH_PHASE1.md` / `CUTTLEFISH_PHASE2_RTMP_BRIDGE.md` / `CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
+- `docs/API_REFERENCE.md` / `docs/AGENT_COORDINATION.md`
 - `docs/CLEANROOM_BOOTSTRAP.md`
-- `FUTURE_CONSIDERATIONS_CAMERA_STACK.md`
+- `FUTURE_CONSIDERATIONS_CAMERA_STACK.md` — parked HAL-on-container notes
