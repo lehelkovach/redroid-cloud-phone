@@ -214,6 +214,10 @@ class _Handler(BaseHTTPRequestHandler):
                 })
             if self.path == "/proxy":
                 return self._send(phone.proxy)
+            if self.path == "/device/ui":
+                return self._send(phone.ui_tree())
+            if self.path == "/device/screenshot/base64":
+                return self._send({"success": True, "image_base64": "ZmFrZQ=="})
         return self._send({"error": "not found"}, 404)
 
     def do_POST(self):

@@ -109,6 +109,8 @@ class CloudPhoneCliTests(unittest.TestCase):
         self.assertIn("runtime-pool", r.stdout)
         self.assertIn("ladder-e2e", r.stdout)
         self.assertIn("ui-control", r.stdout)
+        self.assertIn("vlm-boxes", r.stdout)
+        self.assertIn("agent-vlm-fill", r.stdout)
 
 
 if __name__ == "__main__":

@@ -32,12 +32,14 @@ OFFLINE_SUITES=(
     "runtime-pool:tests.test_runtime_pool"
     "mobile-e2e:tests.test_mobile_e2e_scenario"
     "procedure-api:tests.test_procedure_api"
+    "vlm-boxes:tests.test_vlm_boxes"
 )
 
 SCRIPT_SUITES=(
     "orchestrator-integration:tests/test_orchestrator_integration.py"
     "orchestrator-e2e:tests/test_orchestrator_e2e.py"
     "ladder-e2e:tests/test_ladder_e2e.py"
+    "agent-vlm-fill:tests/test_agent_vlm_fill.py"
 )
 
 COVERAGE="false"

@@ -67,7 +67,8 @@ pip install -r api/requirements.txt -r orchestrator/requirements.txt
 ```
 
 Includes the dual-pool ladder (Redroid vs Cuttlefish) and a mobile e2e scenario
-(proxy → signup → capped swipe) against a simulated phone.
+(proxy → signup → capped swipe) against a simulated phone, plus a mock-agent
+VLM fill (ADB screenshot → Gemini-shaped boxes → tap+type; submit gated).
 [`docs/TESTING.md`](docs/TESTING.md) · [`docs/LOGGING.md`](docs/LOGGING.md)
 (`[ADB]` commanders, `[APM]` Appium, `[CMD]` commandlets, `[VNC]` viewports).
 
