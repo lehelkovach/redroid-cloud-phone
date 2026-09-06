@@ -16,14 +16,24 @@ except ImportError:
     import viewport  # type: ignore
 
 
-def make_control_app(runtime="redroid"):
+# 1x1 PNG — ADB screencap stand-in. Agents must not treat VNC pixels as the frame.
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+EMPTY_UI_DUMP = {"success": True, "count": 0, "elements": []}
+
+
+def make_control_app(runtime="redroid", ui_dump=None):
     """Return (app, call_log) for a fake phone Control API.
 
     Redroid reports Play/GMS ready. Cuttlefish reports ingest endpoints and no GApps.
+    Default UI dump is empty/unlabeled so the VLM fill path has to run.
     """
     app = Flask(f"fake-control-{runtime}-{id(runtime)}")
     log = []
     gapps_ready = runtime == "redroid"
+    dump = EMPTY_UI_DUMP if ui_dump is None else ui_dump
     logger = configure(f"fake.{runtime}", log_type="API")
     cmd_logger = logger.bind("CMD")
     apm_logger = logger.bind("APM")
@@ -81,11 +91,23 @@ def make_control_app(runtime="redroid"):
         viewport.frame(vnc_logger, size=size)
         return jsonify({"success": True})
 
-    @app.route("/device/screenshot/base64", methods=["GET"])
+    @app.route("/device/screenshot/base64", methods=["GET", "POST"])
     def screenshot_base64():
         log.append({"endpoint": "screenshot", "runtime": runtime})
         viewport.frame(vnc_logger, nbytes=4, size=size)
-        return jsonify({"success": True, "image_base64": "AAAA"})
+        return jsonify({
+            "success": True,
+            "image_base64": _TINY_PNG_B64,
+            "width": size[0],
+            "height": size[1],
+            "source": "adb-screencap",
+        })
+
+    @app.route("/device/ui", methods=["GET", "POST"])
+    def device_ui():
+        log.append({"endpoint": "ui_dump", "runtime": runtime})
+        cmd_logger.info("uiautomator dump count=%s runtime=%s", dump.get("count"), runtime)
+        return jsonify(dump)
 
     @app.route("/jobs", methods=["POST"])
     def jobs():

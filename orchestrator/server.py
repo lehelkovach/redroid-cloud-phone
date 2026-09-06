@@ -794,6 +794,17 @@ def phone_vnc(instance_id):
     return jsonify(data)
 
 
+@app.route("/phones/<instance_id>/dump", methods=["GET"])
+def phone_dump(instance_id):
+    """UIAutomator tree (labels + bounds). Agents screenshot via ADB, not VNC."""
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    cmd_logger.info("relay ui dump instance=%s", instance_id)
+    data = _control_get(inst["api_url"], "/device/ui", instance=inst)
+    return jsonify(data)
+
+
 @app.route("/phones/<instance_id>/logs", methods=["GET"])
 def phone_logs(instance_id):
     inst, err = _require_instance(instance_id)

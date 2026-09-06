@@ -136,8 +136,12 @@ class MobileAdapter(SurfaceAdapter):
                 "duration": int(step.get("duration_ms", 300)),
             })
         if action == "read":
+            if self.control_get:
+                return self.control_get("/device/ui", instance=self.instance)
             return self._post("/device/ui", {})
         if action == "screenshot":
+            if self.control_get:
+                return self.control_get("/device/screenshot/base64", instance=self.instance)
             return self._post("/device/screenshot/base64", {})
         if action == "shell":
             return self._post("/adb/shell", {"command": step.get("command", "")})
