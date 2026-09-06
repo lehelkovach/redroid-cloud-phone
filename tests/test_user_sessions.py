@@ -58,7 +58,7 @@ class UserSessionTests(unittest.TestCase):
             a.get_json()["session"]["instance_id"],
             b.get_json()["session"]["instance_id"],
         )
-        self.assertEqual(b.get_json()["session"]["purpose"], "play")
+        self.assertEqual(b.get_json()["session"]["purpose"], "automation")
         health = self.client.get("/health").get_json()
         self.assertEqual(health["instances"], 2)
         self.assertEqual(health["sessions"], 2)
