@@ -91,7 +91,9 @@ class OrchestratorProc:
             "ORCH_HOST": "127.0.0.1",
             "ORCH_PORT": str(self.port),
             "ORCH_API_TOKEN": self.token,
-            "ORCH_LOG_LEVEL": "WARNING",
+            "ORCH_LOG_LEVEL": os.environ.get("ORCH_LOG_LEVEL", "DEBUG"),
+            "LOG_LEVEL": os.environ.get("LOG_LEVEL", "DEBUG"),
+            "CLOUD_PHONE_VERBOSE": os.environ.get("CLOUD_PHONE_VERBOSE", "1"),
         })
         if self.camera_url:
             env["ORCH_MOCK_CAMERA_API_URL"] = self.camera_url

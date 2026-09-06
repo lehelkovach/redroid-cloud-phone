@@ -55,7 +55,7 @@ REDROID_GOLDEN_IMAGE_ID=<ocid> ./cloud-phone deploy-fleet --platform redroid --c
 
 Never commit a GApps zip. Details: [`GAPPS.md`](./GAPPS.md).
 
-Proof of the split is the TDD ladder in [`TESTING.md`](./TESTING.md) (`./cloud-phone test`, R0–R3 offline).
+Proof of the split is the TDD ladder in [`TESTING.md`](./TESTING.md) (`./cloud-phone test`, R0–R3 offline). Verbose IO logs (`[CMD]` commandlets, `[APM]` Appium, `[VNC]` viewports) are documented in [`LOGGING.md`](./LOGGING.md).
 
 ## Non-goals
 

@@ -12,10 +12,26 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PYTHON="${PYTHON:-python3}"
+RUNG=""
+LIVE="false"
+VERBOSE="-v"
+SHOW_LOGS="true"
+REPORT_DIR="${TEST_REPORT_DIR:-$PROJECT_ROOT/.test-reports}"
+LIST="false"
+
+# Capture user LOG_LEVEL before log.sh defaults it to INFO.
+USER_LOG_LEVEL="${LOG_LEVEL:-}"
+export CLOUD_PHONE_VERBOSE="${CLOUD_PHONE_VERBOSE:-1}"
+export LOG_LEVEL="${USER_LOG_LEVEL:-DEBUG}"
+export ORCH_LOG_LEVEL="${ORCH_LOG_LEVEL:-DEBUG}"
+
 if [[ -f "$SCRIPT_DIR/lib/log.sh" ]]; then
     # shellcheck source=lib/log.sh
     source "$SCRIPT_DIR/lib/log.sh"
     LOG_TYPE=TST
+    LOG_LEVEL="${USER_LOG_LEVEL:-DEBUG}"
 else
     log_info() { echo "[INFO] $*"; }
     log_error() { echo "[ERROR] $*" >&2; }
@@ -23,19 +39,14 @@ fi
 
 cd "$PROJECT_ROOT"
 
-PYTHON="${PYTHON:-python3}"
-RUNG=""
-LIVE="false"
-VERBOSE="-v"
-REPORT_DIR="${TEST_REPORT_DIR:-$PROJECT_ROOT/.test-reports}"
-LIST="false"
-
 # name:test_file.py  (unittest discover -p)
 RUNG0=(
     "gapps-zip:test_gapps_zip.py"
     "gapps-health:test_gapps_health.py"
     "orchestrator-unit:test_orchestrator_unit.py"
     "scripts-contract:test_scripts_contract.py"
+    "logging:test_logging.py"
+    "ui-control:test_ui_control.py"
 )
 RUNG1=(
     "runtime-pool:test_runtime_pool.py"
@@ -59,7 +70,9 @@ Usage: ./scripts/run-tests.sh [OPTIONS]
   --rung N        0=unit 1=component 2=process-integration 3=dual-pool-e2e 4=live
   --live          Include rung 4 (or set CLOUD_PHONE_LIVE=1)
   --list          Print the ladder
-  --quiet         Less unittest noise
+  --quiet         Less unittest noise, hide labeled log excerpts
+  --verbose       Unittest -v and dump ADB/Appium/commandlet/VNC log lines
+  --show-logs     Dump labeled log excerpts after each suite
   --report-dir D  Log directory (default .test-reports)
   --help
 EOF
@@ -70,8 +83,9 @@ while [[ $# -gt 0 ]]; do
         --rung) RUNG="${2:-}"; shift 2 ;;
         --live) LIVE="true"; shift ;;
         --list) LIST="true"; shift ;;
-        --quiet) VERBOSE=""; shift ;;
-        --verbose|-v) VERBOSE="-v"; shift ;;
+        --quiet) VERBOSE=""; SHOW_LOGS="false"; shift ;;
+        --verbose|-v) VERBOSE="-v"; SHOW_LOGS="true"; shift ;;
+        --show-logs) SHOW_LOGS="true"; shift ;;
         --report-dir) REPORT_DIR="${2:-}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) log_error "Unknown option: $1"; usage; exit 1 ;;
@@ -82,10 +96,10 @@ print_ladder() {
     cat <<'EOF'
 TDD ladder (offline through R3):
 
-  R0 unit                 GApps zip, purpose mapping, script contracts, orch helpers
-  R1 component            Orchestrator pool (Flask test client) + Control API (patched ADB)
+  R0 unit                 GApps zip, purpose mapping, script contracts, labeled logs, UI commandlets
+  R1 component            Orchestrator pool (Flask test client) + Control API (patched ADB, Appium/VNC logs)
   R2 process integration  Real orchestrator process + one fake Control API
-  R3 dual-pool e2e        Redroid(GApps) + Cuttlefish(ingest) processes, sessions, Play launch
+  R3 dual-pool e2e        Redroid(GApps) + Cuttlefish(ingest) processes, sessions, Play launch, verbose IO logs
   R4 live                 Real Control API (CLOUD_PHONE_LIVE=1) — skipped offline
 EOF
     echo
@@ -143,12 +157,17 @@ for rung in "${RUNGS[@]}"; do
         file="${entry##*:}"
         log="${REPORT_DIR}/r${rung}-${name}.log"
         echo "-- ${name} ($file)"
+        log_info "r${rung} ${name} verbose=${CLOUD_PHONE_VERBOSE} log_level=${LOG_LEVEL}"
         if ! "$PYTHON" -m unittest discover -s tests -p "$file" $VERBOSE >"$log" 2>&1; then
             echo "FAIL ${name}  (log: $log)"
             tail -40 "$log" || true
             failed=$((failed + 1))
         else
             echo "PASS ${name}"
+        fi
+        if [[ "$SHOW_LOGS" == "true" ]]; then
+            echo "--- labeled logs (${name}) ---"
+            grep -E '\[(ADB|CMD|APM|VNC|API|ORC|TST)\]' "$log" | tail -80 || true
         fi
         ran=$((ran + 1))
     done < <(suites_for_rung "$rung")

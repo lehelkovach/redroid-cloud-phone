@@ -60,6 +60,33 @@ class OrchestratorIntegrationTests(unittest.TestCase):
         self.assertIn("screenshot", endpoints)
         self.assertIn("jobs", endpoints)
 
+    def test_verbose_appium_commandlet_vnc_logs(self):
+        created = self.orch.post("/instances")
+        self.assertEqual(created.status_code, 201)
+        instance_id = created.json()["id"]
+
+        ui = self.orch.post(
+            f"/phones/{instance_id}/ui",
+            json={"action": "tap", "xp": 50, "yp": 50},
+        )
+        self.assertEqual(ui.status_code, 200, ui.text)
+        self.assertEqual(ui.json()["backend"], "adb")
+        self.assertEqual(ui.json()["commands"], ["input tap 640 360"])
+
+        appium = self.orch.get(f"/phones/{instance_id}/appium")
+        appium.raise_for_status()
+        self.assertIn("url", appium.json())
+
+        vnc = self.orch.get(f"/phones/{instance_id}/vnc")
+        vnc.raise_for_status()
+        self.assertEqual(vnc.json()["port"], 5900)
+        self.assertEqual(vnc.json()["width"], 1280)
+
+        logs = self.orch.get(f"/phones/{instance_id}/logs?type=CMD,APM,VNC")
+        logs.raise_for_status()
+        types = {item["type"] for item in logs.json()["logs"]}
+        self.assertTrue({"CMD", "APM", "VNC"} <= types, logs.json())
+
     def test_auth_required(self):
         import requests
         resp = requests.get(f"{self.orch.url}/instances", timeout=5)

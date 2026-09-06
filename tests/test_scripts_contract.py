@@ -58,6 +58,12 @@ class DeployScriptContractTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("camera_devices: none", r.stdout)
 
+    def test_install_copies_logging_commandlets_and_viewport(self):
+        text = (ROOT / "scripts" / "install-redroid-cloud-phone.sh").read_text()
+        self.assertIn("cloudphone_logging.py", text)
+        self.assertIn("ui_control.py", text)
+        self.assertIn("viewport.py", text)
+
     def test_redroid_down_dry_run(self):
         r = run([
             "bash", str(ROOT / "scripts" / "redroid-up.sh"),
@@ -98,6 +104,8 @@ class CloudPhoneCliTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("rung0", r.stdout)
         self.assertIn("rung3", r.stdout)
+        self.assertIn("logging", r.stdout)
+        self.assertIn("ui-control", r.stdout)
 
 
 if __name__ == "__main__":

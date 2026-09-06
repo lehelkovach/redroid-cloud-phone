@@ -112,6 +112,9 @@ chmod +x /opt/cloud-phone-scripts/*.sh
 log_info "[4/8] Installing Control API..."
 mkdir -p /opt/cloud-phone-api
 cp "$PROJECT_ROOT/api/server.py" /opt/cloud-phone-api/
+cp "$PROJECT_ROOT/api/cloudphone_logging.py" /opt/cloud-phone-api/
+cp "$PROJECT_ROOT/api/ui_control.py" /opt/cloud-phone-api/
+cp "$PROJECT_ROOT/api/viewport.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/requirements.txt" /opt/cloud-phone-api/
 mkdir -p /opt/cloud-phone/config/device-profiles
 cp "$PROJECT_ROOT/config/device-profiles/"*.prop /opt/cloud-phone/config/device-profiles/

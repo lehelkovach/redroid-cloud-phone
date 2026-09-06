@@ -135,6 +135,24 @@ class DualPoolLadderE2ETests(unittest.TestCase):
         )
         self.assertNotEqual(bad.returncode, 0, "cuttlefish health must fail --require-gapps")
 
+    def test_r3_08_verbose_logs_cover_appium_commandlets_and_vnc(self):
+        alice = self._alice_session()
+        instance_id = alice["instance_id"]
+        ui = self.orch.post(
+            f"/phones/{instance_id}/ui",
+            json={"action": "tap", "xp": 50, "yp": 50},
+        )
+        self.assertEqual(ui.status_code, 200, ui.text)
+        appium = self.orch.get(f"/phones/{instance_id}/appium").json()
+        self.assertTrue(appium.get("ready"), appium)
+        vnc = self.orch.get(f"/phones/{instance_id}/vnc").json()
+        self.assertEqual(vnc["port"], 5900)
+        logs = self.orch.get(f"/phones/{instance_id}/logs?type=CMD,APM,VNC").json()
+        types = {item["type"] for item in logs["logs"]}
+        self.assertTrue({"CMD", "APM", "VNC"} <= types, logs)
+        orch_logs = self.orch.get("/logs?type=CMD,APM,VNC").json()
+        self.assertGreater(orch_logs["count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

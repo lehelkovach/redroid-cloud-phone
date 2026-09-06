@@ -13,7 +13,6 @@ Features:
 """
 
 import json
-import logging
 import os
 import subprocess
 import threading
@@ -43,15 +42,22 @@ except ImportError:  # python orchestrator/server.py
         runtime_for_purpose,
     )
 
+try:
+    from api.cloudphone_logging import configure as _configure_logging
+    from api.cloudphone_logging import redact, recent_logs
+except ImportError:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from api.cloudphone_logging import configure as _configure_logging
+    from api.cloudphone_logging import redact, recent_logs
+
 app = Flask(__name__)
 
-# Logging
-LOG_LEVEL = os.environ.get("ORCH_LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-logger = logging.getLogger("orchestrator")
+LOG_LEVEL = os.environ.get("ORCH_LOG_LEVEL", os.environ.get("LOG_LEVEL", "INFO")).upper()
+logger = _configure_logging("orchestrator", log_type="ORC")
+cmd_logger = logger.bind("CMD")
+apm_logger = logger.bind("APM")
+vnc_logger = logger.bind("VNC")
 
 # Config
 # mock | redroid | oci
@@ -166,7 +172,7 @@ def _control_headers():
 
 def _control_post(api_url: str, path: str, payload=None):
     url = f"{api_url}{path}"
-    logger.info("Control POST %s payload=%s", url, payload)
+    logger.info("Control POST %s payload=%s", url, redact(payload))
     resp = requests.post(url, json=payload, headers=_control_headers(), timeout=ORCH_API_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
@@ -406,7 +412,7 @@ def _run_steps(api_url: str, steps):
     results = []
     for step in steps:
         action = step.get("action")
-        logger.info("Executing step action=%s payload=%s", action, step)
+        cmd_logger.info("step action=%s payload=%s", action, redact(step))
         if action == "start_app":
             package = step.get("package")
             if not package:
@@ -663,6 +669,59 @@ def phone_job_poll(instance_id, job_id):
         return err
     data = _control_get(inst["api_url"], f"/jobs/{job_id}")
     return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/ui", methods=["POST"])
+def phone_ui(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    payload = request.get_json() or {}
+    cmd_logger.info("relay ui instance=%s payload=%s", instance_id, redact(payload))
+    data = _control_post(inst["api_url"], "/ui/command", payload)
+    return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/appium", methods=["GET"])
+def phone_appium(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    apm_logger.info("relay appium status instance=%s", instance_id)
+    data = _control_get(inst["api_url"], "/appium/status")
+    return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/vnc", methods=["GET"])
+def phone_vnc(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    vnc_logger.info("relay vnc viewport instance=%s", instance_id)
+    data = _control_get(inst["api_url"], "/vnc/status")
+    return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/logs", methods=["GET"])
+def phone_logs(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    q = request.query_string.decode() if request.query_string else ""
+    path = "/logs" + (f"?{q}" if q else "")
+    data = _control_get(inst["api_url"], path)
+    return jsonify(data)
+
+
+@app.route("/logs", methods=["GET"])
+def orch_logs():
+    log_type = request.args.get("type")
+    try:
+        n = int(request.args.get("n", "200"))
+    except ValueError:
+        n = 200
+    items = recent_logs(log_type=log_type, n=n)
+    return jsonify({"count": len(items), "logs": items})
 
 
 def _pool_snapshot(items=None):

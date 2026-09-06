@@ -63,7 +63,7 @@ pip install -r api/requirements.txt -r orchestrator/requirements.txt
 ./cloud-phone test --list
 ```
 
-Offline rungs do not need Docker, a GApps zip, or OCI. Live guest checks are R4 (`--live`). See [`docs/TESTING.md`](docs/TESTING.md).
+Offline rungs do not need Docker, a GApps zip, or OCI. Live guest checks are R4 (`--live`). See [`docs/TESTING.md`](docs/TESTING.md) and [`docs/LOGGING.md`](docs/LOGGING.md) (`[ADB]` commanders, `[APM]` Appium, `[CMD]` commandlets, `[VNC]` viewports).
 
 ## Project structure
 
