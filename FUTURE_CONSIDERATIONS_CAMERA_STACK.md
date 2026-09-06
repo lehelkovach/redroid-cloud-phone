@@ -2,6 +2,8 @@
 
 This document captures future-facing guidance only. It does not change the current implementation plan.
 
+**2026-09-04 product decision:** do **not** retry virtual-camera HAL on Redroid or Waydroid. That failure is why the stack forked to Cuttlefish for ingest. Redroid is back as GApps **phones only** (no `/dev/video*` mounts). See [`docs/RUNTIME-SPLIT.md`](docs/RUNTIME-SPLIT.md).
+
 ## 1) Building a Docker Android ARM64 image with a working virtual camera HAL
 
 To make a container-first Android image reliably expose cameras to Android apps, these pieces must all match:

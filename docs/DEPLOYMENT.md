@@ -1,9 +1,11 @@
-# Deployment Guide (Cuttlefish-Only)
+# Deployment Guide (Cuttlefish ingest)
 
-This repository uses a single deployment model:
+Cuttlefish deploy is the **camera/mic ingest** host. For GApps automation phones use Redroid (`./cloud-phone redroid-up`, [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md)).
+
+This path:
 
 - OCI ARM64 instance
-- Cuttlefish runtime
+- Cuttlefish runtime (`/dev/kvm`)
 - nginx-rtmp ingest
 - FFmpeg bridge for front/back camera feeds and mic feed
 - Optional control plane via API and orchestrator services

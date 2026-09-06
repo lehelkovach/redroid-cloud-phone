@@ -1,0 +1,34 @@
+# Redroid phone containers for GApps / mobile IO.
+#
+# No v4l2loopback, no /dev/video*, no RTMP profile.
+# Virtual camera/mic ingest is Cuttlefish-only (see docs/RUNTIME-SPLIT.md).
+#
+# Usage:
+#   REDROID_NAME=phone-1 ADB_PORT=5555 docker compose -f docker/redroid-compose.yml -p phone-1 up -d
+#   ./scripts/redroid-up.sh --name phone-1 --adb-port 5555
+
+services:
+  redroid:
+    image: ${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}
+    container_name: ${REDROID_NAME:-redroid}
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "${ADB_PORT:-5555}:5555"
+    volumes:
+      - redroid-data:/data
+    command:
+      - androidboot.redroid_gpu_mode=${GPU_MODE:-guest}
+      - androidboot.redroid_width=${REDROID_WIDTH:-1280}
+      - androidboot.redroid_height=${REDROID_HEIGHT:-720}
+      - androidboot.redroid_fps=${REDROID_FPS:-30}
+      - androidboot.redroid_dpi=${REDROID_DPI:-240}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "getprop sys.boot_completed 2>/dev/null | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+volumes:
+  redroid-data:
