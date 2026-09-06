@@ -104,6 +104,7 @@ android-arm-cloud-phone/
 - `docs/RUNTIME-SPLIT.md` — why two images
 - `docs/GAPPS.md` — Play install on Redroid only
 - `docs/PROCEDURES.md` — step vocabulary, surfaces, approval gates
+- `docs/AUTH-AND-HEALTH.md` — the three tokens, and why `healthy` used to lie
 - `docs/TESTING.md` — suites, coverage, the mobile e2e scenario
 - `docs/LOGGING.md` — label scheme and filtering
 - `docs/DEPLOYMENT.md` — Cuttlefish ingest deploy

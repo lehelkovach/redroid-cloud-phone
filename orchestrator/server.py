@@ -46,6 +46,11 @@ cvd_logger = logger.bind("CVD")
 ORCH_DEPLOY_MODE = os.environ.get("ORCH_DEPLOY_MODE", "mock")
 ORCH_MOCK_API_URL = os.environ.get("ORCH_MOCK_API_URL", "http://127.0.0.1:8080")
 ORCH_API_TOKEN = os.environ.get("ORCH_API_TOKEN", "")
+# Outbound token for the phones' Control API. Separate from ORCH_API_TOKEN,
+# which authenticates callers of *this* service: one value cannot serve both,
+# and forcing it to meant an operator could not express "the phone uses a
+# different token" — the mismatch just showed up as 401s mid-run.
+ORCH_CONTROL_API_TOKEN = os.environ.get("ORCH_CONTROL_API_TOKEN", "") or ORCH_API_TOKEN
 ORCH_API_TIMEOUT = int(os.environ.get("ORCH_API_TIMEOUT", "30"))
 ORCH_INSTANCE_NAME_PREFIX = os.environ.get("ORCH_INSTANCE_NAME_PREFIX", "orchestrated-phone")
 ORCH_GOLDEN_IMAGE_ID = os.environ.get("GOLDEN_IMAGE_ID", "")
@@ -76,13 +81,37 @@ _adb_port_lock = threading.Lock()
 _next_adb_port = ORCH_REDROID_ADB_PORT_BASE
 
 
+def _presented_token():
+    header = request.headers.get("Authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return header.strip()
+
+
+def _auth_state():
+    token = _presented_token()
+    return {
+        "required": bool(ORCH_API_TOKEN),
+        "presented": bool(token),
+        "ok": (not ORCH_API_TOKEN) or token == ORCH_API_TOKEN,
+    }
+
+
 def _require_auth():
     if not ORCH_API_TOKEN:
         return None
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if token != ORCH_API_TOKEN:
-        return jsonify({"error": "Unauthorized"}), 401
-    return None
+    state = _auth_state()
+    if state["ok"]:
+        return None
+    body = {
+        "success": False,
+        "error": "Unauthorized",
+        "code": "auth_invalid" if state["presented"] else "auth_required",
+        "auth_required": True,
+    }
+    response = jsonify(body)
+    response.headers["WWW-Authenticate"] = 'Bearer realm="cloud-phone-orchestrator"'
+    return response, 401
 
 
 @app.before_request
@@ -138,12 +167,29 @@ def _is_lease_valid(instance_id, owner=None):
 
 def _control_headers(instance=None):
     headers = {"Content-Type": "application/json"}
-    if ORCH_API_TOKEN:
-        headers["Authorization"] = f"Bearer {ORCH_API_TOKEN}"
+    if ORCH_CONTROL_API_TOKEN:
+        headers["Authorization"] = f"Bearer {ORCH_CONTROL_API_TOKEN}"
     adb = (instance or {}).get("adb_connect")
     if adb:
         headers["X-Cloud-Phone-Adb"] = adb
     return headers
+
+
+class ControlAuthError(RuntimeError):
+    """The Control API rejected this orchestrator's token.
+
+    Named separately so an operator config problem cannot be reported as a
+    broken phone: ORCH_CONTROL_API_TOKEN here must equal API_TOKEN on the phone.
+    """
+
+
+def _raise_for_control_status(resp, url):
+    if resp.status_code in (401, 403):
+        raise ControlAuthError(
+            f"Control API rejected the orchestrator token ({resp.status_code}) at {url} — "
+            "ORCH_CONTROL_API_TOKEN must match API_TOKEN on the phone"
+        )
+    resp.raise_for_status()
 
 
 def _control_post(api_url: str, path: str, payload=None, instance=None):
@@ -152,7 +198,7 @@ def _control_post(api_url: str, path: str, payload=None, instance=None):
     resp = requests.post(
         url, json=payload, headers=_control_headers(instance), timeout=ORCH_API_TIMEOUT
     )
-    resp.raise_for_status()
+    _raise_for_control_status(resp, url)
     return resp.json()
 
 
@@ -160,8 +206,25 @@ def _control_get(api_url: str, path: str, instance=None):
     url = f"{api_url}{path}"
     logger.info("Control GET %s", url)
     resp = requests.get(url, headers=_control_headers(instance), timeout=ORCH_API_TIMEOUT)
-    resp.raise_for_status()
+    _raise_for_control_status(resp, url)
     return resp.json()
+
+
+def _assert_phone_usable(health, api_url):
+    """Reject a phone whose own `/health` says our token will not work.
+
+    `/health` is open on the Control API, so it answers 200 to a caller every
+    device endpoint will 401. Checking the auth block it reports turns that into
+    one clear failure instead of a run where every step 401s.
+    """
+    if not isinstance(health, dict):
+        return
+    auth = health.get("auth") or {}
+    if auth.get("required") and not auth.get("ok", True):
+        raise ControlAuthError(
+            f"phone at {api_url} reports status={health.get('status')} for this token — "
+            "ORCH_CONTROL_API_TOKEN must match API_TOKEN on the phone"
+        )
 
 
 def _runtime_for_mode(mode=None):
@@ -378,7 +441,7 @@ def _run_operation(op_id, payload):
         logger.info("Operation started id=%s payload=%s", op_id, payload)
         instance = _get_or_create_instance(payload.get("instance_id"))
         api_url = instance["api_url"]
-        _control_get(api_url, "/health", instance=instance)
+        _assert_phone_usable(_control_get(api_url, "/health", instance=instance), api_url)
 
         if payload.get("steps"):
             steps = _normalize_steps(payload["steps"])
@@ -661,6 +724,16 @@ def procedure_validate():
     return jsonify({"valid": True, "steps": steps, "count": len(steps)})
 
 
+def _touches_mobile(payload):
+    """Whether a procedure will drive a phone, and so needs a usable one."""
+    default_surface = payload.get("surface", proc.MOBILE)
+    steps = payload.get("steps") or []
+    if not steps:
+        return default_surface == proc.MOBILE
+    return any((step or {}).get("surface", default_surface) == proc.MOBILE
+               for step in steps)
+
+
 def _run_procedure_operation(op_id, payload):
     with _ops_lock:
         op = _ops.get(op_id)
@@ -673,6 +746,11 @@ def _run_procedure_operation(op_id, payload):
         instance = _get_or_create_instance(payload.get("instance_id"))
         adapters = _build_adapters(instance)
         steps = payload.get("steps")
+        if _touches_mobile(payload):
+            api_url = instance["api_url"]
+            _assert_phone_usable(
+                _control_get(api_url, "/health", instance=instance), api_url
+            )
         if not steps:
             steps = proc.login_procedure(
                 payload.get("app_package") or payload.get("url"),
@@ -862,8 +940,11 @@ def delete_session(owner_user_id):
 
 @app.route("/health", methods=["GET"])
 def health():
+    """Open (the auth middleware exempts it), so it reports the caller's auth."""
+    auth = _auth_state()
     return jsonify({
-        "status": "ok",
+        "status": "ok" if auth["ok"] else "unauthorized",
+        "auth": auth,
         "instances": len(_instances),
         "sessions": len(_user_sessions),
         "max_instances": ORCH_MAX_INSTANCES,

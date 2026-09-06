@@ -26,8 +26,12 @@ DEMO_APP = "com.example.mockdating"
 class FakePhone:
     """Device state. Thread-safe enough for one HTTP server thread."""
 
-    def __init__(self, deck=None, require_proxy=True, gapps=True):
+    def __init__(self, deck=None, require_proxy=True, gapps=True, api_token=""):
         self.lock = threading.Lock()
+        # Mirrors the real Control API: `/health` is open, device calls need
+        # this token. That asymmetry is what used to make a healthy phone look
+        # dead to a caller with the wrong token.
+        self.api_token = api_token
         self.screen = HOME_SCREEN
         self.focus = "com.android.launcher3"
         self.installed = {"com.android.launcher3", DEMO_APP}
@@ -160,13 +164,43 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def _auth_state(self):
+        required = bool(self.phone.api_token)
+        header = self.headers.get("Authorization", "") or ""
+        token = header[7:].strip() if header.lower().startswith("bearer ") else header.strip()
+        return {
+            "required": required,
+            "presented": bool(token),
+            "ok": (not required) or token == self.phone.api_token,
+        }
+
+    def _reject_unauthorized(self):
+        """401 on everything but `/health`, exactly as the real API does."""
+        if self.path == "/health":
+            return False
+        state = self._auth_state()
+        if state["ok"]:
+            return False
+        self._send({
+            "success": False,
+            "error": "Unauthorized",
+            "code": "auth_invalid" if state["presented"] else "auth_required",
+            "auth_required": True,
+        }, 401)
+        return True
+
     def do_GET(self):
         phone = self.phone
+        if self._reject_unauthorized():
+            return None
         with phone.lock:
             if self.path == "/health":
+                auth = self._auth_state()
                 return self._send({
-                    "status": "healthy",
+                    "status": "healthy" if auth["ok"] else "unauthorized",
                     "adb_connected": True,
+                    "auth": auth,
+                    "usable": auth["ok"],
                     "gapps": phone.gapps_status(),
                     "egress_ip": phone.egress_ip,
                 })
@@ -184,7 +218,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         phone = self.phone
-        payload = self._body()
+        payload = self._body()  # drain before any early return
+        if self._reject_unauthorized():
+            return None
         with phone.lock:
             phone._record(self.path, payload)
 

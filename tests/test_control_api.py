@@ -291,10 +291,147 @@ class AuthTests(unittest.TestCase):
             resp = self.client.get("/status", headers={"Authorization": "Bearer s3cret"})
         self.assertEqual(resp.status_code, 200)
 
-    def test_health_stays_open_but_that_can_mask_auth_failures(self):
-        """`/health` is unauthenticated on purpose; PR #10 found this masking 401s."""
+    def test_health_stays_open_for_probes(self):
+        """systemd and Docker probe `/health` with no token; keep it 200."""
         with patch.object(control_api, "run_adb", fake_adb()):
             self.assertEqual(self.client.get("/health").status_code, 200)
+
+    def test_health_refuses_to_call_itself_healthy_to_a_caller_it_will_401(self):
+        """The masking bug: healthy phone, 401 everywhere, lab reads as dead."""
+        with patch.object(control_api, "run_adb", fake_adb()):
+            body = self.client.get("/health").get_json()
+        self.assertEqual(body["status"], "unauthorized")
+        self.assertFalse(body["usable"])
+        self.assertTrue(body["adb_connected"], "the device itself is fine")
+        self.assertEqual(body["auth"], {"required": True, "presented": False, "ok": False})
+
+    def test_health_is_healthy_once_the_token_is_right(self):
+        with patch.object(control_api, "run_adb", fake_adb()):
+            body = self.client.get(
+                "/health", headers={"Authorization": "Bearer s3cret"}
+            ).get_json()
+        self.assertEqual(body["status"], "healthy")
+        self.assertTrue(body["usable"])
+        self.assertTrue(body["auth"]["ok"])
+
+    def test_health_separates_a_dead_device_from_a_bad_token(self):
+        def dead_adb(*args, timeout=30):
+            return False, "", "device offline"
+        with patch.object(control_api, "run_adb", dead_adb):
+            body = self.client.get(
+                "/health", headers={"Authorization": "Bearer s3cret"}
+            ).get_json()
+        self.assertEqual(body["status"], "degraded")
+        self.assertTrue(body["auth"]["ok"], "the token was fine; the phone was not")
+
+    def test_401_is_machine_readable_and_distinguishes_missing_from_wrong(self):
+        missing = self.client.get("/status")
+        wrong = self.client.get("/status", headers={"Authorization": "Bearer nope"})
+        self.assertEqual(missing.get_json()["code"], "auth_required")
+        self.assertEqual(wrong.get_json()["code"], "auth_invalid")
+        for resp in (missing, wrong):
+            self.assertTrue(resp.get_json()["auth_required"])
+            self.assertIs(resp.get_json()["success"], False)
+            self.assertIn("Bearer", resp.headers.get("WWW-Authenticate", ""))
+
+    def test_no_token_configured_means_open_and_healthy(self):
+        control_api.API_TOKEN = ""
+        with patch.object(control_api, "run_adb", fake_adb()):
+            body = self.client.get("/health").get_json()
+        self.assertEqual(body["status"], "healthy")
+        self.assertEqual(body["auth"], {"required": False, "presented": False, "ok": True})
+
+
+class AppLaunchTests(unittest.TestCase):
+    """A launch that never happened must not report success.
+
+    `cmd package resolve-activity` exits 0 and prints "No activity found" for a
+    package that is not installed, so the old code answered
+    `{"success": true, "activity": "No activity found"}` — which is how a phone
+    with no Play Store looked like a phone that had just opened it.
+    """
+
+    def setUp(self):
+        self.client = control_api.app.test_client()
+        control_api.API_TOKEN = ""
+
+    def test_resolved_activity_is_started(self):
+        calls = []
+        table = {
+            "resolve-activity": (True, "com.example.app/.MainActivity", ""),
+            "am start": (True, "Starting: Intent { ... }", ""),
+        }
+        with patch.object(control_api, "run_adb", fake_adb(table, record=calls)):
+            body = self.client.post("/apps/com.example.app/start").get_json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["activity"], "com.example.app/.MainActivity")
+        self.assertTrue(any("am start -n com.example.app/.MainActivity" in c[1] for c in calls))
+
+    def test_missing_package_is_a_404_not_a_false_green(self):
+        table = {
+            "resolve-activity": (True, "No activity found", ""),
+            "monkey": (True, "** No activities found to run, monkey aborted.", ""),
+        }
+        with patch.object(control_api, "run_adb", fake_adb(table)):
+            resp = self.client.post("/apps/com.android.vending/start")
+        body = resp.get_json()
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(body["success"])
+        self.assertEqual(body["code"], "not_launchable")
+        self.assertNotIn("activity", body, "do not report an activity that does not exist")
+
+    def test_resolve_output_is_matched_against_the_package(self):
+        """Any line not starting with `<package>/` is not an activity."""
+        table = {"resolve-activity": (True, "No activity found", "")}
+        with patch.object(control_api, "run_adb", fake_adb(table)):
+            self.assertIsNone(control_api._resolve_launch_activity("com.example.app"))
+
+    def test_am_start_error_is_reported(self):
+        table = {
+            "resolve-activity": (True, "com.example.app/.MainActivity", ""),
+            "am start": (True, "", "Error: Activity not started"),
+        }
+        with patch.object(control_api, "run_adb", fake_adb(table)):
+            resp = self.client.post("/apps/com.example.app/start")
+        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(resp.get_json()["success"])
+
+    def test_monkey_fallback_still_works(self):
+        table = {
+            "resolve-activity": (True, "No activity found", ""),
+            "monkey": (True, "Events injected: 1", ""),
+        }
+        with patch.object(control_api, "run_adb", fake_adb(table)):
+            body = self.client.post("/apps/com.example.app/start").get_json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["via"], "monkey")
+
+
+class FocusTests(unittest.TestCase):
+    """`adb shell "dumpsys window | grep x"` returns "" — the pipe kills dumpsys."""
+
+    def setUp(self):
+        self.client = control_api.app.test_client()
+        control_api.API_TOKEN = ""
+
+    def test_focus_is_read_without_a_pipe(self):
+        dump = (
+            "  mCurrentFocus=Window{ab12 u0 com.example.app/.MainActivity}\n"
+            "  mFocusedApp=AppWindowToken{...}\n"
+        )
+        calls = []
+        with patch.object(control_api, "run_adb", fake_adb({"dumpsys window": (True, dump, "")},
+                                                           record=calls)):
+            body = self.client.get("/device/focus").get_json()
+        self.assertTrue(body["success"])
+        self.assertIn("com.example.app/.MainActivity", body["focus"])
+        self.assertFalse(any("|" in c[1] for c in calls), "no pipe inside adb shell")
+
+    def test_focus_reports_failure_rather_than_an_empty_string(self):
+        with patch.object(control_api, "run_adb", lambda *a, timeout=30: (False, "", "offline")):
+            body = self.client.get("/device/focus").get_json()
+        self.assertFalse(body["success"])
+        self.assertEqual(body["focus"], "")
 
 
 if __name__ == "__main__":

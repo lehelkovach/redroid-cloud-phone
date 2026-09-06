@@ -124,14 +124,54 @@ def ensure_adb_connected():
         adb_logger.warning("connect failed: %s", _state["last_adb_error"])
     return False
 
+def presented_token():
+    """Bearer token on the current request, or "" when none was sent."""
+    try:
+        header = request.headers.get("Authorization", "")
+    except RuntimeError:  # outside a request context
+        return ""
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return header.strip()
+
+
+def auth_state():
+    """Whether this caller can drive the device.
+
+    `/health` is deliberately unauthenticated so systemd and Docker probes keep
+    working, which used to mean a phone reported `healthy` while every device
+    call answered 401. Reporting this alongside the ADB state is what stops an
+    auth failure from reading as a dead device.
+    """
+    required = bool(API_TOKEN)
+    token = presented_token()
+    return {
+        "required": required,
+        "presented": bool(token),
+        "ok": (not required) or token == API_TOKEN,
+    }
+
+
 def require_auth(f):
     """Decorator for API authentication"""
     @wraps(f)
     def decorated(*args, **kwargs):
         if API_TOKEN:
-            token = request.headers.get("Authorization", "").replace("Bearer ", "")
-            if token != API_TOKEN:
-                return jsonify({"error": "Unauthorized"}), 401
+            state = auth_state()
+            if not state["ok"]:
+                # `code` distinguishes "you sent nothing" from "your token is
+                # wrong", and both from a missing route, so a client cannot
+                # retry an alternate path and report the 401 as a 404.
+                code = "auth_invalid" if state["presented"] else "auth_required"
+                body = {
+                    "success": False,
+                    "error": "Unauthorized",
+                    "code": code,
+                    "auth_required": True,
+                }
+                response = jsonify(body)
+                response.headers["WWW-Authenticate"] = 'Bearer realm="cloud-phone"'
+                return response, 401
         return f(*args, **kwargs)
     return decorated
 
@@ -267,6 +307,22 @@ def _find_by_label(elements, label):
     return candidates[0][2]
 
 
+def current_focus():
+    """Focused window line from `dumpsys window`, or "" when unavailable.
+
+    The filtering happens here rather than in `adb shell "... | grep ..."`: a
+    pipe inside the guest shell closes early and kills the upstream dumpsys, so
+    the piped form returns an empty string and reads as a failed read.
+    """
+    ok, stdout, _ = run_adb_shell("dumpsys window")
+    if not ok:
+        return ""
+    for line in (stdout or "").splitlines():
+        if "mCurrentFocus" in line:
+            return line.strip()
+    return ""
+
+
 def _do_tap_label(label):
     tree = _read_ui_tree()
     if not tree.get("success"):
@@ -305,7 +361,7 @@ def _do_device_input(data):
 
 def _do_screenshot_base64():
     result = subprocess.run(
-        ["adb", "-s", ADB_CONNECT, "exec-out", "screencap", "-p"],
+        ["adb", "-s", current_adb_connect(), "exec-out", "screencap", "-p"],
         capture_output=True, timeout=30
     )
     if result.returncode == 0 and result.stdout:
@@ -386,15 +442,30 @@ def _gapps_status():
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Health check endpoint"""
+    """Health check endpoint.
+
+    Stays open and always answers 200 so probes keep working, but reports
+    whether the caller could actually drive the device: `status` is
+    `unauthorized` for a caller whose token every device endpoint will reject,
+    because "healthy" plus 401 everywhere is how a working phone reads as dead.
+    """
     connected = ensure_adb_connected()
     gapps = _gapps_status() if connected else {
         "gms": False, "play_store": False, "gsf": False, "ready": False,
     }
+    auth = auth_state()
+    if not auth["ok"]:
+        status = "unauthorized"
+    elif connected:
+        status = "healthy"
+    else:
+        status = "degraded"
     return jsonify({
-        "status": "healthy" if connected else "degraded",
+        "status": status,
         "adb_connected": connected,
         "adb_target": current_adb_connect(),
+        "auth": auth,
+        "usable": bool(connected and auth["ok"]),
         "gapps": gapps,
         "state": _state
     })
@@ -788,13 +859,20 @@ def device_ui():
     result = _read_ui_tree()
     return jsonify(result), (200 if result.get("success") else 500)
 
+@app.route("/device/focus", methods=["GET"])
+@require_auth
+def device_focus():
+    """Focused window/activity, read without a pipe inside `adb shell`."""
+    focus = current_focus()
+    return jsonify({"success": bool(focus), "focus": focus})
+
 @app.route("/device/screenshot", methods=["GET"])
 @require_auth
 def screenshot():
     """Take screenshot and return as PNG"""
     ensure_adb_connected()
     result = subprocess.run(
-        ["adb", "-s", ADB_CONNECT, "exec-out", "screencap", "-p"],
+        ["adb", "-s", current_adb_connect(), "exec-out", "screencap", "-p"],
         capture_output=True, timeout=30
     )
     if result.returncode == 0 and result.stdout:
@@ -826,23 +904,57 @@ def list_apps():
         "count": len(packages)
     })
 
+def _resolve_launch_activity(package):
+    """Launcher component for `package`, or None when it has none.
+
+    `cmd package resolve-activity` exits 0 and prints "No activity found" for a
+    package that is absent or has no launcher entry, so the output has to be
+    matched against the package name rather than trusted.
+    """
+    success, out, _ = run_adb_shell(f"cmd package resolve-activity --brief {package}")
+    if not success:
+        return None
+    for line in reversed((out or "").splitlines()):
+        candidate = line.strip()
+        if candidate.startswith(f"{package}/"):
+            return candidate
+    return None
+
+
 @app.route("/apps/<package>/start", methods=["POST"])
 @require_auth
 def start_app(package):
-    """Start an app by package name"""
-    # Get main activity
-    success, out, _ = run_adb_shell(
-        f"cmd package resolve-activity --brief {package} | tail -n 1"
+    """Start an app by package name.
+
+    Reports failure when the package has no launchable activity — launching a
+    Play Store that GApps never installed used to answer `success: true` with
+    `"activity": "No activity found"`, which is what hid the missing GMS.
+    """
+    activity = _resolve_launch_activity(package)
+    if activity:
+        success, out, err = run_adb_shell(f"am start -n {activity}")
+        combined = f"{out}\n{err}"
+        if success and "Error" not in combined and "Exception" not in combined:
+            return jsonify({"success": True, "activity": activity})
+        return jsonify({
+            "success": False,
+            "activity": activity,
+            "error": (err or out or "am start failed").strip(),
+        }), 502
+
+    # monkey can launch some packages that resolve-activity misses.
+    success, out, err = run_adb_shell(
+        f"monkey -p {package} -c android.intent.category.LAUNCHER 1"
     )
-    
-    if success and out:
-        activity = out.strip()
-        run_adb_shell(f"am start -n {activity}")
-        return jsonify({"success": True, "activity": activity})
-    
-    # Fallback: use monkey
-    run_adb_shell(f"monkey -p {package} -c android.intent.category.LAUNCHER 1")
-    return jsonify({"success": True, "package": package})
+    combined = f"{out}\n{err}"
+    if success and "No activities found" not in combined and "Error" not in combined:
+        return jsonify({"success": True, "package": package, "via": "monkey"})
+    return jsonify({
+        "success": False,
+        "package": package,
+        "code": "not_launchable",
+        "error": f"no launchable activity for {package} (not installed?)",
+    }), 404
 
 @app.route("/apps/<package>/stop", methods=["POST"])
 @require_auth

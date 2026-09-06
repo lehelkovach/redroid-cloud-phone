@@ -109,5 +109,56 @@ class ProcedureApiTests(unittest.TestCase):
         self.assertEqual(body["kind"], "procedure")
 
 
+class TokenMismatchTests(unittest.TestCase):
+    """A wrong token must read as a config problem, not a broken phone.
+
+    The phone keeps `/health` open, so a mismatched token used to surface as a
+    run where every step returned 401 — which looked like a dead device and is
+    what kept the lab "down" for two weeks.
+    """
+
+    def setUp(self):
+        self.server = FakePhoneServer(FakePhone(api_token="phone-token"))
+        self.server.__enter__()
+        self.addCleanup(self.server.__exit__, None, None, None)
+
+        orch.ORCH_DEPLOY_MODE = "mock"
+        orch.ORCH_API_TOKEN = ""  # inbound: this test client is trusted
+        orch.ORCH_MOCK_API_URL = self.server.base_url
+        orch._instances.clear()
+        orch._ops.clear()
+        self.client = orch.app.test_client()
+        self.addCleanup(setattr, orch, "ORCH_CONTROL_API_TOKEN", "")
+
+    def _run(self):
+        return self.client.post("/procedures", json={
+            "sync": True,
+            "steps": [{"action": "open", "package": DEMO_APP}],
+        }).get_json()
+
+    def test_wrong_token_fails_fast_and_names_the_config(self):
+        orch.ORCH_CONTROL_API_TOKEN = "not-the-phone-token"
+        body = self._run()
+        self.assertEqual(body["status"], "failed")
+        self.assertIn("ORCH_CONTROL_API_TOKEN", body["error"])
+        self.assertNotIn("proxy", body["error"], "not a device failure")
+        self.assertEqual(self.server.phone.calls, [], "no step should have run")
+
+    def test_matching_token_reaches_the_device_error_instead(self):
+        """With auth right, the run fails on the real reason: no proxy."""
+        orch.ORCH_CONTROL_API_TOKEN = "phone-token"
+        body = self._run()
+        self.assertEqual(body["status"], "failed")
+        self.assertIn("proxy", body["error"])
+
+    def test_phone_health_endpoint_relays_the_unauthorized_verdict(self):
+        orch.ORCH_CONTROL_API_TOKEN = "not-the-phone-token"
+        created = self.client.post("/instances", json={}).get_json()
+        body = self.client.get(f"/phones/{created['id']}/health").get_json()
+        self.assertEqual(body["status"], "unauthorized")
+        self.assertFalse(body["auth"]["ok"])
+        self.assertTrue(body["adb_connected"], "the phone itself is fine")
+
+
 if __name__ == "__main__":
     unittest.main()
