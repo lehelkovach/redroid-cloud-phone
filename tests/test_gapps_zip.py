@@ -15,6 +15,7 @@ COMPOSE = ROOT / "docker" / "redroid-compose.yml"
 
 
 def run(cmd, **kwargs):
+    kwargs.setdefault("timeout", 20)
     return subprocess.run(cmd, text=True, capture_output=True, **kwargs)
 
 

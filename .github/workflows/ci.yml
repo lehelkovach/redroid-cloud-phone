@@ -6,9 +6,14 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ladder:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,7 +22,8 @@ jobs:
       - name: Install control-plane deps
         run: pip install -r api/requirements.txt -r orchestrator/requirements.txt
       - name: TDD ladder R0–R3
-        run: ./cloud-phone test
+        run: ./cloud-phone test --quiet
+        timeout-minutes: 6
       - name: Upload rung logs
         if: always()
         uses: actions/upload-artifact@v4

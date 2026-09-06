@@ -12,11 +12,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(cmd, env=None):
+def run(cmd, env=None, timeout=20):
     merged = os.environ.copy()
     if env:
         merged.update(env)
-    return subprocess.run(cmd, text=True, capture_output=True, env=merged)
+    return subprocess.run(cmd, text=True, capture_output=True, env=merged, timeout=timeout)
 
 
 class DeployScriptContractTests(unittest.TestCase):
@@ -76,10 +76,13 @@ class DeployScriptContractTests(unittest.TestCase):
 
 class GappsInstallerContractTests(unittest.TestCase):
     def test_validate_only_without_adb_fails_cleanly(self):
-        r = run([
-            "bash", str(ROOT / "scripts" / "install-gapps-redroid.sh"),
-            "--validate-only", "--adb", "127.0.0.1:1",
-        ])
+        r = run(
+            [
+                "bash", str(ROOT / "scripts" / "install-gapps-redroid.sh"),
+                "--validate-only", "--adb", "127.0.0.1:1",
+            ],
+            env={"ADB_BIN": "/usr/bin/false"},
+        )
         self.assertNotEqual(r.returncode, 0)
 
     def test_tiny_nonempty_non_apk_zip_rejected(self):

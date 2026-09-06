@@ -20,6 +20,7 @@ VERBOSE="-v"
 SHOW_LOGS="true"
 REPORT_DIR="${TEST_REPORT_DIR:-$PROJECT_ROOT/.test-reports}"
 LIST="false"
+SUITE_TIMEOUT="${SUITE_TIMEOUT:-90}"
 
 # Capture user LOG_LEVEL before log.sh defaults it to INFO.
 USER_LOG_LEVEL="${LOG_LEVEL:-}"
@@ -158,7 +159,15 @@ for rung in "${RUNGS[@]}"; do
         log="${REPORT_DIR}/r${rung}-${name}.log"
         echo "-- ${name} ($file)"
         log_info "r${rung} ${name} verbose=${CLOUD_PHONE_VERBOSE} log_level=${LOG_LEVEL}"
-        if ! "$PYTHON" -m unittest discover -s tests -p "$file" $VERBOSE >"$log" 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            if ! timeout "$SUITE_TIMEOUT" "$PYTHON" -m unittest discover -s tests -p "$file" $VERBOSE >"$log" 2>&1; then
+                echo "FAIL ${name}  (log: $log)"
+                tail -40 "$log" || true
+                failed=$((failed + 1))
+            else
+                echo "PASS ${name}"
+            fi
+        elif ! "$PYTHON" -m unittest discover -s tests -p "$file" $VERBOSE >"$log" 2>&1; then
             echo "FAIL ${name}  (log: $log)"
             tail -40 "$log" || true
             failed=$((failed + 1))

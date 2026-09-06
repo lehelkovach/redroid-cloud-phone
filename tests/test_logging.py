@@ -93,7 +93,7 @@ class FormatTests(unittest.TestCase):
     def test_log_file_failure_does_not_raise(self):
         logger = cpl.configure(
             f"test.badfile.{id(self)}", log_type="API", stream=io.StringIO(),
-            log_file="/proc/definitely/not/writable/x.log",
+            log_file="/dev/null/not-a-directory/x.log",
         )
         logger.info("still alive")
 
@@ -111,7 +111,7 @@ class ShellParityTests(unittest.TestCase):
         full_env.update(env or {})
         return subprocess.run(
             ["bash", "-c", f"source {LOG_SH}\n{script}"],
-            capture_output=True, text=True, env=full_env,
+            capture_output=True, text=True, env=full_env, timeout=10,
         )
 
     def test_shell_text_line_matches_python_shape(self):
