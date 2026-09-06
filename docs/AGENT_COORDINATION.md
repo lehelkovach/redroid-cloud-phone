@@ -7,6 +7,10 @@ Agent-to-agent coordination is handled by a separate service:
 See that repository for bus auth, endpoints, and deployment details.
 The orchestrator here manages a **pool of Redroid GApps phones** (default) and spawns **Cuttlefish ingest VMs** only when a session asks for `purpose=camera`. See [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md).
 
+**Lab listen:** `ORCH_HOST`/`ORCH_PORT` default **`:8090`**. Token env **`ORCH_API_TOKEN`**.
+Live OCI address and OSLO env names: [`OPS-ORCHESTRATOR.md`](./OPS-ORCHESTRATOR.md) and
+sibling `osl-oc-agent/.AGENT/CLOUD-PHONE-ORCH.md` (do not commit token values).
+
 ## Clean environment setup
 
 For cloud agents running in ephemeral environments:

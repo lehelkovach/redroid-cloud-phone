@@ -1,6 +1,8 @@
 # Android ARM Cloud Phone (OCI ARM64)
 
 Two runtimes, two jobs. Do not merge them. Canonical write-up: [`docs/RUNTIME-SPLIT.md`](docs/RUNTIME-SPLIT.md).
+Lab hosts / ports / token **names**: [`docs/OPS-ORCHESTRATOR.md`](docs/OPS-ORCHESTRATOR.md) and sibling
+`osl-oc-agent/.AGENT/CLOUD-PHONE-ORCH.md` (orchestrator **`129.146.105.26:8090`**).
 
 | Runtime | Job |
 |---|---|
