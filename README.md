@@ -1,35 +1,39 @@
-# Android ARM Cloud Phone
+# Android ARM Cloud Phone (OCI ARM64)
 
 Two runtimes, two jobs. Do not merge them. Canonical write-up: [`docs/RUNTIME-SPLIT.md`](docs/RUNTIME-SPLIT.md).
+Lab hosts / ports / token **names**: [`docs/OPS-ORCHESTRATOR.md`](docs/OPS-ORCHESTRATOR.md) and sibling
+`osl-oc-agent/.AGENT/CLOUD-PHONE-ORCH.md` (orchestrator **`129.146.105.26:8090`**).
 
 | Runtime | Job |
 |---|---|
-| **Redroid** (Docker) | GApps / Play phones for `mobile.*` automation (Playwright-like containers) |
-| **Cuttlefish** (KVM) | Virtual camera + mic ingest: nginx-rtmp, FFmpeg bridge, v4l2-class sinks |
+| **Redroid** (Docker) | **Default orchestrator pool** — GApps / Play phones for `mobile.*` automation |
+| **Cuttlefish** (KVM) | On-demand camera/mic ingest: nginx-rtmp, FFmpeg bridge, v4l2-class sinks |
 
-Virtual camera HAL on Redroid/Waydroid **failed** (ABI/VNDK). That is why this repo forked to Cuttlefish for ingest. We are **not** retrying HAL-on-container. Waydroid stays parked.
+Virtual camera HAL on Redroid/Waydroid **failed** (ABI/VNDK). That is why ingest stays on Cuttlefish. We are **not** retrying HAL-on-container. Waydroid stays parked.
 
-## Redroid — GApps phones
+## Redroid — GApps automation pool (default spawn)
 
 ```bash
-./cloud-phone redroid-up --name phone-1 --adb-port 5555
-GAPPS_ZIP=/path/to/MindTheGapps-arm64.zip ./cloud-phone gapps-install --name phone-1
+./cloud-phone deploy-redroid --name redroid-source --ocpus 2 --memory 8
+GAPPS_ZIP=/path/to/MindTheGapps-arm64.zip ./cloud-phone gapps-install --name redroid
 ./cloud-phone gapps-check --adb 127.0.0.1:5555
+COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <IP> cloud-phone-redroid-gapps-v1 redroid
 
-# Orchestrator (one phone per owner; provision:true starts another container)
-ORCH_DEPLOY_MODE=redroid ORCH_REDROID_DRY_RUN=1 ./cloud-phone orchestrator-run
-# POST /sessions  {"owner_user_id":"alice","purpose":"play","provision":true}
+# Orchestrator reuses idle Redroid VMs; POST /sessions defaults to this pool
+REDROID_GOLDEN_IMAGE_ID=<ocid> ORCH_DEPLOY_MODE=oci ./cloud-phone orchestrator-run
+# POST /sessions  {"owner_user_id":"alice"}
+# POST /sessions  {"owner_user_id":"alice","purpose":"camera"}   # Cuttlefish ingest instead
 ```
 
 Never commit a GApps zip. Empty `/opt/gapps/gapps.zip` is rejected. Details: [`docs/GAPPS.md`](docs/GAPPS.md).
 
-## Cuttlefish — ingest (camera / mic)
+## Cuttlefish — ingest (spawn only when a camera stream is needed)
 
 ```bash
 ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
 ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
 COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <OCI_PUBLIC_IP> cloud-phone-cuttlefish-v1 cuttlefish
-GOLDEN_IMAGE_ID=<image_ocid> ./cloud-phone deploy-fleet --count 5 --parallel 2 --verify-ingest
+CUTTLEFISH_GOLDEN_IMAGE_ID=<ocid> ./cloud-phone deploy-fleet --platform cuttlefish --count 2 --verify-ingest
 ```
 
 Do **not** bake Play/GMS into the Cuttlefish golden.
@@ -45,13 +49,27 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r api/requirements.txt -r orchestrator/requirements.txt
 
-# Phones (no KVM required):
+# Automation phones (no KVM):
 ./cloud-phone redroid-up --dry-run --json --name phone-1
 
 # Ingest host (needs /dev/kvm):
 ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
 ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
 ```
+
+## Tests
+
+```bash
+./cloud-phone test                 # all offline suites — no device, no OCI
+./cloud-phone test --coverage      # + coverage, fails under 60% in CI
+./cloud-phone test --list
+./cloud-phone test --suite ladder-e2e
+```
+
+Includes the dual-pool ladder (Redroid vs Cuttlefish) and a mobile e2e scenario
+(proxy → signup → capped swipe) against a simulated phone.
+[`docs/TESTING.md`](docs/TESTING.md) · [`docs/LOGGING.md`](docs/LOGGING.md)
+(`[ADB]` commanders, `[APM]` Appium, `[CMD]` commandlets, `[VNC]` viewports).
 
 ## Procedures — one script, four surfaces
 
@@ -61,23 +79,11 @@ Unsupported actions fail validation before step 1 touches a device, and
 `install` / `submit` / `purchase` stay approval-gated.
 
 ```bash
-curl -s $ORCH/procedures/surfaces | jq        # what each surface can do
+curl -s $ORCH/procedures/surfaces | jq
 curl -X POST $ORCH/procedures -d '{"sync":true,"steps":[...]}'
 ```
 
 Details: [`docs/PROCEDURES.md`](docs/PROCEDURES.md).
-
-## Tests
-
-```bash
-./cloud-phone test                 # all offline suites — no device, no OCI
-./cloud-phone test --coverage      # + coverage, fails under 60%
-./cloud-phone test --list
-```
-
-Includes a full mobile e2e scenario (proxy → signup → capped swipe → match →
-hour-delayed, approval-gated follow-up) against a simulated phone.
-[`docs/TESTING.md`](docs/TESTING.md) · [`docs/LOGGING.md`](docs/LOGGING.md).
 
 ## Project structure
 
@@ -85,29 +91,32 @@ hour-delayed, approval-gated follow-up) against a simulated phone.
 android-arm-cloud-phone/
 ├── cloud-phone
 ├── api/
-├── orchestrator/
-├── api/cloudphone_logging.py      # labeled logging
-├── orchestrator/procedures.py     # surface-agnostic steps
-├── orchestrator/rules.py          # swipe budget, follow-up timing
+├── orchestrator/          # default purpose=automation → Redroid pool
+├── orchestrator/procedures.py
+├── orchestrator/rules.py
+├── api/cloudphone_logging.py
 ├── docker/redroid-compose.yml
 ├── scripts/redroid-up.sh
 ├── scripts/install-gapps-redroid.sh
+├── scripts/install-redroid-cloud-phone.sh
+├── scripts/deploy-redroid-oci.sh
 ├── scripts/run-tests.sh
 ├── scripts/lib/log.sh
-├── systemd/redroid-container.service
+├── systemd/redroid-*.service
 ├── systemd/cuttlefish-*.service
 └── docs/RUNTIME-SPLIT.md
 ```
 
 ## Documentation
 
-- `docs/RUNTIME-SPLIT.md` — why two images
+- `docs/RUNTIME-SPLIT.md` — why two images; orchestrator pool
 - `docs/GAPPS.md` — Play install on Redroid only
 - `docs/PROCEDURES.md` — step vocabulary, surfaces, approval gates
 - `docs/AUTH-AND-HEALTH.md` — the three tokens, and why `healthy` used to lie
-- `docs/TESTING.md` — suites, coverage, the mobile e2e scenario
+- `docs/OPS-ORCHESTRATOR.md` — lab IP/port/token **names**
+- `docs/TESTING.md` — offline suites, coverage, dual-pool ladder R0–R4
 - `docs/LOGGING.md` — label scheme and filtering
 - `docs/DEPLOYMENT.md` — Cuttlefish ingest deploy
 - `docs/CUTTLEFISH_PHASE1.md` / `CUTTLEFISH_PHASE2_RTMP_BRIDGE.md` / `CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
-- `docs/API_REFERENCE.md` / `docs/AGENT_COORDINATION.md`
+- `docs/CLEANROOM_BOOTSTRAP.md`
 - `FUTURE_CONSIDERATIONS_CAMERA_STACK.md` — parked HAL-on-container notes

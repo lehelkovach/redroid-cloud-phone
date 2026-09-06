@@ -24,7 +24,7 @@ class UserSessionTests(unittest.TestCase):
         body = r.get_json()
         sess = body["session"]
         self.assertEqual(sess["owner_user_id"], "alice")
-        self.assertEqual(sess["runtime"], "mock")
+        self.assertEqual(sess["runtime"], "redroid")
         self.assertTrue(sess["instance_id"])
 
         r2 = self.client.post("/sessions", json={"owner_user_id": "alice", "ttl_seconds": 60})
@@ -58,11 +58,13 @@ class UserSessionTests(unittest.TestCase):
             a.get_json()["session"]["instance_id"],
             b.get_json()["session"]["instance_id"],
         )
-        self.assertEqual(b.get_json()["session"]["purpose"], "play")
+        self.assertEqual(b.get_json()["session"]["purpose"], "automation")
         health = self.client.get("/health").get_json()
         self.assertEqual(health["instances"], 2)
         self.assertEqual(health["sessions"], 2)
         self.assertEqual(health["runtime"], "mock")
+        self.assertEqual(health["default_runtime"], "redroid")
+        self.assertIn("pool", health)
 
     def test_owner_required(self):
         r = self.client.post("/sessions", json={})

@@ -1,9 +1,10 @@
 #!/bin/bash
-# Unified test runner with coverage.
+# Unified test runner with coverage + dual-pool ladder suites.
 #
 #   ./cloud-phone test                # offline suites (no device, no OCI)
 #   ./cloud-phone test --coverage     # + line coverage report
 #   ./cloud-phone test --suite procedures
+#   ./cloud-phone test --suite runtime-pool
 #   ./cloud-phone test --live --api-url http://127.0.0.1:8080
 #
 # Offline suites never touch a phone, Docker, or OCI, so they are safe in CI.
@@ -25,6 +26,10 @@ OFFLINE_SUITES=(
     "orchestrator:tests.test_orchestrator_unit"
     "sessions:tests.test_user_sessions"
     "gapps:tests.test_gapps_zip"
+    "gapps-health:tests.test_gapps_health"
+    "scripts-contract:tests.test_scripts_contract"
+    "ui-control:tests.test_ui_control"
+    "runtime-pool:tests.test_runtime_pool"
     "mobile-e2e:tests.test_mobile_e2e_scenario"
     "procedure-api:tests.test_procedure_api"
 )
@@ -32,6 +37,7 @@ OFFLINE_SUITES=(
 SCRIPT_SUITES=(
     "orchestrator-integration:tests/test_orchestrator_integration.py"
     "orchestrator-e2e:tests/test_orchestrator_e2e.py"
+    "ladder-e2e:tests/test_ladder_e2e.py"
 )
 
 COVERAGE="false"
@@ -54,6 +60,7 @@ Usage: ./scripts/run-tests.sh [OPTIONS]
   --api-url URL        Control API for --live
   --verbose            Per-test output
   --report-dir DIR     Where to write logs (default .test-reports)
+  --rung N             Alias for a ladder slice (0=unit … 3=dual-pool e2e, 4=live)
   --help
 EOF
 }
@@ -67,11 +74,23 @@ while [[ $# -gt 0 ]]; do
         --api-url) API_URL="${2:-}"; shift 2 ;;
         --verbose|-v) VERBOSE="-v"; shift ;;
         --report-dir) REPORT_DIR="${2:-}"; shift 2 ;;
+        --rung)
+            case "${2:-}" in
+                0) SUITE="logging" ;;
+                1) SUITE="runtime-pool" ;;
+                2) SUITE="orchestrator-integration" ;;
+                3) SUITE="ladder-e2e" ;;
+                4) LIVE="true"; SUITE="agent-api" ;;
+                *) log_error "unknown rung $2"; exit 1 ;;
+            esac
+            shift 2
+            ;;
         --list)
             for entry in "${OFFLINE_SUITES[@]}"; do echo "  ${entry%%:*} (offline)"; done
             for entry in "${SCRIPT_SUITES[@]}"; do echo "  ${entry%%:*} (offline, script)"; done
             echo "  agent-api (live)"
             echo "  connectivity (live)"
+            echo "  live (CLOUD_PHONE_LIVE=1, tests.test_live)"
             exit 0
             ;;
         --help|-h) usage; exit 0 ;;
@@ -171,6 +190,17 @@ if [[ "$LIVE" == "true" ]]; then
         else
             log_error "  FAIL agent-api — see $REPORT_DIR/agent-api.log"
             FAIL=$((FAIL + 1)); FAILED_SUITES+=("agent-api")
+        fi
+    fi
+    if matches "live"; then
+        log_info "suite live (CLOUD_PHONE_LIVE=1 -> $API_URL)"
+        if CLOUD_PHONE_LIVE=1 CLOUD_PHONE_API_URL="$API_URL" \
+                "$PYTHON" -m unittest tests.test_live $VERBOSE \
+                >"$REPORT_DIR/live.log" 2>&1; then
+            log_info "  PASS live"; PASS=$((PASS + 1))
+        else
+            log_error "  FAIL live — see $REPORT_DIR/live.log"
+            FAIL=$((FAIL + 1)); FAILED_SUITES+=("live")
         fi
     fi
 else

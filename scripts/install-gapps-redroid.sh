@@ -126,8 +126,19 @@ check_zip_file() {
     return 0
 }
 
+_adb_bin() {
+    # type -P ignores the `adb()` wrapper below (command -v would find the function).
+    type -P "$ADB_BIN" 2>/dev/null || true
+}
+
 adb() {
-    "$ADB_BIN" -s "$ADB_SERIAL" "$@"
+    local bin
+    bin="$(_adb_bin)"
+    if [[ -z "$bin" ]]; then
+        echo "adb binary not found ($ADB_BIN)" >&2
+        return 127
+    fi
+    "$bin" -s "$ADB_SERIAL" "$@"
 }
 
 ensure_adb() {
@@ -135,9 +146,20 @@ ensure_adb() {
         log_info "dry-run: adb connect $ADB_SERIAL"
         return 0
     fi
-    adb connect "$ADB_SERIAL" >/dev/null 2>&1 || true
-    local state
-    state="$(adb get-state 2>/dev/null || true)"
+    local bin state
+    bin="$(_adb_bin)"
+    if [[ -z "$bin" ]]; then
+        log_err "adb binary not found ($ADB_BIN)"
+        return 1
+    fi
+    # Port 1 / missing daemon must not hang CI. `timeout` is coreutils on Ubuntu.
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 3 "$bin" -s "$ADB_SERIAL" connect "$ADB_SERIAL" >/dev/null 2>&1 || true
+        state="$(timeout 3 "$bin" -s "$ADB_SERIAL" get-state 2>/dev/null || true)"
+    else
+        "$bin" -s "$ADB_SERIAL" connect "$ADB_SERIAL" >/dev/null 2>&1 || true
+        state="$("$bin" -s "$ADB_SERIAL" get-state 2>/dev/null || true)"
+    fi
     if [[ "$state" != *device* ]]; then
         log_err "ADB not connected ($ADB_SERIAL state='$state')"
         return 1

@@ -9,7 +9,7 @@ This phase proves Cuttlefish can run on OCI ARM64 with:
 - WebRTC endpoint exposed
 - camera service visible from Android (`dumpsys media.camera`)
 
-Phase 1 is intentionally limited to platform validation and camera enumeration gates. Frame injection and stream quality checks are handled in later phases.
+Phase 1 is ingest-only (Cuttlefish). GApps / Play automation uses Redroid — see [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md).
 
 For RTMP ingest bridge implementation, continue with [`docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md`](docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md).
 

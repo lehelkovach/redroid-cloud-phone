@@ -2,21 +2,19 @@
 """
 Orchestrator for cloud phone instances.
 
-Runtimes (see docs/RUNTIME-SPLIT.md):
-- redroid: Docker Android phones with GApps (Play / mobile IO)
-- oci/cuttlefish: KVM ingest VMs (nginx-rtmp + virtual camera/mic)
-- mock: in-process fake Control API target
+Default pool: Redroid + GApps OCI VMs for mobile automation.
+Camera/stream purpose: spawn Cuttlefish + nginx-rtmp ingest VMs.
 
 Features:
-- Provision on-demand (mock, redroid-up.sh, or OCI golden)
+- Provision on-demand (mock, local redroid-up, or OCI golden)
+- Separate idle pools per runtime (never mix Play phones with ingest hosts)
 - One-phone-per-user sessions (Playwright-like acquire/release)
-- Queue operations and relay to Control API
+- Queue operations, procedures, and relay to Control API
 """
 
 import json
 import os
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -25,26 +23,55 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, request
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
-from cloudphone_logging import configure as _configure_logging  # noqa: E402
+try:
+    from orchestrator.runtimes import (
+        PURPOSE_AUTOMATION,
+        PURPOSE_CAMERA,
+        RUNTIME_CUTTLEFISH,
+        RUNTIME_REDROID,
+        resolve_purpose,
+        runtime_for_purpose,
+    )
+except ImportError:  # python orchestrator/server.py
+    from runtimes import (  # type: ignore
+        PURPOSE_AUTOMATION,
+        PURPOSE_CAMERA,
+        RUNTIME_CUTTLEFISH,
+        RUNTIME_REDROID,
+        resolve_purpose,
+        runtime_for_purpose,
+    )
 
 try:
     from orchestrator import procedures as proc
 except ImportError:  # running server.py directly
     import procedures as proc
 
+try:
+    from api.cloudphone_logging import configure as _configure_logging
+    from api.cloudphone_logging import redact, recent_logs
+except ImportError:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from api.cloudphone_logging import configure as _configure_logging
+    from api.cloudphone_logging import redact, recent_logs
+
 app = Flask(__name__)
 
-# Logging — labeled so unified logs can be filtered by origin (see docs/LOGGING.md)
 LOG_LEVEL = os.environ.get("ORCH_LOG_LEVEL", os.environ.get("LOG_LEVEL", "INFO")).upper()
 logger = _configure_logging("orchestrator", log_type="ORC", level=LOG_LEVEL)
+cmd_logger = logger.bind("CMD")
+apm_logger = logger.bind("APM")
+vnc_logger = logger.bind("VNC")
 redroid_logger = logger.bind("RDR")
 cvd_logger = logger.bind("CVD")
 
 # Config
-# mock | redroid | oci  (oci = Cuttlefish golden VMs for ingest)
+# mock | redroid | oci
+# oci: Redroid golden for automation (default), Cuttlefish golden for camera
 ORCH_DEPLOY_MODE = os.environ.get("ORCH_DEPLOY_MODE", "mock")
 ORCH_MOCK_API_URL = os.environ.get("ORCH_MOCK_API_URL", "http://127.0.0.1:8080")
+ORCH_MOCK_CAMERA_API_URL = os.environ.get("ORCH_MOCK_CAMERA_API_URL", "")
 ORCH_API_TOKEN = os.environ.get("ORCH_API_TOKEN", "")
 # Outbound token for the phones' Control API. Separate from ORCH_API_TOKEN,
 # which authenticates callers of *this* service: one value cannot serve both,
@@ -54,7 +81,16 @@ ORCH_CONTROL_API_TOKEN = os.environ.get("ORCH_CONTROL_API_TOKEN", "") or ORCH_AP
 ORCH_API_TIMEOUT = int(os.environ.get("ORCH_API_TIMEOUT", "30"))
 ORCH_INSTANCE_NAME_PREFIX = os.environ.get("ORCH_INSTANCE_NAME_PREFIX", "orchestrated-phone")
 ORCH_GOLDEN_IMAGE_ID = os.environ.get("GOLDEN_IMAGE_ID", "")
-ORCH_MAX_INSTANCES = int(os.environ.get("ORCH_MAX_INSTANCES", "3"))
+ORCH_REDROID_GOLDEN_IMAGE_ID = os.environ.get(
+    "REDROID_GOLDEN_IMAGE_ID", os.environ.get("ORCH_REDROID_GOLDEN_IMAGE_ID", "")
+)
+ORCH_CUTTLEFISH_GOLDEN_IMAGE_ID = os.environ.get(
+    "CUTTLEFISH_GOLDEN_IMAGE_ID",
+    os.environ.get("ORCH_CUTTLEFISH_GOLDEN_IMAGE_ID", ORCH_GOLDEN_IMAGE_ID),
+)
+ORCH_MAX_INSTANCES = int(os.environ.get("ORCH_MAX_INSTANCES", "5"))
+ORCH_MAX_REDROID_INSTANCES = int(os.environ.get("ORCH_MAX_REDROID_INSTANCES", "3"))
+ORCH_MAX_CUTTLEFISH_INSTANCES = int(os.environ.get("ORCH_MAX_CUTTLEFISH_INSTANCES", "2"))
 ORCH_DEPLOY_SCRIPT = os.environ.get(
     "ORCH_DEPLOY_SCRIPT",
     str(Path(__file__).resolve().parents[1] / "scripts" / "deploy-from-golden.sh")
@@ -77,10 +113,8 @@ _leases = {}
 _leases_lock = threading.Lock()
 _user_sessions = {}
 _user_sessions_lock = threading.Lock()
-_adb_port_lock = threading.Lock()
 _next_adb_port = ORCH_REDROID_ADB_PORT_BASE
-
-
+_adb_port_lock = threading.Lock()
 def _presented_token():
     header = request.headers.get("Authorization", "")
     if header.lower().startswith("bearer "):
@@ -194,7 +228,7 @@ def _raise_for_control_status(resp, url):
 
 def _control_post(api_url: str, path: str, payload=None, instance=None):
     url = f"{api_url}{path}"
-    logger.info("Control POST %s payload=%s", url, payload)
+    logger.info("Control POST %s payload=%s", url, redact(payload))
     resp = requests.post(
         url, json=payload, headers=_control_headers(instance), timeout=ORCH_API_TIMEOUT
     )
@@ -236,6 +270,34 @@ def _runtime_for_mode(mode=None):
     return "mock"
 
 
+def _create_instance_record(api_url: str, name: str, runtime=None, purpose=None, adb_connect=None, extra=None):
+    inst_id = uuid.uuid4().hex
+    purpose = resolve_purpose(purpose, runtime)
+    runtime = runtime_for_purpose(purpose)
+    record = {
+        "id": inst_id,
+        "name": name,
+        "api_url": api_url,
+        "created_at": time.time(),
+        "last_used": time.time(),
+        "mode": ORCH_DEPLOY_MODE,
+        "runtime": runtime,
+        "purpose": purpose,
+        "adb_connect": adb_connect,
+        "instance_ocid": None,
+        "gapps": purpose == PURPOSE_AUTOMATION,
+    }
+    if extra:
+        record.update(extra)
+    with _instances_lock:
+        _instances[inst_id] = record
+    logger.info(
+        "Instance registered id=%s name=%s api_url=%s mode=%s runtime=%s purpose=%s",
+        inst_id, name, api_url, ORCH_DEPLOY_MODE, runtime, purpose,
+    )
+    return record
+
+
 def _allocate_adb_port():
     global _next_adb_port
     with _adb_port_lock:
@@ -244,32 +306,43 @@ def _allocate_adb_port():
         return port
 
 
-def _create_instance_record(api_url: str, name: str, runtime=None, adb_connect=None, extra=None):
-    inst_id = uuid.uuid4().hex
-    record = {
-        "id": inst_id,
-        "name": name,
-        "api_url": api_url,
-        "created_at": time.time(),
-        "last_used": time.time(),
-        "mode": ORCH_DEPLOY_MODE,
-        "runtime": runtime or _runtime_for_mode(),
-        "adb_connect": adb_connect,
-        "instance_ocid": None,
-        "gapps": None,
-    }
-    if extra:
-        record.update(extra)
+def _count_runtime(runtime):
+    return sum(1 for inst in _instances.values() if inst.get("runtime") == runtime)
+
+
+def _runtime_limit(runtime):
+    if runtime == RUNTIME_REDROID:
+        return ORCH_MAX_REDROID_INSTANCES
+    if runtime == RUNTIME_CUTTLEFISH:
+        return ORCH_MAX_CUTTLEFISH_INSTANCES
+    return ORCH_MAX_INSTANCES
+
+
+def _mock_api_url(runtime):
+    if runtime == RUNTIME_CUTTLEFISH and ORCH_MOCK_CAMERA_API_URL:
+        return ORCH_MOCK_CAMERA_API_URL
+    return ORCH_MOCK_API_URL
+
+
+def _golden_image_for(runtime):
+    if runtime == RUNTIME_REDROID:
+        return ORCH_REDROID_GOLDEN_IMAGE_ID or ORCH_GOLDEN_IMAGE_ID
+    return ORCH_CUTTLEFISH_GOLDEN_IMAGE_ID or ORCH_GOLDEN_IMAGE_ID
+
+
+def _find_idle_instance(runtime):
     with _instances_lock:
-        _instances[inst_id] = record
-    logger.info(
-        "Instance registered id=%s name=%s api_url=%s mode=%s runtime=%s adb=%s",
-        inst_id, name, api_url, ORCH_DEPLOY_MODE, record["runtime"], adb_connect,
-    )
-    return record
+        for inst in _instances.values():
+            if inst.get("runtime") != runtime:
+                continue
+            if _is_lease_valid(inst["id"]):
+                continue
+            inst["last_used"] = time.time()
+            return inst
+    return None
 
 
-def _provision_redroid():
+def _provision_redroid_local():
     port = _allocate_adb_port()
     name = f"{ORCH_INSTANCE_NAME_PREFIX}-{port}"
     cmd = [
@@ -280,7 +353,7 @@ def _provision_redroid():
     ]
     if os.environ.get("ORCH_REDROID_DRY_RUN", "").lower() in {"1", "true", "yes"}:
         cmd.append("--dry-run")
-    redroid_logger.info("Provisioning container: %s", " ".join(cmd))
+    redroid_logger.info("Provisioning local Redroid container: %s", " ".join(cmd))
     out = subprocess.check_output(cmd, text=True)
     line = out.strip().splitlines()[-1] if out.strip() else "{}"
     data = json.loads(line)
@@ -289,39 +362,30 @@ def _provision_redroid():
     return _create_instance_record(
         api_url,
         name,
-        runtime="redroid",
+        runtime=RUNTIME_REDROID,
+        purpose=PURPOSE_AUTOMATION,
         adb_connect=adb,
         extra={"container": data.get("name"), "image": data.get("image")},
     )
 
 
-def _provision_instance():
-    with _instances_lock:
-        if len(_instances) >= ORCH_MAX_INSTANCES:
-            raise RuntimeError(f"Instance limit reached (ORCH_MAX_INSTANCES={ORCH_MAX_INSTANCES})")
+def _provision_oci(runtime, purpose):
+    image_id = _golden_image_for(runtime)
+    if not image_id:
+        env_name = "REDROID_GOLDEN_IMAGE_ID" if runtime == RUNTIME_REDROID else "CUTTLEFISH_GOLDEN_IMAGE_ID"
+        raise RuntimeError(f"{env_name} required for OCI {runtime} provisioning")
 
-    if ORCH_DEPLOY_MODE == "mock":
-        name = f"{ORCH_INSTANCE_NAME_PREFIX}-mock-{len(_instances) + 1}"
-        logger.info("Mock provisioning instance -> %s", ORCH_MOCK_API_URL)
-        return _create_instance_record(
-            ORCH_MOCK_API_URL,
-            name,
-            runtime="mock",
-            adb_connect="mock://phone",
-        )
-
-    if ORCH_DEPLOY_MODE == "redroid":
-        return _provision_redroid()
-
-    if ORCH_DEPLOY_MODE != "oci":
-        raise RuntimeError(f"Unsupported ORCH_DEPLOY_MODE: {ORCH_DEPLOY_MODE}")
-
-    if not ORCH_GOLDEN_IMAGE_ID:
-        raise RuntimeError("GOLDEN_IMAGE_ID required for OCI provisioning")
-
-    name = f"{ORCH_INSTANCE_NAME_PREFIX}-{time.strftime('%Y%m%d-%H%M%S')}"
-    cmd = [ORCH_DEPLOY_SCRIPT, "--image-id", ORCH_GOLDEN_IMAGE_ID, "--name", name, "--wait-check"]
-    cvd_logger.info("Provisioning instance via OCI: %s", " ".join(cmd))
+    name = f"{ORCH_INSTANCE_NAME_PREFIX}-{runtime}-{time.strftime('%Y%m%d-%H%M%S')}"
+    cmd = [
+        ORCH_DEPLOY_SCRIPT,
+        "--platform", runtime,
+        "--image-id", image_id,
+        "--name", name,
+        "--wait-check",
+    ]
+    (cvd_logger if runtime == RUNTIME_CUTTLEFISH else redroid_logger).info(
+        "Provisioning OCI %s instance: %s", runtime, " ".join(cmd)
+    )
     subprocess.check_call(cmd)
 
     info_path = Path(f"/tmp/instance-{name}.json")
@@ -333,10 +397,59 @@ def _provision_instance():
         raise RuntimeError("Public IP missing in instance info")
     instance_ocid = data.get("instance_ocid")
     api_url = f"http://{public_ip}:8080"
-    logger.info("OCI instance ready name=%s public_ip=%s api_url=%s ocid=%s", name, public_ip, api_url, instance_ocid)
-    record = _create_instance_record(api_url, name)
+    record = _create_instance_record(
+        api_url,
+        name,
+        runtime=runtime,
+        purpose=purpose,
+        extra={"public_ip": public_ip, "golden_image": image_id},
+    )
     record["instance_ocid"] = instance_ocid
     return record
+
+
+def _provision_instance(purpose=None, runtime=None):
+    purpose = resolve_purpose(purpose, runtime)
+    runtime = runtime_for_purpose(purpose)
+
+    with _instances_lock:
+        if len(_instances) >= ORCH_MAX_INSTANCES:
+            raise RuntimeError(f"Instance limit reached (ORCH_MAX_INSTANCES={ORCH_MAX_INSTANCES})")
+        n = _count_runtime(runtime)
+        limit = _runtime_limit(runtime)
+        if n >= limit:
+            raise RuntimeError(
+                f"{runtime} pool full ({n}/{limit}). "
+                f"Camera streams use Cuttlefish; automation uses Redroid."
+            )
+
+    if ORCH_DEPLOY_MODE == "mock":
+        api_url = _mock_api_url(runtime)
+        name = f"{ORCH_INSTANCE_NAME_PREFIX}-{runtime}-mock-{_count_runtime(runtime) + 1}"
+        logger.info("Mock provisioning %s (%s) -> %s", runtime, purpose, api_url)
+        return _create_instance_record(
+            api_url,
+            name,
+            runtime=runtime,
+            purpose=purpose,
+            adb_connect="mock://phone",
+        )
+
+    if runtime == RUNTIME_REDROID and ORCH_DEPLOY_MODE == "redroid":
+        return _provision_redroid_local()
+
+    if runtime == RUNTIME_CUTTLEFISH and ORCH_DEPLOY_MODE == "redroid":
+        if not _golden_image_for(RUNTIME_CUTTLEFISH):
+            raise RuntimeError(
+                "camera purpose needs a Cuttlefish OCI golden "
+                "(CUTTLEFISH_GOLDEN_IMAGE_ID); local Redroid mode has no ingest host"
+            )
+        return _provision_oci(RUNTIME_CUTTLEFISH, PURPOSE_CAMERA)
+
+    if ORCH_DEPLOY_MODE != "oci":
+        raise RuntimeError(f"Unsupported ORCH_DEPLOY_MODE: {ORCH_DEPLOY_MODE}")
+
+    return _provision_oci(runtime, purpose)
 
 
 def _terminate_instance(instance_ocid: str):
@@ -354,27 +467,38 @@ def _terminate_instance(instance_ocid: str):
     subprocess.check_call(cmd)
 
 
-def _get_or_create_instance(instance_id=None):
-    with _instances_lock:
-        if instance_id and instance_id in _instances:
-            inst = _instances[instance_id]
-            inst["last_used"] = time.time()
-            logger.info("Using existing instance id=%s name=%s", inst["id"], inst["name"])
-            return inst
-        if _instances:
-            inst = next(iter(_instances.values()))
-            inst["last_used"] = time.time()
-            logger.info("Using any available instance id=%s name=%s", inst["id"], inst["name"])
-            return inst
-    logger.info("No instances available; provisioning new instance")
-    return _provision_instance()
+def _get_or_create_instance(instance_id=None, purpose=None, runtime=None, provision=True):
+    purpose = resolve_purpose(purpose, runtime)
+    runtime = runtime_for_purpose(purpose)
+
+    if instance_id:
+        with _instances_lock:
+            inst = _instances.get(instance_id)
+        if not inst:
+            raise RuntimeError(f"instance not found: {instance_id}")
+        if inst.get("runtime") != runtime:
+            raise RuntimeError(
+                f"instance {instance_id} is {inst.get('runtime')} but request needs {runtime}"
+            )
+        inst["last_used"] = time.time()
+        logger.info("Using requested instance id=%s runtime=%s", inst["id"], runtime)
+        return inst
+
+    idle = _find_idle_instance(runtime)
+    if idle:
+        logger.info("Reusing idle %s instance id=%s name=%s", runtime, idle["id"], idle["name"])
+        return idle
+    if not provision:
+        raise RuntimeError("phone in use")
+    logger.info("No idle %s instance; provisioning purpose=%s", runtime, purpose)
+    return _provision_instance(purpose=purpose, runtime=runtime)
 
 
 def _run_steps(api_url: str, steps, instance=None):
     results = []
     for step in steps:
         action = step.get("action")
-        logger.info("Executing step action=%s payload=%s", action, step)
+        cmd_logger.info("step action=%s payload=%s", action, redact(step))
         if action == "start_app":
             package = step.get("package")
             if not package:
@@ -439,7 +563,11 @@ def _run_operation(op_id, payload):
 
     try:
         logger.info("Operation started id=%s payload=%s", op_id, payload)
-        instance = _get_or_create_instance(payload.get("instance_id"))
+        instance = _get_or_create_instance(
+            payload.get("instance_id"),
+            purpose=payload.get("purpose"),
+            runtime=payload.get("runtime"),
+        )
         api_url = instance["api_url"]
         _assert_phone_usable(_control_get(api_url, "/health", instance=instance), api_url)
 
@@ -505,7 +633,16 @@ def list_instances():
 
 @app.route("/instances", methods=["POST"])
 def create_instance():
-    inst = _provision_instance()
+    payload = request.get_json(silent=True) or {}
+    try:
+        inst = _provision_instance(
+            purpose=payload.get("purpose"),
+            runtime=payload.get("runtime"),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
     return jsonify(inst), 201
 
 
@@ -515,17 +652,21 @@ def delete_instance(instance_id):
         inst = _instances.get(instance_id)
     if not inst:
         return jsonify({"error": "instance not found"}), 404
-    if inst.get("runtime") == "redroid" and inst.get("name"):
+    if inst.get("mode") == "redroid" and inst.get("name"):
         try:
             subprocess.check_call(
                 [ORCH_REDROID_UP_SCRIPT, "--name", inst["name"], "--down"],
             )
         except Exception as exc:
-            redroid_logger.warning("down failed: %s", exc)
-    if inst.get("mode") != "oci":
+            logger.warning("redroid-down failed: %s", exc)
         with _instances_lock:
             _instances.pop(instance_id, None)
         _clear_lease(instance_id)
+        return jsonify({"success": True, "message": "redroid container removed"}), 200
+
+    if inst.get("mode") != "oci":
+        with _instances_lock:
+            _instances.pop(instance_id, None)
         return jsonify({"success": True, "message": "instance removed"}), 200
 
     try:
@@ -620,6 +761,81 @@ def phone_job_poll(instance_id, job_id):
         return err
     data = _control_get(inst["api_url"], f"/jobs/{job_id}", instance=inst)
     return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/ui", methods=["POST"])
+def phone_ui(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    payload = request.get_json() or {}
+    cmd_logger.info("relay ui instance=%s payload=%s", instance_id, redact(payload))
+    data = _control_post(inst["api_url"], "/ui/command", payload, instance=inst)
+    return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/appium", methods=["GET"])
+def phone_appium(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    apm_logger.info("relay appium status instance=%s", instance_id)
+    data = _control_get(inst["api_url"], "/appium/status", instance=inst)
+    return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/vnc", methods=["GET"])
+def phone_vnc(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    vnc_logger.info("relay vnc viewport instance=%s", instance_id)
+    data = _control_get(inst["api_url"], "/vnc/status", instance=inst)
+    return jsonify(data)
+
+
+@app.route("/phones/<instance_id>/logs", methods=["GET"])
+def phone_logs(instance_id):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    q = request.query_string.decode() if request.query_string else ""
+    path = "/logs" + (f"?{q}" if q else "")
+    data = _control_get(inst["api_url"], path, instance=inst)
+    return jsonify(data)
+
+
+@app.route("/logs", methods=["GET"])
+def orch_logs():
+    log_type = request.args.get("type")
+    try:
+        n = int(request.args.get("n", "200"))
+    except ValueError:
+        n = 200
+    items = recent_logs(log_type=log_type, n=n)
+    return jsonify({"count": len(items), "logs": items})
+
+
+def _pool_snapshot(items=None):
+    if items is None:
+        with _instances_lock:
+            items = list(_instances.values())
+    snapshot = {}
+    for purpose, runtime in (
+        (PURPOSE_AUTOMATION, RUNTIME_REDROID),
+        (PURPOSE_CAMERA, RUNTIME_CUTTLEFISH),
+    ):
+        members = [i for i in items if i.get("runtime") == runtime]
+        leased = sum(1 for i in members if _is_lease_valid(i["id"]))
+        snapshot[purpose] = {
+            "runtime": runtime,
+            "total": len(members),
+            "leased": leased,
+            "idle": len(members) - leased,
+            "max": _runtime_limit(runtime),
+        }
+    return snapshot
+
 
 
 def _build_adapters(instance):
@@ -743,7 +959,11 @@ def _run_procedure_operation(op_id, payload):
         op["updated_at"] = time.time()
 
     try:
-        instance = _get_or_create_instance(payload.get("instance_id"))
+        instance = _get_or_create_instance(
+            payload.get("instance_id"),
+            purpose=payload.get("purpose"),
+            runtime=payload.get("runtime"),
+        )
         adapters = _build_adapters(instance)
         steps = payload.get("steps")
         if _touches_mobile(payload):
@@ -822,64 +1042,56 @@ def get_procedure_run(op_id):
 
 
 def _session_from_instance(owner_user_id, inst, ttl_seconds, purpose=None):
+    purpose = resolve_purpose(purpose or inst.get("purpose"), inst.get("runtime"))
     return {
         "owner_user_id": owner_user_id,
         "instance_id": inst["id"],
         "api_url": inst.get("api_url"),
         "adb_connect": inst.get("adb_connect"),
-        "runtime": inst.get("runtime") or _runtime_for_mode(),
-        "ttl_seconds": ttl_seconds,
+        "runtime": inst.get("runtime"),
         "purpose": purpose,
+        "ttl_seconds": ttl_seconds,
         "name": inst.get("name"),
+        "gapps": inst.get("gapps"),
     }
 
 
-def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=False, purpose=None):
+def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpose=None, runtime=None):
     if not owner_user_id:
         raise ValueError("owner_user_id required")
     ttl_seconds = max(int(ttl_seconds), 10)
+    purpose = resolve_purpose(purpose, runtime)
+    runtime = runtime_for_purpose(purpose)
 
     with _user_sessions_lock:
         existing = _user_sessions.get(owner_user_id)
         if existing:
             inst_id = existing.get("instance_id")
-            if inst_id and _is_lease_valid(inst_id, owner=owner_user_id):
+            same_runtime = existing.get("runtime") == runtime
+            if inst_id and same_runtime and _is_lease_valid(inst_id, owner=owner_user_id):
                 _set_lease(inst_id, owner_user_id, ttl_seconds)
                 existing["ttl_seconds"] = ttl_seconds
-                if purpose:
-                    existing["purpose"] = purpose
-                logger.info("Renewed session owner=%s instance=%s", owner_user_id, inst_id)
+                existing["purpose"] = purpose
+                logger.info("Renewed session owner=%s instance=%s runtime=%s", owner_user_id, inst_id, runtime)
                 return existing, False
+            if inst_id and not same_runtime:
+                logger.info(
+                    "Owner %s switching purpose %s -> %s; releasing %s",
+                    owner_user_id, existing.get("purpose"), purpose, inst_id,
+                )
+                _clear_lease(inst_id)
+                _user_sessions.pop(owner_user_id, None)
 
-    with _instances_lock:
-        free = None
-        held_by_other = False
-        for inst in _instances.values():
-            if _is_lease_valid(inst["id"], owner=owner_user_id):
-                free = inst
-                break
-            if _is_lease_valid(inst["id"]):
-                held_by_other = True
-                continue
-            if free is None:
-                free = inst
-
-    if free is None:
-        if provision or not held_by_other:
-            free = _provision_instance()
-        else:
-            raise RuntimeError("phone in use")
-
-    if _is_lease_valid(free["id"]) and not _is_lease_valid(free["id"], owner=owner_user_id):
+    inst = _get_or_create_instance(purpose=purpose, runtime=runtime, provision=provision)
+    if _is_lease_valid(inst["id"]) and not _is_lease_valid(inst["id"], owner=owner_user_id):
         raise RuntimeError("phone in use")
-
-    _set_lease(free["id"], owner_user_id, ttl_seconds)
-    sess = _session_from_instance(owner_user_id, free, ttl_seconds, purpose)
+    _set_lease(inst["id"], owner_user_id, ttl_seconds)
+    sess = _session_from_instance(owner_user_id, inst, ttl_seconds, purpose)
     with _user_sessions_lock:
         _user_sessions[owner_user_id] = sess
     logger.info(
         "Acquired session owner=%s instance=%s runtime=%s purpose=%s",
-        owner_user_id, free["id"], sess["runtime"], purpose,
+        owner_user_id, inst["id"], sess["runtime"], purpose,
     )
     return sess, True
 
@@ -894,6 +1106,11 @@ def _release_user_session(owner_user_id):
     return sess
 
 
+@app.route("/pool", methods=["GET"])
+def get_pool():
+    return jsonify({"success": True, "pool": _pool_snapshot()})
+
+
 @app.route("/sessions", methods=["GET"])
 def list_sessions():
     with _user_sessions_lock:
@@ -906,14 +1123,19 @@ def create_session():
     data = request.get_json() or {}
     owner = data.get("owner_user_id") or data.get("owner") or data.get("user_id")
     ttl = int(data.get("ttl_seconds") or data.get("ttl") or 3600)
-    provision = bool(data.get("provision"))
-    purpose = data.get("purpose")
+    provision = True if "provision" not in data else bool(data.get("provision"))
     try:
-        sess, created = _acquire_user_session(owner, ttl, provision=provision, purpose=purpose)
+        sess, created = _acquire_user_session(
+            owner,
+            ttl,
+            provision=provision,
+            purpose=data.get("purpose"),
+            runtime=data.get("runtime"),
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
-        status = 409 if "in use" in str(exc) else 500
+        status = 409 if "in use" in str(exc) or "full" in str(exc) or "limit" in str(exc) else 500
         return jsonify({"error": str(exc)}), status
     return jsonify({"success": True, "session": sess, "created": created}), (201 if created else 200)
 
@@ -935,26 +1157,37 @@ def delete_session(owner_user_id):
     sess = _release_user_session(owner_user_id)
     if not sess:
         return jsonify({"error": "session not found"}), 404
-    return jsonify({"success": True, "released": sess})
+    return jsonify({"success": True, "session": sess, "released": sess})
 
 
 @app.route("/health", methods=["GET"])
 def health():
     """Open (the auth middleware exempts it), so it reports the caller's auth."""
     auth = _auth_state()
+    with _instances_lock:
+        items = list(_instances.values())
+    with _user_sessions_lock:
+        sessions = len(_user_sessions)
+    pool = _pool_snapshot(items)
     return jsonify({
         "status": "ok" if auth["ok"] else "unauthorized",
         "auth": auth,
-        "instances": len(_instances),
-        "sessions": len(_user_sessions),
-        "max_instances": ORCH_MAX_INSTANCES,
+        "default_purpose": PURPOSE_AUTOMATION,
+        "default_runtime": RUNTIME_REDROID,
         "deploy_mode": ORCH_DEPLOY_MODE,
         "runtime": _runtime_for_mode(),
+        "instances": len(items),
+        "sessions": sessions,
+        "max_instances": ORCH_MAX_INSTANCES,
+        "pool": pool,
     })
 
 
 if __name__ == "__main__":
     host = os.environ.get("ORCH_HOST", "0.0.0.0")
     port = int(os.environ.get("ORCH_PORT", "8090"))
-    logger.info("Starting orchestrator on %s:%s (mode=%s)", host, port, ORCH_DEPLOY_MODE)
+    logger.info(
+        "Starting orchestrator on %s:%s (mode=%s default_runtime=%s)",
+        host, port, ORCH_DEPLOY_MODE, RUNTIME_REDROID,
+    )
     app.run(host=host, port=port, threaded=True)

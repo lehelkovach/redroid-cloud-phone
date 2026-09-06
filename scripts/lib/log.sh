@@ -11,7 +11,7 @@ LOG_TYPE="${LOG_TYPE:-SYS}"
 LOG_FORMAT="${LOG_FORMAT:-text}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
-_log_types="SYS API ORC ADB RDR CVD GAP NGX FFM DKR LCT TST"
+_log_types="SYS API ORC ADB CMD APM VNC RDR CVD GAP NGX FFM DKR LCT TST"
 
 _log_normalize_type() {
     local candidate

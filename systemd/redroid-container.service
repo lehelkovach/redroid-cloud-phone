@@ -11,6 +11,7 @@ RemainAfterExit=yes
 EnvironmentFile=-/etc/default/redroid-cloud-phone
 Environment=REDROID_NAME=redroid
 Environment=ADB_PORT=5555
+Environment=REDROID_COMPOSE_FILE=/opt/cloud-phone/docker/redroid-compose.yml
 ExecStart=/opt/cloud-phone-scripts/redroid-up.sh
 ExecStop=/opt/cloud-phone-scripts/redroid-up.sh --down
 TimeoutStartSec=180

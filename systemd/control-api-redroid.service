@@ -1,0 +1,30 @@
+[Unit]
+Description=Cloud Phone Control API (Redroid GApps phones)
+Documentation=docs/RUNTIME-SPLIT.md
+After=network.target redroid-container.service
+Wants=redroid-container.service
+PartOf=redroid-cloud-phone.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cloud-phone-api
+ExecStartPre=/bin/bash -c 'adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true'
+ExecStart=/opt/cloud-phone-api/venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+User=root
+Environment=PYTHONUNBUFFERED=1
+Environment=API_HOST=0.0.0.0
+Environment=API_PORT=8080
+Environment=ADB_CONNECT=127.0.0.1:5555
+Environment=CLOUD_PHONE_RUNTIME=redroid
+Environment=CLOUD_PHONE_CONFIG=/etc/cloud-phone/config.json
+Environment=LOG_LEVEL=INFO
+Environment=CLOUD_PHONE_VERBOSE=1
+Environment=APPIUM_URL=http://127.0.0.1:4723
+Environment=VNC_PORT=5900
+EnvironmentFile=-/etc/default/redroid-cloud-phone
+ExecStartPost=/bin/bash -c 'for i in {1..10}; do curl -sf http://127.0.0.1:8080/health && exit 0; sleep 2; done; exit 1'
+
+[Install]
+WantedBy=redroid-cloud-phone.target

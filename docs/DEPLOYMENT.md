@@ -1,14 +1,19 @@
-# Deployment Guide (Cuttlefish ingest)
+# Deployment Guide
 
-Cuttlefish deploy is the **camera/mic ingest** host. For GApps automation phones use Redroid (`./cloud-phone redroid-up`, [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md)).
+Two images. Orchestrator **defaults to Redroid + GApps** for the automation pool. Cuttlefish is spawned only for `purpose=camera` ingest. See [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md).
 
-This path:
+## Redroid automation pool (default)
 
-- OCI ARM64 instance
-- Cuttlefish runtime (`/dev/kvm`)
-- nginx-rtmp ingest
-- FFmpeg bridge for front/back camera feeds and mic feed
-- Optional control plane via API and orchestrator services
+```bash
+./cloud-phone deploy-redroid --name redroid-source --ocpus 2 --memory 8
+GAPPS_ZIP=/path/to/MindTheGapps-arm64.zip ./cloud-phone gapps-install
+COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <IP> cloud-phone-redroid-gapps-v1 redroid
+REDROID_GOLDEN_IMAGE_ID=<ocid> ./cloud-phone deploy-fleet --platform redroid --count 3
+```
+
+## Cuttlefish ingest (camera / mic)
+
+Cuttlefish deploy is the **camera/mic ingest** host (`/dev/kvm`, nginx-rtmp, FFmpeg). Do not bake Play/GMS here.
 
 For fresh-machine bootstrap and agent handoff, see `docs/CLEANROOM_BOOTSTRAP.md`.
 

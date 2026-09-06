@@ -5,15 +5,11 @@ Agent-to-agent coordination is handled by a separate service:
 `https://github.com/lehelkovach/iac-bus`.
 
 See that repository for bus auth, endpoints, and deployment details.
-The orchestrator here manages Redroid GApps phones and Cuttlefish ingest VMs
-(see `docs/RUNTIME-SPLIT.md`). Playwright-like acquire:
+The orchestrator here manages a **pool of Redroid GApps phones** (default) and spawns **Cuttlefish ingest VMs** only when a session asks for `purpose=camera`. See [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md).
 
-```bash
-curl -X POST http://<ORCH_IP>:8090/sessions \
-  -H "Authorization: Bearer $ORCH_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"owner_user_id":"alice","purpose":"play","ttl_seconds":3600,"provision":true}'
-```
+**Lab listen:** `ORCH_HOST`/`ORCH_PORT` default **`:8090`**. Token env **`ORCH_API_TOKEN`**.
+Live OCI address and OSLO env names: [`OPS-ORCHESTRATOR.md`](./OPS-ORCHESTRATOR.md) and
+sibling `osl-oc-agent/.AGENT/CLOUD-PHONE-ORCH.md` (do not commit token values).
 
 ## Clean environment setup
 
@@ -53,6 +49,21 @@ Interact with a specific phone by ID via orchestrator routing:
 ```bash
 # Status
 curl http://<ORCH_IP>:8090/phones/<ID>/status \
+  -H "Authorization: Bearer $ORCH_API_TOKEN"
+
+# Acquire a GApps automation phone (default)
+curl -X POST http://<ORCH_IP>:8090/sessions \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"owner_user_id":"alice"}'
+
+# Acquire a Cuttlefish ingest host for a camera stream
+curl -X POST http://<ORCH_IP>:8090/sessions \
+  -H "Authorization: Bearer $ORCH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"owner_user_id":"alice","purpose":"camera"}'
+
+curl http://<ORCH_IP>:8090/pool \
   -H "Authorization: Bearer $ORCH_API_TOKEN"
 
 # Input

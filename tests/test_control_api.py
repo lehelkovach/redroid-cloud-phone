@@ -434,5 +434,76 @@ class FocusTests(unittest.TestCase):
         self.assertEqual(body["focus"], "")
 
 
+import cloudphone_logging as cpl  # noqa: E402
+import viewport  # noqa: E402
+
+
+class CommandletAndViewportTests(unittest.TestCase):
+    def setUp(self):
+        control_api.API_TOKEN = ""
+        viewport.reset()
+        cpl.clear_logs()
+        self.client = control_api.app.test_client()
+
+    def test_health_includes_appium_and_vnc(self):
+        with patch.object(control_api, "run_adb", fake_adb()):
+            body = self.client.get("/health").get_json()
+        self.assertIn("appium", body)
+        self.assertIn("vnc", body)
+        self.assertEqual(body["vnc"]["port"], 5900)
+
+    def test_commandlet_tap_percent_logs_cmd(self):
+        with patch.object(control_api, "run_adb_shell", return_value=(True, "Physical size: 1280x720", "")):
+            resp = self.client.post("/ui/command", json={"action": "tap", "xp": 50, "yp": 50})
+        self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True))
+        body = resp.get_json()
+        self.assertEqual(body["backend"], "adb")
+        self.assertEqual(body["commands"], ["input tap 640 360"])
+        cmd_lines = cpl.recent_logs(log_type="CMD")
+        self.assertTrue(any("commandlet" in item["msg"] for item in cmd_lines), cmd_lines)
+
+    def test_appium_backend_unavailable_logs_apm(self):
+        with patch.object(control_api, "run_adb_shell", return_value=(True, "Physical size: 1280x720", "")):
+            resp = self.client.post(
+                "/ui/command",
+                json={"action": "tap", "x": 1, "y": 2, "backend": "appium"},
+            )
+        self.assertEqual(resp.status_code, 501)
+        body = resp.get_json()
+        self.assertEqual(body["backend"], "appium")
+        self.assertIn("w3c", body)
+        apm_lines = cpl.recent_logs(log_type="APM")
+        self.assertTrue(
+            any("unavailable" in item["msg"] or "w3c" in item["msg"] for item in apm_lines),
+            apm_lines,
+        )
+
+    def test_appium_status_endpoint(self):
+        body = self.client.get("/appium/status").get_json()
+        self.assertIn("url", body)
+        self.assertIn("ready", body)
+        self.assertFalse(body["ready"])
+        self.assertTrue(cpl.recent_logs(log_type="APM"))
+
+    def test_vnc_viewport_logs(self):
+        body = self.client.get("/vnc/status").get_json()
+        self.assertEqual(body["protocol"], "rfb")
+        self.assertEqual(body["port"], 5900)
+        attached = self.client.post("/vnc/attach")
+        self.assertEqual(attached.status_code, 201)
+        self.assertEqual(attached.get_json()["clients"], 1)
+        vnc_lines = cpl.recent_logs(log_type="VNC")
+        self.assertTrue(any("viewport" in item["msg"] for item in vnc_lines), vnc_lines)
+
+    def test_logs_endpoint_filters_types(self):
+        with patch.object(control_api, "run_adb_shell", return_value=(True, "Physical size: 1280x720", "")):
+            self.client.post("/ui/command", json={"action": "key", "key": "back"})
+        self.client.get("/vnc/status")
+        self.client.get("/appium/status")
+        filtered = self.client.get("/logs?type=CMD,APM,VNC").get_json()
+        types = {item["type"] for item in filtered["logs"]}
+        self.assertTrue({"CMD", "APM", "VNC"} <= types, types)
+
+
 if __name__ == "__main__":
     unittest.main()

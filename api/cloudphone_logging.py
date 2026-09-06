@@ -1,27 +1,37 @@
 """Labeled logging shared by the Control API, orchestrator, and shell scripts.
 
-Every line carries the subsystem that produced it, so one unified log can be
-filtered by origin instead of guessed at from message wording:
+Every line carries the subsystem that produced it:
 
-    2026-09-04 08:53:12.430 [ORC] [INFO] Acquired session owner=alice
+    2026-09-06 13:30:12.430 [CMD] [INFO ] commandlet tap backend=adb input tap 640 360
+    2026-09-06 13:30:12.431 [APM] [INFO ] session create requested url=http://127.0.0.1:4723
+    2026-09-06 13:30:12.432 [VNC] [INFO ] viewport 1280x720 :5900 clients=0
 
-`LOG_FORMAT=json` emits one JSON object per line for shipping.
+`LOG_FORMAT=json` emits one JSON object per line. Labels stay in sync with
+`scripts/lib/log.sh`; `tests/test_logging.py` fails if the two drift.
 
-Labels are shared with `scripts/lib/log.sh`; keep the two in sync.
+`CLOUD_PHONE_VERBOSE=1` promotes the process to DEBUG so ADB argv, Appium W3C
+payloads, and VNC frame ticks all show up.
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import os
 import sys
+import threading
 import time
+from collections import deque
 
-# Subsystem labels. Fixed width so text logs stay column-aligned.
+# Subsystem labels. Three letters so text logs stay column-aligned.
 TYPES = {
     "SYS": "system / CLI",
     "API": "control API",
     "ORC": "orchestrator",
-    "ADB": "adb commands",
+    "ADB": "adb commanders",
+    "CMD": "UI commandlets (tap/swipe/text/key)",
+    "APM": "Appium / W3C actions",
+    "VNC": "VNC / RFB viewports",
     "RDR": "redroid container",
     "CVD": "cuttlefish launch",
     "GAP": "gapps install",
@@ -34,6 +44,13 @@ TYPES = {
 
 DEFAULT_TYPE = "SYS"
 _TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+_SECRET_KEYS = {
+    "password", "passwd", "token", "api_token", "auth_token",
+    "authorization", "secret", "api_key",
+}
+
+_RING = deque(maxlen=int(os.environ.get("LOG_RING_SIZE", "4000")))
+_RING_LOCK = threading.Lock()
 
 
 def normalize_type(value):
@@ -42,8 +59,46 @@ def normalize_type(value):
     return label if label in TYPES else DEFAULT_TYPE
 
 
+def verbose_enabled():
+    flag = os.environ.get("CLOUD_PHONE_VERBOSE", "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return (os.environ.get("LOG_LEVEL") or "").strip().upper() == "DEBUG"
+
+
+def resolved_level(level=None):
+    if level:
+        return str(level).strip().upper()
+    if os.environ.get("CLOUD_PHONE_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return "DEBUG"
+    return (os.environ.get("LOG_LEVEL", "INFO")).strip().upper()
+
+
 def _timestamp(created):
     return f"{time.strftime(_TS_FORMAT, time.localtime(created))}.{int(created % 1 * 1000):03d}"
+
+
+def redact(value):
+    """Drop secrets from verbose log payloads. Never print passwords or tokens."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if lowered in _SECRET_KEYS or "password" in lowered:
+                out[key] = "***"
+            else:
+                out[key] = redact(item)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [redact(item) for item in value]
+    return value
+
+
+def truncate(text, limit=240):
+    text = "" if text is None else str(text).replace("\n", "\\n")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"...({len(text)} chars)"
 
 
 class LabeledFormatter(logging.Formatter):
@@ -86,6 +141,35 @@ class JsonFormatter(LabeledFormatter):
         return json.dumps(payload, default=str)
 
 
+class RingHandler(logging.Handler):
+    """In-process ring so GET /logs and tests can read the same verbose stream."""
+
+    def emit(self, record):
+        item = {
+            "ts": _timestamp(record.created),
+            "type": normalize_type(getattr(record, "log_type", DEFAULT_TYPE)),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        with _RING_LOCK:
+            _RING.append(item)
+
+
+def recent_logs(log_type=None, n=200):
+    with _RING_LOCK:
+        items = list(_RING)
+    if log_type:
+        wanted = {normalize_type(part) for part in str(log_type).split(",") if part.strip()}
+        items = [item for item in items if item["type"] in wanted]
+    return items[-int(n):]
+
+
+def clear_logs():
+    with _RING_LOCK:
+        _RING.clear()
+
+
 class TypeAdapter(logging.LoggerAdapter):
     """Stamps every call from one subsystem with its label."""
 
@@ -109,7 +193,7 @@ def build_formatter(log_format=None, default_type=DEFAULT_TYPE):
 def configure(name, log_type=DEFAULT_TYPE, level=None, stream=None, log_file=None):
     """Configure and return a label-stamped logger for one subsystem."""
     log_type = normalize_type(log_type)
-    level_name = (level or os.environ.get("LOG_LEVEL", "INFO")).strip().upper()
+    level_name = resolved_level(level)
     resolved = getattr(logging, level_name, logging.INFO)
 
     logger = logging.getLogger(name)
@@ -118,9 +202,14 @@ def configure(name, log_type=DEFAULT_TYPE, level=None, stream=None, log_file=Non
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
 
+    formatter = build_formatter(default_type=log_type)
     handler = logging.StreamHandler(stream or sys.stderr)
-    handler.setFormatter(build_formatter(default_type=log_type))
+    handler.setFormatter(formatter)
     logger.addHandler(handler)
+
+    ring = RingHandler()
+    ring.setFormatter(formatter)
+    logger.addHandler(ring)
 
     path = log_file or os.environ.get("LOG_FILE", "")
     if path:
@@ -129,10 +218,9 @@ def configure(name, log_type=DEFAULT_TYPE, level=None, stream=None, log_file=Non
             if directory:
                 os.makedirs(directory, exist_ok=True)
             file_handler = logging.FileHandler(path)
-            file_handler.setFormatter(build_formatter(default_type=log_type))
+            file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
         except OSError as exc:
-            # A missing log directory must not take the service down.
             logger.warning("cannot open LOG_FILE %s: %s", path, exc)
 
     return TypeAdapter(logger, {"log_type": log_type})

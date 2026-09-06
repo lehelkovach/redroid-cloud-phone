@@ -29,10 +29,8 @@ instance_ip.txt
 instance_ocid.txt
 *.ip
 
-# Logs
-*.log
-logs/
-*.log.*
+# Test reports
+.test-reports/
 
 # Temporary Files
 tmp/
@@ -93,7 +91,7 @@ htmlcov/
 ehthumbs.db
 Desktop.ini
 
-# Backup files
-*.bak
-*.backup
-*~
+# GApps blobs (never commit)
+gapps.zip
+*.apk
+/opt/gapps/

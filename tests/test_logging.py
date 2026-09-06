@@ -1,36 +1,35 @@
 #!/usr/bin/env python3
-"""Labeled logging: text and JSON, plus parity with the shell helper."""
+"""Labeled logging: text/JSON, shell parity, Appium/commandlet/VNC labels."""
 
 import io
 import json
 import os
 import re
 import subprocess
-import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "api"))
-
-import cloudphone_logging as cpl
+from api import cloudphone_logging as cpl
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_SH = os.path.join(ROOT, "scripts", "lib", "log.sh")
 
-TEXT_LINE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[([A-Z]{3})\] \[(\w+)\s*\] (.*)$")
+TEXT_LINE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[([A-Z]{3})\] \[(\w+)\s*\] (.*)$"
+)
 
 
 class FormatTests(unittest.TestCase):
     def capture(self, log_type="API", fmt="text", level="INFO"):
         stream = io.StringIO()
         logger = cpl.configure(
-            f"test.{log_type}.{fmt}", log_type=log_type, level=level, stream=stream
+            f"test.{log_type}.{id(self)}.{fmt}", log_type=log_type, level=level, stream=stream
         )
         return logger, stream
 
     def test_text_format_carries_type_and_level(self):
         logger, stream = self.capture()
         logger.info("container started")
-        match = TEXT_LINE.match(stream.getvalue().strip())
+        match = TEXT_LINE.match(stream.getvalue().strip().splitlines()[0])
         self.assertIsNotNone(match, stream.getvalue())
         self.assertEqual(match.group(1), "API")
         self.assertEqual(match.group(2), "INFO")
@@ -38,11 +37,15 @@ class FormatTests(unittest.TestCase):
 
     def test_json_format(self):
         stream = io.StringIO()
-        logger = cpl.configure("test.json", log_type="ORC", stream=stream)
+        logger = cpl.configure(f"test.json.{id(self)}", log_type="ORC", stream=stream)
         for handler in logger.logger.handlers:
-            handler.setFormatter(cpl.JsonFormatter("ORC"))
+            if not isinstance(handler, cpl.RingHandler):
+                handler.setFormatter(cpl.JsonFormatter("ORC"))
         logger.warning("lease expired owner=%s", "alice")
-        payload = json.loads(stream.getvalue().strip())
+        line = next(
+            part for part in stream.getvalue().splitlines() if part.startswith("{")
+        )
+        payload = json.loads(line)
         self.assertEqual(payload["type"], "ORC")
         self.assertEqual(payload["level"], "WARNING")
         self.assertEqual(payload["msg"], "lease expired owner=alice")
@@ -52,11 +55,33 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(cpl.normalize_type("nope"), "SYS")
         self.assertEqual(cpl.normalize_type(None), "SYS")
         self.assertEqual(cpl.normalize_type("adb"), "ADB")
+        self.assertEqual(cpl.normalize_type("apm"), "APM")
+        self.assertEqual(cpl.normalize_type("vnc"), "VNC")
+        self.assertEqual(cpl.normalize_type("cmd"), "CMD")
 
     def test_bind_switches_the_label(self):
         logger, stream = self.capture(log_type="ORC")
         logger.bind("RDR").info("container up")
         self.assertIn("[RDR]", stream.getvalue())
+
+    def test_appium_commandlet_vnc_labels(self):
+        cpl.clear_logs()
+        logger, stream = self.capture(log_type="API")
+        logger.bind("APM").info("session create requested url=http://127.0.0.1:4723")
+        logger.bind("CMD").info("commandlet tap backend=adb input tap 640 360")
+        logger.bind("VNC").info("viewport 1280x720 :5900 clients=0")
+        text = stream.getvalue()
+        self.assertIn("[APM]", text)
+        self.assertIn("[CMD]", text)
+        self.assertIn("[VNC]", text)
+        types = {item["type"] for item in cpl.recent_logs(n=50)}
+        self.assertTrue({"APM", "CMD", "VNC"} <= types)
+
+    def test_redact_strips_passwords(self):
+        payload = cpl.redact({"login": {"username": "dogfood", "password": "secret"}, "token": "abc"})
+        self.assertEqual(payload["login"]["username"], "dogfood")
+        self.assertEqual(payload["login"]["password"], "***")
+        self.assertEqual(payload["token"], "***")
 
     def test_level_filtering(self):
         logger, stream = self.capture(level="WARNING")
@@ -66,10 +91,9 @@ class FormatTests(unittest.TestCase):
         self.assertIn("real problem", stream.getvalue())
 
     def test_log_file_failure_does_not_raise(self):
-        """A bad LOG_FILE must not take the Control API down at boot."""
         logger = cpl.configure(
-            "test.badfile", log_type="API", stream=io.StringIO(),
-            log_file="/proc/definitely/not/writable/x.log",
+            f"test.badfile.{id(self)}", log_type="API", stream=io.StringIO(),
+            log_file="/dev/null/not-a-directory/x.log",
         )
         logger.info("still alive")
 
@@ -77,6 +101,8 @@ class FormatTests(unittest.TestCase):
         for label in cpl.TYPES:
             self.assertRegex(label, r"^[A-Z]{3}$")
             self.assertTrue(cpl.TYPES[label])
+        for extra in ("APM", "CMD", "VNC"):
+            self.assertIn(extra, cpl.TYPES)
 
 
 class ShellParityTests(unittest.TestCase):
@@ -85,7 +111,7 @@ class ShellParityTests(unittest.TestCase):
         full_env.update(env or {})
         return subprocess.run(
             ["bash", "-c", f"source {LOG_SH}\n{script}"],
-            capture_output=True, text=True, env=full_env,
+            capture_output=True, text=True, env=full_env, timeout=10,
         )
 
     def test_shell_text_line_matches_python_shape(self):
@@ -103,6 +129,11 @@ class ShellParityTests(unittest.TestCase):
         payload = json.loads(result.stderr.strip())
         self.assertEqual(payload["type"], "GAP")
         self.assertEqual(payload["level"], "ERROR")
+
+    def test_shell_appium_commandlet_vnc_types(self):
+        for label, msg in (("APM", "session"), ("CMD", "tap"), ("VNC", "viewport")):
+            result = self.run_sh(f'LOG_TYPE={label} log_info "{msg}"')
+            self.assertIn(f"[{label}]", result.stderr, result.stderr)
 
     def test_shell_unknown_type_degrades(self):
         result = self.run_sh('LOG_TYPE=bogus log_info "hi"')

@@ -19,27 +19,37 @@ import shlex
 import time
 import base64
 import tempfile
-import logging
 import threading
 import uuid
 from functools import wraps
 from flask import Flask, request, jsonify, Response
 
-app = Flask(__name__)
-
-# Logging — labeled so unified logs can be filtered by origin (see docs/LOGGING.md)
 try:
     from cloudphone_logging import configure as _configure_logging
-except ImportError:  # running as a package (tests, orchestrator imports)
+    from cloudphone_logging import recent_logs, redact, truncate, verbose_enabled
+    import ui_control
+    import viewport
+except ImportError:
     from api.cloudphone_logging import configure as _configure_logging
+    from api.cloudphone_logging import recent_logs, redact, truncate, verbose_enabled
+    from api import ui_control
+    from api import viewport
 
+app = Flask(__name__)
+
+# Labeled logging — see docs/LOGGING.md. CLOUD_PHONE_VERBOSE=1 → DEBUG.
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
-logger = _configure_logging("control_api", log_type="API", level=LOG_LEVEL)
+logger = _configure_logging("control_api", log_type="API")
 adb_logger = logger.bind("ADB")
+cmd_logger = logger.bind("CMD")
+apm_logger = logger.bind("APM")
+vnc_logger = logger.bind("VNC")
 
 # Configuration
 ADB_CONNECT = os.environ.get("ADB_CONNECT", "127.0.0.1:5555")
 API_TOKEN = os.environ.get("API_TOKEN", "")
+UI_BACKEND = os.environ.get("UI_BACKEND", "adb").lower()
+APPIUM_URL = os.environ.get("APPIUM_URL", "http://127.0.0.1:4723")
 CONFIG_FILE = os.environ.get("CONFIG_FILE", "/etc/cloud-phone/config.json")
 PROXY_SCRIPT = "/opt/cloud-phone-scripts/proxy-control.sh"
 JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", "3600"))
@@ -50,7 +60,8 @@ _state = {
     "proxy": {"enabled": False, "type": None, "host": None, "port": None},
     "location": {"enabled": False, "latitude": 0, "longitude": 0},
     "connected": False,
-    "last_adb_error": ""
+    "last_adb_error": "",
+    "ui_backend": UI_BACKEND,
 }
 
 # In-memory job queue
@@ -80,16 +91,24 @@ def run_adb(*args, timeout=30):
     """Run ADB command and return (success, stdout, stderr)"""
     target = current_adb_connect()
     cmd = ["adb", "-s", target] + list(args)
+    started = time.time()
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         success = result.returncode == 0
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
+        elapsed_ms = int((time.time() - started) * 1000)
         if not success:
             _state["last_adb_error"] = stderr or stdout or "adb command failed"
-            adb_logger.warning("failed: %s | stderr=%s", " ".join(cmd), _state["last_adb_error"])
+            adb_logger.warning(
+                "failed rc=%s ms=%s cmd=%s stderr=%s",
+                result.returncode, elapsed_ms, " ".join(cmd), truncate(stderr),
+            )
         else:
-            adb_logger.debug("ok: %s", " ".join(cmd))
+            out_note = f"{len(stdout)} bytes" if "screencap" in " ".join(args) else truncate(stdout)
+            adb_logger.debug("ok ms=%s cmd=%s stdout=%s", elapsed_ms, " ".join(cmd), out_note)
+            if verbose_enabled():
+                adb_logger.info("ok ms=%s cmd=%s stdout=%s", elapsed_ms, " ".join(cmd), out_note)
         return success, stdout, stderr
     except subprocess.TimeoutExpired:
         _state["last_adb_error"] = "adb command timed out"
@@ -123,6 +142,15 @@ def ensure_adb_connected():
         _state["last_adb_error"] = err or out
         adb_logger.warning("connect failed: %s", _state["last_adb_error"])
     return False
+
+
+@app.before_request
+def _log_request():
+    path = request.path or "/"
+    if path in ("/health", "/logs"):
+        logger.debug("%s %s", request.method, path)
+    else:
+        logger.info("%s %s", request.method, path)
 
 def presented_token():
     """Bearer token on the current request, or "" when none was sent."""
@@ -159,9 +187,6 @@ def require_auth(f):
         if API_TOKEN:
             state = auth_state()
             if not state["ok"]:
-                # `code` distinguishes "you sent nothing" from "your token is
-                # wrong", and both from a missing route, so a client cannot
-                # retry an alternate path and report the 401 as a 404.
                 code = "auth_invalid" if state["presented"] else "auth_required"
                 body = {
                     "success": False,
@@ -223,6 +248,16 @@ def _do_screen_action(action):
         time.sleep(0.5)
         run_adb_shell("input swipe 500 1500 500 500")
     return {"success": True, "action": action}
+
+
+def _loggable_input(data):
+    payload = redact(data)
+    if str(payload.get("type") or payload.get("action") or "").lower() in {"text", "type"}:
+        raw = data.get("text", "")
+        payload = dict(payload)
+        payload["text"] = f"<{len(raw)} chars>"
+    return payload
+
 
 
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
@@ -302,7 +337,6 @@ def _find_by_label(elements, label):
 
     if not candidates:
         return None
-    # Stable sort keeps document order among otherwise equal candidates.
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return candidates[0][2]
 
@@ -339,9 +373,11 @@ def _do_tap_label(label):
 
 def _do_device_input(data):
     input_type = data.get("type", "tap")
+    cmd_logger.info("commandlet %s payload=%s", input_type, _loggable_input(data))
     if input_type == "tap":
         x, y = data.get("x", 500), data.get("y", 500)
         run_adb_shell(f"input tap {x} {y}")
+        viewport.frame(vnc_logger)
     elif input_type == "tap_label":
         return _do_tap_label(data.get("label"))
     elif input_type == "swipe":
@@ -349,6 +385,7 @@ def _do_device_input(data):
         x2, y2 = data.get("x2", 500), data.get("y2", 500)
         duration = data.get("duration", 300)
         run_adb_shell(f"input swipe {x1} {y1} {x2} {y2} {duration}")
+        viewport.frame(vnc_logger)
     elif input_type == "text":
         text = data.get("text", "")
         text = text.replace(" ", "%s").replace("'", "\\'")
@@ -357,6 +394,107 @@ def _do_device_input(data):
         keycode = data.get("keycode", 4)
         run_adb_shell(f"input keyevent {keycode}")
     return {"success": True, "type": input_type}
+
+
+def _appium_available():
+    if not APPIUM_URL:
+        return False
+    try:
+        import appium  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _appium_status():
+    ready = _appium_available()
+    status = {
+        "url": APPIUM_URL,
+        "ready": ready,
+        "backend": _state.get("ui_backend") or UI_BACKEND,
+    }
+    apm_logger.info(
+        "status url=%s ready=%s backend=%s",
+        status["url"], status["ready"], status["backend"],
+    )
+    return status
+
+
+def _screen_size():
+    if not _state.get("connected"):
+        return viewport.default_size()
+    ok, out, _ = run_adb_shell("wm size")
+    if ok and out:
+        try:
+            return ui_control.parse_wm_size(out)
+        except ui_control.UIError:
+            pass
+    return viewport.default_size()
+
+
+def _execute_ui_command(cmd):
+    backend_pref = cmd.get("backend") or _state.get("ui_backend") or UI_BACKEND
+    size = _screen_size()
+    w3c = None
+    try:
+        w3c = ui_control.build_appium_actions(cmd, size)
+        apm_logger.info(
+            "w3c action=%s size=%sx%s payload=%s",
+            cmd.get("action") or cmd.get("type"), size[0], size[1], w3c,
+        )
+    except ui_control.UIError:
+        pass
+
+    if str(backend_pref).lower() == "appium" and not _appium_available():
+        apm_logger.warning(
+            "backend=appium unavailable url=%s (install appium-python-client, set APPIUM_URL)",
+            APPIUM_URL,
+        )
+        return {
+            "success": False,
+            "error": "appium backend selected but not available; install appium-python-client and set APPIUM_URL",
+            "backend": "appium",
+            "appium_url": APPIUM_URL,
+            "w3c": w3c,
+        }, 501
+
+    backend = ui_control.select_backend(backend_pref, appium_available=_appium_available())
+    if backend == "adb":
+        shell_cmds = ui_control.build_adb_input(cmd, size)
+        cmd_logger.info(
+            "commandlet action=%s backend=adb size=%sx%s cmds=%s",
+            cmd.get("action") or cmd.get("type"), size[0], size[1], shell_cmds,
+        )
+        results = []
+        for shell in shell_cmds:
+            ok, stdout, stderr = run_adb_shell(shell)
+            results.append({"cmd": shell, "ok": ok, "stdout": stdout, "stderr": stderr})
+        viewport.frame(vnc_logger)
+        return {
+            "success": all(item["ok"] for item in results) if results else True,
+            "backend": "adb",
+            "size": {"width": size[0], "height": size[1]},
+            "commands": shell_cmds,
+            "results": results,
+            "w3c": w3c,
+        }, 200
+
+    apm_logger.warning("appium selected but not wired on this instance url=%s", APPIUM_URL)
+    return {
+        "success": False,
+        "error": "appium backend selected but not wired on this instance",
+        "backend": "appium",
+        "w3c": w3c,
+    }, 501
+
+
+def _ui_response(cmd):
+    try:
+        body, status = _execute_ui_command(cmd)
+        return jsonify(body), status
+    except ui_control.UIError as exc:
+        cmd_logger.warning("commandlet rejected: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 400
 
 
 def _do_screenshot_base64():
@@ -436,7 +574,7 @@ def _gapps_status():
     for key, pkg in mapping.items():
         ok, stdout, _ = run_adb_shell(f"pm path {pkg}")
         found[key] = bool(ok and "package:" in (stdout or ""))
-    found["ready"] = bool(found["gms"] and found["play_store"])
+    found["ready"] = bool(found.get("gms") and found.get("play_store"))
     return found
 
 
@@ -460,13 +598,22 @@ def health():
         status = "healthy"
     else:
         status = "degraded"
+    vnc = viewport.snapshot()
+    appium = {
+        "url": APPIUM_URL,
+        "ready": _appium_available(),
+        "backend": _state.get("ui_backend") or UI_BACKEND,
+    }
     return jsonify({
         "status": status,
         "adb_connected": connected,
         "adb_target": current_adb_connect(),
         "auth": auth,
         "usable": bool(connected and auth["ok"]),
+        "runtime": os.environ.get("CLOUD_PHONE_RUNTIME", "unknown"),
         "gapps": gapps,
+        "appium": appium,
+        "vnc": vnc,
         "state": _state
     })
 
@@ -852,6 +999,113 @@ def device_input():
     data = request.get_json() or {}
     return jsonify(_do_device_input(data))
 
+
+@app.route("/ui/command", methods=["POST"])
+@require_auth
+def ui_command():
+    """Backend-agnostic UI commandlet. Body: action plus coords, optional backend=adb|appium."""
+    return _ui_response(request.get_json() or {})
+
+
+@app.route("/ui/tap", methods=["POST"])
+@require_auth
+def ui_tap():
+    cmd = request.get_json() or {}
+    cmd.setdefault("action", "tap")
+    return _ui_response(cmd)
+
+
+@app.route("/ui/swipe", methods=["POST"])
+@require_auth
+def ui_swipe():
+    cmd = request.get_json() or {}
+    cmd.setdefault("action", "swipe")
+    return _ui_response(cmd)
+
+
+@app.route("/ui/text", methods=["POST"])
+@require_auth
+def ui_text():
+    cmd = request.get_json() or {}
+    cmd.setdefault("action", "text")
+    return _ui_response(cmd)
+
+
+@app.route("/ui/key", methods=["POST"])
+@require_auth
+def ui_key():
+    cmd = request.get_json() or {}
+    cmd.setdefault("action", "key")
+    return _ui_response(cmd)
+
+
+@app.route("/ui/screen", methods=["GET"])
+@require_auth
+def ui_screen():
+    size = _screen_size()
+    cmd_logger.info("getScreen %sx%s", size[0], size[1])
+    shot = _do_screenshot_base64()
+    viewport.frame(vnc_logger, nbytes=len(shot.get("image_base64") or ""))
+    shot.update({"width": size[0], "height": size[1], "backend": _state.get("ui_backend") or UI_BACKEND})
+    return jsonify(shot)
+
+
+@app.route("/appium/status", methods=["GET"])
+def appium_status():
+    return jsonify(_appium_status())
+
+
+@app.route("/appium/session", methods=["POST"])
+@require_auth
+def appium_session():
+    body = request.get_json() or {}
+    apm_logger.info("session create requested url=%s caps=%s", APPIUM_URL, redact(body))
+    if not _appium_available():
+        apm_logger.warning("session refused: appium client missing url=%s", APPIUM_URL)
+        return jsonify({
+            "success": False,
+            "error": "appium not available",
+            "url": APPIUM_URL,
+        }), 501
+    return jsonify({"success": False, "error": "appium session not wired", "url": APPIUM_URL}), 501
+
+
+@app.route("/vnc/status", methods=["GET"])
+def vnc_status():
+    status = viewport.snapshot()
+    vnc_logger.info(
+        "viewport %sx%s :%s clients=%s frames=%s runtime=%s",
+        status["width"], status["height"], status["port"],
+        status["clients"], status["frames"], status["runtime"],
+    )
+    return jsonify(status)
+
+
+@app.route("/vnc/attach", methods=["POST"])
+@require_auth
+def vnc_attach():
+    return jsonify(viewport.attach(vnc_logger, size=_screen_size())), 201
+
+
+@app.route("/vnc/detach", methods=["POST"])
+@require_auth
+def vnc_detach():
+    clients = viewport.detach(vnc_logger)
+    return jsonify({"success": True, "clients": clients})
+
+
+@app.route("/logs", methods=["GET"])
+def get_logs():
+    """Recent labeled lines (ADB commanders, Appium, VNC viewports, …)."""
+    log_type = request.args.get("type")
+    try:
+        n = int(request.args.get("n", "200"))
+    except ValueError:
+        n = 200
+    items = recent_logs(log_type=log_type, n=n)
+    return jsonify({"count": len(items), "logs": items})
+
+
 @app.route("/device/ui", methods=["GET", "POST"])
 @require_auth
 def device_ui():
@@ -942,7 +1196,6 @@ def start_app(package):
             "error": (err or out or "am start failed").strip(),
         }), 502
 
-    # monkey can launch some packages that resolve-activity misses.
     success, out, err = run_adb_shell(
         f"monkey -p {package} -c android.intent.category.LAUNCHER 1"
     )
@@ -1439,5 +1692,10 @@ if __name__ == "__main__":
     
     print(f"Starting Cloud Phone Control API on {host}:{port}")
     print(f"ADB target: {ADB_CONNECT}")
+    print(f"UI backend: {UI_BACKEND}  Appium: {APPIUM_URL}  VNC: :{viewport.port()}")
+    logger.info(
+        "listen %s:%s adb=%s ui_backend=%s appium=%s vnc=:%s verbose=%s",
+        host, port, ADB_CONNECT, UI_BACKEND, APPIUM_URL, viewport.port(), verbose_enabled(),
+    )
     
     app.run(host=host, port=port, debug=debug, threaded=True)

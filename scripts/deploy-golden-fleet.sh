@@ -1,8 +1,7 @@
 #!/bin/bash
 # deploy-golden-fleet.sh
-# Single golden deployment script for multiple cuttlefish devices.
-#
-# It wraps deploy-from-golden.sh in a consistent fleet workflow.
+# Deploy a pool of golden-image VMs.
+# Default platform is redroid (automation). Use --platform cuttlefish for ingest.
 #
 # Usage:
 #   ./scripts/deploy-golden-fleet.sh [OPTIONS]
@@ -27,7 +26,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 COUNT="3"
 NAME_PREFIX="phone"
-PLATFORM="cuttlefish"
+PLATFORM="redroid"
 OCPUS=""
 MEMORY_GB=""
 IMAGE_ID="${GOLDEN_IMAGE_ID:-}"
@@ -44,13 +43,13 @@ Usage:
 Options:
   --count N                 Number of devices to deploy (default: 3)
   --name-prefix PREFIX      Instance name prefix (default: phone)
-  --platform NAME           cuttlefish (required value)
-  --ocpus N                 OCPUs (default: 4)
-  --memory N                Memory GB (default: 24)
-  --image-id OCID           Golden image OCID (or use GOLDEN_IMAGE_ID env)
+  --platform NAME           redroid (default, automation pool) | cuttlefish (camera ingest)
+  --ocpus N                 OCPUs (redroid default 2, cuttlefish default 4)
+  --memory N                Memory GB (redroid default 8, cuttlefish default 24)
+  --image-id OCID           Golden image OCID (or GOLDEN_IMAGE_ID / REDROID_GOLDEN_IMAGE_ID)
   --wait-check              Run basic health check post-deploy
   --run-tests               Run post-deploy tests
-  --verify-ingest           For cuttlefish, run ingest verification after deploy
+  --verify-ingest           For cuttlefish only: run ingest verification after deploy
   --parallel N              Parallel deploy workers (default: 1)
   --help                    Show help
 EOF
@@ -73,21 +72,27 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$PLATFORM" != "cuttlefish" ]]; then
-    echo "Only --platform cuttlefish is supported." >&2
+if [[ "$PLATFORM" != "cuttlefish" && "$PLATFORM" != "redroid" ]]; then
+    echo "Unsupported --platform $PLATFORM (redroid|cuttlefish)." >&2
     exit 1
 fi
 
+if [[ -z "$IMAGE_ID" && "$PLATFORM" == "redroid" ]]; then
+    IMAGE_ID="${REDROID_GOLDEN_IMAGE_ID:-}"
+fi
+if [[ -z "$IMAGE_ID" && "$PLATFORM" == "cuttlefish" ]]; then
+    IMAGE_ID="${CUTTLEFISH_GOLDEN_IMAGE_ID:-${GOLDEN_IMAGE_ID:-}}"
+fi
 if [[ -z "$IMAGE_ID" ]]; then
-    echo "Golden image id required (--image-id or GOLDEN_IMAGE_ID env)." >&2
+    echo "Golden image id required (--image-id or GOLDEN_IMAGE_ID / REDROID_GOLDEN_IMAGE_ID)." >&2
     exit 1
 fi
 
 if [[ -z "$OCPUS" ]]; then
-    OCPUS="4"
+    if [[ "$PLATFORM" == "redroid" ]]; then OCPUS="2"; else OCPUS="4"; fi
 fi
 if [[ -z "$MEMORY_GB" ]]; then
-    MEMORY_GB="24"
+    if [[ "$PLATFORM" == "redroid" ]]; then MEMORY_GB="8"; else MEMORY_GB="24"; fi
 fi
 
 if [[ "$PARALLEL" -lt 1 ]]; then
@@ -128,9 +133,13 @@ PY
     fi
     echo "${name}|${ip}" >> "$OUT_FILE"
 
-    if [[ "$VERIFY_INGEST" == "true" && -n "$ip" ]]; then
+    if [[ "$VERIFY_INGEST" == "true" && "$PLATFORM" == "cuttlefish" && -n "$ip" ]]; then
         echo "[fleet] verifying ingest for $name ($ip) ..."
         "$SCRIPT_DIR/verify-cuttlefish-ingest.sh" --vm "$ip" || true
+    fi
+    if [[ "$VERIFY_INGEST" != "true" && "$PLATFORM" == "redroid" && -n "$ip" && "$WAIT_CHECK" == "true" ]]; then
+        echo "[fleet] verifying Redroid phone for $name ($ip) ..."
+        "$SCRIPT_DIR/verify-redroid-phone.sh" --vm "$ip" || true
     fi
 }
 

@@ -48,3 +48,4 @@ jobs:
           name: test-reports
           path: .test-reports/
           retention-days: 7
+          if-no-files-found: ignore

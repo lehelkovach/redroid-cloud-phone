@@ -1,66 +1,53 @@
-# Testing
+# Testing — TDD ladder
+
+Two runtimes (Redroid+GApps automation vs Cuttlefish ingest) are proven by a
+**runged ladder**, not a single `unittest discover` dump. Offline suites never touch Docker, OCI, or a proprietary Play zip.
+CI runs `./cloud-phone test --coverage --fail-under 60`. Procedure and
+auth suites from the runtime-split track are included alongside the
+dual-pool ladder.
 
 ```bash
-./cloud-phone test                     # every offline suite
-./cloud-phone test --coverage          # + coverage, fails under 60%
-./cloud-phone test --suite mobile-e2e --verbose
+./cloud-phone test                 # all offline suites
+./cloud-phone test --coverage      # + line coverage (CI fail-under 60)
+./cloud-phone test --suite ladder-e2e
 ./cloud-phone test --list
-./cloud-phone test --live --api-url http://127.0.0.1:8080
+./cloud-phone test --live          # + live Control API suites
+PYTHON=/usr/bin/python3 ./cloud-phone test
 ```
 
-Offline suites touch no device, no Docker, and no OCI, so they run in CI and in
-a cloud agent. Logs land in `.test-reports/<suite>.log`; coverage HTML in
-`.test-reports/htmlcov/`.
+Logs: `.test-reports/<suite>.log`. Filter labeled `[ADB]` / `[CMD]` / `[APM]` / `[VNC]`
+lines from those reports. See [`LOGGING.md`](./LOGGING.md).
 
-## Suites
+## Rungs
 
-| Suite | Covers |
-|---|---|
-| `logging` | Label format, JSON mode, shell/Python parity |
-| `control-api` | `/health` GApps reporting, per-request ADB routing |
-| `procedures` | Step vocabulary, capabilities, approval gates, cross-surface runs |
-| `procedure-api` | `POST /procedures`, `/validate`, `/surfaces` |
-| `orchestrator` | Step normalization, leases, instance caps |
-| `sessions` | Playwright-like acquire / renew / 409 / release |
-| `gapps` | Zip validation (incl. the empty-zip failure), Redroid launcher dry run |
-| `mobile-e2e` | Full ladder: proxy → signup → capped swipe → match → follow-up rule |
-| `orchestrator-integration` / `-e2e` | Orchestrator against a mock Control API |
-| `agent-api`, `connectivity` | **Live only** — need a real Control API |
+| Rung | Kind | What must stay green | How |
+|---|---|---|---|
+| **R0** | Unit | GApps zip (incl. empty-zip refuse), purpose→runtime mapping, deploy `--platform` contracts, orchestrator helpers, labeled logging (incl. APM/CMD/VNC) | `test_gapps_zip`, `test_gapps_health`, `test_orchestrator_unit`, `test_scripts_contract`, `test_logging`, `test_ui_control` |
+| **R1** | Component | Default pool is Redroid; camera is a separate Cuttlefish pool; Control API `/health` reports `gapps.ready` from `pm path`, not spoof props; UI commandlets + Appium 501 + VNC viewport logs | Flask `test_client` + patched ADB (`test_runtime_pool`, `test_control_api`) |
+| **R2** | Process integration | A real orchestrator process talks HTTP to one fake Control API: health, tap, screenshot, jobs, Play login, `/ui` `/appium` `/vnc` `/logs` | `test_orchestrator_integration`, `test_orchestrator_e2e` |
+| **R3** | Dual-pool e2e | Two fake phones at once. Default session → Redroid with `gapps.ready`. `purpose=camera` → Cuttlefish ingest, **no** GApps. Play launch hits only Redroid. Lease/409/release reuse the automation pool. `verify-redroid-phone.sh --require-gapps` passes Redroid and fails Cuttlefish. Verbose CMD/APM/VNC log ring is populated. | `test_ladder_e2e` |
+| **R4** | Live | Real Control API. Skipped unless `CLOUD_PHONE_LIVE=1` (optional `REQUIRE_GAPPS=1`). | `test_live`; also `tests/test_agent_api.py --api-url …`, `PUBLIC_IP=… tests/test_connectivity.py` |
 
-## The mobile e2e scenario
+## Adding a test
 
-`tests/test_mobile_e2e_scenario.py` drives `tests/fixtures/fake_phone.py`, an
-in-process Control API backed by a small Android-ish state machine. It is a
-*simulator*, not a stub: it refuses taps on the wrong screen, will not load the
-app until an egress proxy is configured, and will not message someone who was
-never a match.
+Put it on the **lowest rung that would catch the bug**.
 
-The ladder it proves:
+- Pure function / zip / CLI flag → R0
+- Orchestrator pool rules without a subprocess → R1
+- HTTP across process boundary → R2
+- Redroid vs Cuttlefish isolation → R3
+- Needs a booted guest → R4 (skip offline)
 
-1. **Proxy first** — the app refuses to load without egress; configuring a
-   residential proxy changes the apparent IP.
-2. **Signup** — the shared `login_procedure` fills email/password with fake
-   credentials and submits.
-3. **Swiping under budget** — `rules.SwipeBudget` caps swipes and likes; the
-   run stops at the cap, not at the end of the deck.
-4. **Match** — the deck deterministically matches on every second like.
-5. **Follow-up after an hour** — `rules.plan_followups` uses a virtual clock,
-   returns *intents*, and marks them `needs_approval`. The test asserts nothing
-   is sent without approval.
+Do not call Docker or `oci` from R0–R3. Fake Control APIs live in
+`tests/fixtures/fake_control.py`. Process helpers live in `tests/harness.py`.
 
-The app is `com.example.mockdating`, fabricated for this fixture. There is no
-real account and no unattended outreach: one message per match ever, capped per
-run, personalized template required, approval gate on send. Pointing this at a
-live dating service is out of scope.
+## Live GApps bake (R4)
 
-## Adding a suite
+After `./cloud-phone deploy-redroid` and an operator zip:
 
-Add the module to `OFFLINE_SUITES` in `scripts/run-tests.sh`. Keep it offline —
-patch `run_adb` (see `tests/test_control_api.py`) or use the fake phone rather
-than reaching for a device.
+```bash
+CLOUD_PHONE_LIVE=1 REQUIRE_GAPPS=1 CLOUD_PHONE_API_URL=http://<IP>:8080 \
+  ./cloud-phone test --rung 4 --live
+```
 
-## Coverage
-
-The floor is 60% over `api/` and `orchestrator/`, enforced in CI. It is a
-ratchet, not a target: raise `--fail-under` when a suite lands, never lower it
-to make a red run green.
+Empty `/opt/gapps/gapps.zip` must still fail R0.

@@ -44,6 +44,14 @@ Run locally if needed:
 
 ## 4) OCI deploy from clean machine
 
+Automation pool (default):
+
+```bash
+./cloud-phone deploy-redroid --name redroid-source --ocpus 2 --memory 8
+```
+
+Camera ingest (only when a stream is needed):
+
 ```bash
 ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
 ```
