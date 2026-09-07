@@ -21,6 +21,7 @@ Redroid (GApps automation pool):
   deploy-redroid    Create/reuse OCI host and install Redroid + GApps stack
   redroid-up        Start a Redroid container (Playwright-like phone)
   redroid-down      Stop and remove a Redroid container
+  gapps-bake        Bake an arm64 Redroid image with GApps already in it
   gapps-install     Install operator-supplied GApps zip into Redroid
   gapps-check       Validate Play/GMS packages on ADB
   verify-phone      Control API + optional GApps health on a Redroid host
@@ -90,6 +91,9 @@ case "$cmd" in
         ;;
     redroid-down)
         run_script "$SCRIPTS_DIR/redroid-up.sh" --down "$@"
+        ;;
+    gapps-bake)
+        run_script "$SCRIPTS_DIR/build-redroid-gapps-image.sh" "$@"
         ;;
     gapps-install)
         run_script "$SCRIPTS_DIR/install-gapps-redroid.sh" "$@"
