@@ -77,6 +77,10 @@ Options:
   --help                 Show help
 
 Notes:
+  No Ampere machine is needed to build the Ampere image. The bake is a copy, so
+  an x86 host produces it under qemu once binfmt is registered:
+    docker run --privileged --rm tonistiigi/binfmt --install arm64
+
   The fleet is arm64, so an amd64 GApps zip is refused by default. Community
   prebuilt "mindthegapps" images on Docker Hub are amd64-only and cannot be
   used here; the official redroid/redroid base is multi-arch, which is why this
@@ -287,9 +291,38 @@ ship_plan() {
 EOF
 }
 
+host_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+# Baking is a COPY plus one small RUN, so qemu builds the arm64 image on an x86
+# machine for almost nothing. Without binfmt registered, buildx instead dies
+# inside the RUN with `exec format error` — which reads like a Dockerfile bug.
+require_emulation_if_foreign() {
+    local want host
+    want="$(platform_arch "$PLATFORM")"
+    host="$(host_arch)"
+    [[ "$want" == "$host" ]] && return 0
+
+    if docker buildx inspect --bootstrap 2>/dev/null | grep -q "$PLATFORM"; then
+        log_info "host is $host; building $PLATFORM under qemu emulation"
+        return 0
+    fi
+
+    log_error "host is $host and the target is $PLATFORM, but buildx reports no $PLATFORM support."
+    log_error "Register qemu/binfmt once, then re-run:"
+    log_error "  docker run --privileged --rm tonistiigi/binfmt --install $want"
+    return 1
+}
+
 require_docker() {
     command -v docker >/dev/null 2>&1 || { log_error "docker is required (use --dry-run to plan without it)"; return 1; }
     docker buildx version >/dev/null 2>&1 || { log_error "docker buildx is required to build $PLATFORM"; return 1; }
+    require_emulation_if_foreign
 }
 
 main() {

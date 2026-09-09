@@ -24,7 +24,7 @@ Decision write-up: [`RUNTIME-SPLIT.md`](./RUNTIME-SPLIT.md).
 | `/opt/gapps/gapps.zip` | Host drop path if env is unset |
 | `REDROID_IMAGE` | Optional pre-baked tag that already contains Play (still run `gapps-check`) |
 
-Do **not** commit proprietary zips. Do **not** trust historical SourceForge/GitHub URLs — they 404'd and produced the empty zip.
+Do **not** commit proprietary zips. Do **not** trust historical SourceForge/GitHub URLs — they 404'd and produced the empty zip. Re-checked 2026-09-09: still dead, see [What is actually blocking](#what-is-actually-blocking-measured-2026-09-09).
 
 ARM64 + Android version must match the Redroid tag (default guest is Android 11). Mismatch is a warning unless `--require-sdk-match`.
 
@@ -63,6 +63,21 @@ cannot run Play at all. The official `redroid/redroid` base *is* multi-arch, so
 the bake derives from it and you supply the arm64 zip. An amd64 zip is refused
 unless you also ask for `--platform linux/amd64`.
 
+You do **not** need an Ampere machine to produce the Ampere image. The bake is a
+`COPY` plus one small `RUN`, so qemu emulation builds it on any x86 host at
+negligible cost:
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install arm64   # once per host
+./cloud-phone gapps-bake --zip … --save /tmp/redroid-gapps.tar
+```
+
+Without that registration buildx does not fail cleanly — it dies inside the
+`RUN` with `exec format error`, which reads like a broken Dockerfile. The
+builder therefore checks `docker buildx inspect` for the target platform first
+and refuses with the `binfmt` command rather than starting a build that cannot
+finish.
+
 The generated Dockerfile copies each partition the zip carries to its real
 mount point — MindTheGapps ships `system/product/...`, which must land at
 `/product`, **not** `/system/product`, or the guest ends up with two copies of
@@ -87,7 +102,38 @@ guest.
 
 **Not yet built or booted.** The recipe and its refusals are covered offline by
 `tests/test_gapps_image.py`; no arm64 image has been produced or started from
-it, because that needs an arm64 Docker host and an operator-supplied zip.
+it. One input is missing, and it is the zip.
+
+### What is actually blocking (measured 2026-09-09)
+
+The zip has to come from the operator because the channels this repo used to
+name no longer serve one. Checked from an unrestricted network, so this is
+supply, not egress:
+
+| Channel | State |
+|---|---|
+| `github.com/MindTheGapps/11.0.0-arm64` | Repo exists, **empty** (`size: 0`), last push 2023-09-22 |
+| `api.github.com/repos/MindTheGapps/vendor_gapps/releases` | **0 releases**, no assets |
+| `sourceforge.net/projects/mindthegapps/files/11.0/arm64/` | **404** |
+| `mindthegapps.com` | 200, but it is now an unrelated SEO blog — not a provenance you should bake into a fleet image |
+
+This is why `--zip` / `GAPPS_ZIP` are operator inputs with a size and layout
+check rather than a URL the script trusts. Drop a verified arm64 Android 11 zip
+at `/opt/gapps/`, and the bake runs on any x86 host under qemu (above).
+
+The phone VMs themselves are **not** the blocker, and the older notes implying
+the lab is gone are wrong. The OCI compartment (listed 2026-09-09 with tenancy
+admin) holds `cloud-phone-agent-6c58` and `cloud-phone-dev` (both
+`VM.Standard.A1.Flex`, 4 OCPU / 24 GB, RUNNING), `cloud-phone-orch-6c58`
+(1/6, RUNNING), `redroid-camera-build` (4/24, RUNNING), plus two STOPPED
+`cloud-phone-gapps-test` VMs (2/8). Capacity is arm64 and live; what is missing
+is a way in. Port 22 is open on all of them and rejects both stack keys, the
+Control API ports are closed from outside, and the OCI *Run Command* plugin —
+enabled by API on the two phone hosts on 2026-09-09 — leaves commands
+`ACCEPTED` and never executes them, so the on-host `oracle-cloud-agent` is not
+functioning either. Regaining shell needs an operator decision: a key-recovery
+boot-volume attach, or a fresh VM (which bills — the tenancy is already ~36 A1
+OCPUs, past the always-free allowance).
 
 ## Commands
 

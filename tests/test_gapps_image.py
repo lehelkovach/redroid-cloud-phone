@@ -13,6 +13,7 @@ are synthetic and only carry the *shape* the builder inspects.
 """
 
 import os
+import platform
 import subprocess
 import tempfile
 import unittest
@@ -56,6 +57,17 @@ MTG_ARM64 = [
 ]
 
 MTG_X86_64 = [n.replace("lib64/", "lib64/x86_64/") for n in MTG_ARM64]
+
+HOST_IS_X86 = platform.machine() in ("x86_64", "amd64")
+NATIVE_PLATFORM = "linux/amd64" if HOST_IS_X86 else "linux/arm64"
+FOREIGN_PLATFORM = "linux/arm64" if HOST_IS_X86 else "linux/amd64"
+
+
+def zip_for(tmp, plat):
+    """A zip whose arch matches the target, so arch checks stay out of the way."""
+    if plat.endswith("arm64"):
+        return make_zip(Path(tmp) / "MindTheGapps-11.0.0-arm64.zip", MTG_ARM64)
+    return make_zip(Path(tmp) / "MindTheGapps-11.0.0-x86_64.zip", MTG_X86_64)
 
 
 class HelpAndDefaults(unittest.TestCase):
@@ -256,6 +268,66 @@ class HostsItTheSameWay(unittest.TestCase):
             # Baking does not get to self-certify; the same gapps-check that
             # guards a runtime install must confirm the baked phone.
             self.assertIn("gapps-check", r.stdout)
+
+
+class CrossArchBuild(unittest.TestCase):
+    """Nobody has to own an Ampere box to produce the Ampere image.
+
+    The bake is a COPY plus one small RUN, so qemu emulation builds it on any
+    x86 machine at negligible cost. What must not happen is buildx being handed
+    a foreign platform with no emulator registered: it fails inside the RUN with
+    `exec format error`, which reads like a broken Dockerfile.
+    """
+
+    def _run_with_docker(self, tmp, plat, platforms, extra=()):
+        bindir = Path(tmp) / "bin"
+        bindir.mkdir()
+        log = Path(tmp) / "docker.log"
+        stub = bindir / "docker"
+        stub.write_text(
+            "#!/bin/bash\n"
+            f'printf "%s\\n" "$*" >> {log}\n'
+            'case "$1 $2" in\n'
+            '  "buildx version") echo "github.com/docker/buildx v0.14.0" ;;\n'
+            f'  "buildx inspect") echo "Platforms: {platforms}" ;;\n'
+            'esac\n'
+            "exit 0\n"
+        )
+        stub.chmod(0o755)
+        r = build(
+            "--zip", zip_for(tmp, plat), "--platform", plat, *extra,
+            env={"PATH": f"{bindir}:{os.environ['PATH']}"},
+        )
+        return r, (log.read_text() if log.exists() else "")
+
+    def test_a_foreign_platform_without_qemu_is_refused_before_the_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, log = self._run_with_docker(tmp, FOREIGN_PLATFORM, NATIVE_PLATFORM)
+            self.assertNotEqual(r.returncode, 0, "a build that cannot succeed was started")
+            self.assertNotIn("buildx build", log, "buildx was invoked anyway")
+            msg = r.stdout + r.stderr
+            self.assertIn("binfmt", msg, "the refusal must name the fix, not just the symptom")
+
+    def test_a_foreign_platform_with_qemu_registered_builds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, log = self._run_with_docker(
+                tmp, FOREIGN_PLATFORM, f"{NATIVE_PLATFORM}, {FOREIGN_PLATFORM}"
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("buildx build", log)
+            self.assertIn(FOREIGN_PLATFORM, log)
+
+    def test_a_native_build_does_not_consult_the_emulator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Platforms list deliberately empty: a native build must not be
+            # gated on emulation being present.
+            r, log = self._run_with_docker(tmp, NATIVE_PLATFORM, "")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("buildx build", log)
+
+    def test_help_points_at_the_x86_route(self):
+        out = build("--help").stdout.lower()
+        self.assertIn("qemu", out)
 
 
 class CliIntegration(unittest.TestCase):
