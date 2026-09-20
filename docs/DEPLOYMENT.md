@@ -48,7 +48,15 @@ Recommended baseline: `4 OCPU / 24GB RAM`.
 This executes:
 
 - runtime validation (`cuttlefish-phase1-validate.sh`)
-- RTMP bridge A/V checks (`test-cuttlefish-rtmp-bridge.sh`)
+- RTMP bridge pixel-copy checks (`test-cuttlefish-rtmp-bridge.sh`): synthetic OBS through nginx-rtmp, every frame byte-identical and contiguous, no metadata/SEI survives
+
+Then, with OBS streaming to `rtmp://<OCI_PUBLIC_IP>/live/cam`:
+
+```bash
+./scripts/obs-e2e-check.sh --vm <OCI_PUBLIC_IP> --snapshot ./obs-frame.png
+```
+
+OBS settings and what each check means: [`OBS-E2E.md`](./OBS-E2E.md).
 
 ## 3) Prepare and create golden image
 

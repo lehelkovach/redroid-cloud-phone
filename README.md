@@ -7,7 +7,7 @@ Lab hosts / ports / token **names**: [`docs/OPS-ORCHESTRATOR.md`](docs/OPS-ORCHE
 | Runtime | Job |
 |---|---|
 | **Redroid** (Docker) | **Default orchestrator pool** — GApps / Play phones for `mobile.*` automation |
-| **Cuttlefish** (KVM) | On-demand camera/mic ingest: nginx-rtmp, FFmpeg bridge, v4l2-class sinks |
+| **Cuttlefish** (KVM) | On-demand camera/mic ingest: OBS → nginx-rtmp → FFmpeg pixel-copy bridge → raw v4l2/FIFO/UDP sinks |
 
 Virtual camera HAL on Redroid/Waydroid **failed** (ABI/VNDK). That is why ingest stays on Cuttlefish. We are **not** retrying HAL-on-container. Waydroid stays parked.
 
@@ -31,12 +31,17 @@ Never commit a GApps zip. Empty `/opt/gapps/gapps.zip` is rejected. Details: [`d
 
 ```bash
 ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
-./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
+./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>                       # runtime + synthetic OBS, pixel-exact
+./cloud-phone obs-check --vm <OCI_PUBLIC_IP> --snapshot ./obs-frame.png # while real OBS streams to rtmp://<IP>/live/cam
 COMPARTMENT_ID=<ocid> ./cloud-phone create-golden <OCI_PUBLIC_IP> cloud-phone-cuttlefish-v1 cuttlefish
 CUTTLEFISH_GOLDEN_IMAGE_ID=<ocid> ./cloud-phone deploy-fleet --platform cuttlefish --count 2 --verify-ingest
 ```
 
 Do **not** bake Play/GMS into the Cuttlefish golden.
+
+The bridge decodes once and copies pixels: raw yuv420p frames and raw PCM on the sinks, no
+re-encode, no metadata, no x264 SEI, no frame dup/drop. OBS settings and the live end-to-end
+procedure: [`docs/OBS-E2E.md`](docs/OBS-E2E.md).
 
 ## After machine wipe (quick path)
 
@@ -100,6 +105,8 @@ android-arm-cloud-phone/
 ├── scripts/install-gapps-redroid.sh
 ├── scripts/install-redroid-cloud-phone.sh
 ├── scripts/deploy-redroid-oci.sh
+├── scripts/cuttlefish-rtmp-bridge.sh   # OBS RTMP → raw pixel sinks (clean mode)
+├── scripts/obs-e2e-check.sh            # live OBS end-to-end check
 ├── scripts/run-tests.sh
 ├── scripts/lib/log.sh
 ├── systemd/redroid-*.service
@@ -117,6 +124,7 @@ android-arm-cloud-phone/
 - `docs/TESTING.md` — offline suites, coverage, dual-pool ladder R0–R4
 - `docs/LOGGING.md` — label scheme and filtering
 - `docs/DEPLOYMENT.md` — Cuttlefish ingest deploy
+- `docs/OBS-E2E.md` — OBS settings, clean pixel-copy contract, live end-to-end check
 - `docs/CUTTLEFISH_PHASE1.md` / `CUTTLEFISH_PHASE2_RTMP_BRIDGE.md` / `CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
 - `docs/CLEANROOM_BOOTSTRAP.md`
 - `FUTURE_CONSIDERATIONS_CAMERA_STACK.md` — parked HAL-on-container notes

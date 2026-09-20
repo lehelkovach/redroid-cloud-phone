@@ -17,6 +17,7 @@
 #   --front-sink URI          Front sink URI
 #   --back-sink URI           Back sink URI
 #   --mic-sink URI            Mic sink URI
+#   --bridge-mode MODE        clean (pixel copy, default) | encode (legacy libx264/mpegts)
 #   --skip-tools-check        Do not fail if launch_cvd/cvd are missing
 #   --help                    Show help
 
@@ -31,6 +32,7 @@ RTMP_URL="rtmp://127.0.0.1/live/cam"
 FRONT_SINK_URI="udp://127.0.0.1:23000?pkt_size=1316"
 BACK_SINK_URI="udp://127.0.0.1:23001?pkt_size=1316"
 MIC_SINK_URI="udp://127.0.0.1:23010?pkt_size=1316"
+BRIDGE_MODE="clean"
 SKIP_TOOLS_CHECK="false"
 
 GREEN='\033[0;32m'
@@ -55,6 +57,7 @@ Options:
   --front-sink URI          Front sink URI
   --back-sink URI           Back sink URI
   --mic-sink URI            Mic sink URI
+  --bridge-mode MODE        clean (pixel copy, default) | encode (legacy libx264/mpegts)
   --skip-tools-check        Do not fail if launch_cvd/cvd are missing
   --help                    Show help
 EOF
@@ -68,6 +71,7 @@ while [[ $# -gt 0 ]]; do
         --front-sink) FRONT_SINK_URI="${2:-$FRONT_SINK_URI}"; shift 2 ;;
         --back-sink) BACK_SINK_URI="${2:-$BACK_SINK_URI}"; shift 2 ;;
         --mic-sink) MIC_SINK_URI="${2:-$MIC_SINK_URI}"; shift 2 ;;
+        --bridge-mode) BRIDGE_MODE="${2:-$BRIDGE_MODE}"; shift 2 ;;
         --skip-tools-check) SKIP_TOOLS_CHECK="true"; shift ;;
         --help|-h) usage; exit 0 ;;
         *) log_error "Unknown option: $1"; usage; exit 1 ;;
@@ -104,6 +108,15 @@ log_info "[2/8] Configuring nginx-rtmp..."
 cp "$PROJECT_ROOT/config/nginx-rtmp.conf" /etc/nginx/nginx.conf
 systemctl disable nginx.service 2>/dev/null || true
 
+# Raw yuv420p over loopback UDP is 10-40 MB/s. Ubuntu's default socket buffer
+# cap (212992) drops packets under that load; readers ask for buffer_size=4M+.
+cat > /etc/sysctl.d/90-cloud-phone-rtmp-bridge.conf <<'SYSCTL'
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 4194304
+SYSCTL
+sysctl -q -p /etc/sysctl.d/90-cloud-phone-rtmp-bridge.conf || true
+
 log_info "[3/8] Installing scripts to /opt/cloud-phone-scripts..."
 mkdir -p /opt/cloud-phone-scripts
 cp "$PROJECT_ROOT/scripts/"*.sh /opt/cloud-phone-scripts/
@@ -137,6 +150,12 @@ RTMP_URL="$RTMP_URL"
 FRONT_SINK_URI="$FRONT_SINK_URI"
 BACK_SINK_URI="$BACK_SINK_URI"
 MIC_SINK_URI="$MIC_SINK_URI"
+# clean = decode once, copy pixels, strip all metadata/SEI (default)
+# encode = legacy libx264 -> MPEG-TS on every sink
+BRIDGE_MODE="$BRIDGE_MODE"
+# 0 keeps the worker (and its sinks) attached across OBS stop/start
+BRIDGE_IDLE_TIMEOUT="0"
+BRIDGE_STALL_TIMEOUT="10"
 EOF
 
 log_info "[6/8] Reloading and enabling services..."
@@ -183,3 +202,5 @@ echo "  sudo systemctl status nginx-rtmp.service"
 echo ""
 echo "Validate:"
 echo "  /opt/cloud-phone-scripts/cuttlefish-phase1-validate.sh --local --instance-name $INSTANCE_NAME --webrtc-port $WEBRTC_PORT"
+echo "  /opt/cloud-phone-scripts/test-cuttlefish-rtmp-bridge.sh --local      # synthetic OBS, pixel-exact"
+echo "  /opt/cloud-phone-scripts/obs-e2e-check.sh --local                    # with real OBS streaming"

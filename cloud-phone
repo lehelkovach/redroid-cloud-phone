@@ -28,6 +28,8 @@ Redroid (GApps automation pool):
 Cuttlefish (ingest, spawn only when a camera stream is needed):
   deploy            Create/reuse OCI host and install Cuttlefish stack
   verify-ingest     Verify runtime + RTMP video/audio ingest
+  bridge-test       Synthetic OBS -> nginx-rtmp -> bridge, pixel-exact check (--local | --vm IP)
+  obs-check         End-to-end check while a real OBS session is streaming (--local | --vm IP)
 
 Either runtime:
   deploy-golden     Deploy a host from golden image (--platform redroid|cuttlefish)
@@ -48,6 +50,7 @@ Examples:
   ./cloud-phone test --coverage
   ./cloud-phone deploy --name cuttlefish-source --ocpus 4 --memory 24
   ./cloud-phone verify-ingest --vm <OCI_PUBLIC_IP>
+  ./cloud-phone obs-check --vm <OCI_PUBLIC_IP> --snapshot ./obs-frame.png
 EOF
 }
 
@@ -75,6 +78,12 @@ case "$cmd" in
         ;;
     verify-ingest)
         run_script "$SCRIPTS_DIR/verify-cuttlefish-ingest.sh" "$@"
+        ;;
+    bridge-test)
+        run_script "$SCRIPTS_DIR/test-cuttlefish-rtmp-bridge.sh" "$@"
+        ;;
+    obs-check)
+        run_script "$SCRIPTS_DIR/obs-e2e-check.sh" "$@"
         ;;
     verify-phone)
         run_script "$SCRIPTS_DIR/verify-redroid-phone.sh" "$@"

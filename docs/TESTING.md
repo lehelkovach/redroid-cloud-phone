@@ -22,11 +22,11 @@ lines from those reports. See [`LOGGING.md`](./LOGGING.md).
 
 | Rung | Kind | What must stay green | How |
 |---|---|---|---|
-| **R0** | Unit | GApps zip (incl. empty-zip refuse), purpose→runtime mapping, deploy `--platform` contracts, orchestrator helpers, labeled logging (incl. APM/CMD/VNC) | `test_gapps_zip`, `test_gapps_health`, `test_orchestrator_unit`, `test_scripts_contract`, `test_logging`, `test_ui_control` |
-| **R1** | Component | Default pool is Redroid; camera is a separate Cuttlefish pool; Control API `/health` reports `gapps.ready` from `pm path`, not spoof props; UI commandlets + Appium 501 + VNC viewport logs | Flask `test_client` + patched ADB (`test_runtime_pool`, `test_control_api`) |
+| **R0** | Unit | GApps zip (incl. empty-zip refuse), purpose→runtime mapping, deploy `--platform` contracts, orchestrator helpers, labeled logging (incl. APM/CMD/VNC), RTMP bridge `--dry-run` contract (rawvideo, metadata stripped, sink→muxer, no HTTP-only flags) | `test_gapps_zip`, `test_gapps_health`, `test_orchestrator_unit`, `test_scripts_contract`, `test_logging`, `test_ui_control`, `test_rtmp_bridge_contract` |
+| **R1** | Component | Default pool is Redroid; camera is a separate Cuttlefish pool; Control API `/health` reports `gapps.ready` from `pm path`, not spoof props; UI commandlets + Appium 501 + VNC viewport logs; the real bridge run on a lossless local FLV yields byte-identical, contiguous frames (skipped without ffmpeg) | Flask `test_client` + patched ADB (`test_runtime_pool`, `test_control_api`); `test_rtmp_bridge_contract.BridgePixelCopyLocal` |
 | **R2** | Process integration | A real orchestrator process talks HTTP to one fake Control API: health, tap, screenshot, jobs, Play login, `/ui` `/appium` `/vnc` `/logs` | `test_orchestrator_integration`, `test_orchestrator_e2e` |
 | **R3** | Dual-pool e2e | Two fake phones at once. Default session → Redroid with `gapps.ready`. `purpose=camera` → Cuttlefish ingest, **no** GApps. Play launch hits only Redroid. Lease/409/release reuse the automation pool. `verify-redroid-phone.sh --require-gapps` passes Redroid and fails Cuttlefish. Verbose CMD/APM/VNC log ring is populated. | `test_ladder_e2e` |
-| **R4** | Live | Real Control API. Skipped unless `CLOUD_PHONE_LIVE=1` (optional `REQUIRE_GAPPS=1`). | `test_live`; also `tests/test_agent_api.py --api-url …`, `PUBLIC_IP=… tests/test_connectivity.py` |
+| **R4** | Live | Real Control API. Skipped unless `CLOUD_PHONE_LIVE=1` (optional `REQUIRE_GAPPS=1`). Ingest host: `./cloud-phone bridge-test --vm IP` (synthetic OBS through nginx-rtmp, pixel-exact) and `./cloud-phone obs-check --vm IP` (real OBS session). | `test_live`; also `tests/test_agent_api.py --api-url …`, `PUBLIC_IP=… tests/test_connectivity.py`; `scripts/test-cuttlefish-rtmp-bridge.sh`, `scripts/obs-e2e-check.sh` |
 
 ## Adding a test
 

@@ -28,6 +28,7 @@ OFFLINE_SUITES=(
     "gapps:tests.test_gapps_zip"
     "gapps-health:tests.test_gapps_health"
     "scripts-contract:tests.test_scripts_contract"
+    "rtmp-bridge:tests.test_rtmp_bridge_contract"
     "ui-control:tests.test_ui_control"
     "runtime-pool:tests.test_runtime_pool"
     "mobile-e2e:tests.test_mobile_e2e_scenario"
