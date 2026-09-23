@@ -111,6 +111,13 @@ _ops = {}
 _ops_lock = threading.Lock()
 _leases = {}
 _leases_lock = threading.Lock()
+
+# Who last had Android state on an instance, and when it was last provably
+# reset. A lease is a *booking*; tenancy is about *data left behind*, and the
+# two have different lifetimes: releasing a lease frees the slot, it does not
+# empty /data.
+_instance_tenancy = {}
+_instance_tenancy_lock = threading.Lock()
 _user_sessions = {}
 _user_sessions_lock = threading.Lock()
 _next_adb_port = ORCH_REDROID_ADB_PORT_BASE
@@ -180,6 +187,57 @@ def _set_lease(instance_id, owner, ttl_seconds):
             "owner": owner,
             "expires_at": time.time() + ttl_seconds
         }
+    # The guard can only refuse what it knows about, so recording is part of
+    # taking the lease rather than a separate step someone has to remember.
+    record_tenancy(instance_id, owner)
+
+
+def record_tenancy(instance_id, owner):
+    """Note that `owner` had Android state on this instance."""
+    with _instance_tenancy_lock:
+        entry = _instance_tenancy.setdefault(instance_id, {})
+        entry["last_owner"] = owner
+        entry["last_used_at"] = time.time()
+
+
+def record_reset(instance_id):
+    """Note that this instance's /data was wiped.
+
+    Call this only after a reset has actually completed. It is the evidence
+    the guard looks for, so recording it optimistically defeats the guard.
+    """
+    with _instance_tenancy_lock:
+        entry = _instance_tenancy.setdefault(instance_id, {})
+        entry["reset_at"] = time.time()
+
+
+def lease_decision(instance_id, owner):
+    """May `owner` take this instance? Returns (ok, reason).
+
+    Fails closed. An instance that carried someone else's Android state is
+    refused unless a reset was recorded *after* that use -- so adding a wipe
+    later makes instances reusable again automatically, with no change here.
+    """
+    with _instance_tenancy_lock:
+        entry = dict(_instance_tenancy.get(instance_id) or {})
+    last_owner = entry.get("last_owner")
+    if not last_owner or last_owner == owner:
+        return True, "no foreign tenancy"
+    last_used = entry.get("last_used_at") or 0
+    reset_at = entry.get("reset_at") or 0
+    if reset_at > last_used:
+        return True, "reset since the previous tenant"
+    # Deliberately does not name the previous tenant: the caller is not
+    # entitled to know whose data is on the box they were refused.
+    return False, (
+        "instance carries another tenant's Android state and has not been "
+        "reset since; refusing to hand over /data"
+    )
+
+
+def can_lease_to(instance_id, owner):
+    ok, _ = lease_decision(instance_id, owner)
+    return ok
 
 
 def _clear_lease(instance_id):
@@ -1085,6 +1143,12 @@ def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpo
     inst = _get_or_create_instance(purpose=purpose, runtime=runtime, provision=provision)
     if _is_lease_valid(inst["id"]) and not _is_lease_valid(inst["id"], owner=owner_user_id):
         raise RuntimeError("phone in use")
+    allowed, why = lease_decision(inst["id"], owner_user_id)
+    if not allowed:
+        logger.warning(
+            "Refused instance=%s to owner=%s: %s", inst["id"], owner_user_id, why
+        )
+        raise RuntimeError(f"phone not clean: {why}")
     _set_lease(inst["id"], owner_user_id, ttl_seconds)
     sess = _session_from_instance(owner_user_id, inst, ttl_seconds, purpose)
     with _user_sessions_lock:
