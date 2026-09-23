@@ -1199,7 +1199,14 @@ def create_session():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
-        status = 409 if "in use" in str(exc) or "full" in str(exc) or "limit" in str(exc) else 500
+        msg = str(exc)
+        # "not clean" is a policy refusal like "in use" -- the request conflicts
+        # with the instance's state. A 500 would read as an orchestrator fault
+        # and invite a retry, which would be refused identically.
+        conflict = any(
+            k in msg for k in ("in use", "full", "limit", "not clean")
+        )
+        status = 409 if conflict else 500
         return jsonify({"error": str(exc)}), status
     return jsonify({"success": True, "session": sess, "created": created}), (201 if created else 200)
 
