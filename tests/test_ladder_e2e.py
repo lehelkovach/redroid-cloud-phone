@@ -112,13 +112,45 @@ class DualPoolLadderE2ETests(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 409)
 
-    def test_r3_06_release_returns_phone_to_idle_pool(self):
+    def test_r3_06_release_frees_the_lease_for_the_same_owner(self):
+        """Release frees the booking. It does not empty /data.
+
+        This test previously asserted that Dave could take the phone Alice had
+        just released -- which is the leak, written down as a requirement.
+        Redroid keeps sessions, cookies, saved credentials and the keyboard's
+        learned words in /data, and nothing in the orchestrator wiped them.
+
+        What release legitimately guarantees is that the *lease* is gone, so
+        the owner is not billed for a phone they finished with and can pick it
+        back up. Cross-tenant reuse now requires evidence of a reset; see
+        test_tenant_isolation.py for reset-then-reuse, which is a unit-level
+        fact because the orchestrator runs out of process here.
+        """
         self._alice_session()
         released = self.orch.delete("/sessions/alice")
         self.assertEqual(released.status_code, 200)
-        reused = self.orch.post("/sessions", json={"owner_user_id": "dave"})
-        self.assertIn(reused.status_code, (200, 201))
-        self.assertEqual(reused.json()["session"]["runtime"], "redroid")
+
+        # Alice can take her own phone back -- the common case still works.
+        again = self.orch.post("/sessions", json={"owner_user_id": "alice"})
+        self.assertIn(again.status_code, (200, 201))
+        self.assertEqual(again.json()["session"]["runtime"], "redroid")
+
+    def test_r3_06b_a_released_phone_is_not_handed_to_a_different_owner(self):
+        """The phone Alice used does not go to Dave with her data on it."""
+        self._alice_session()
+        self.assertEqual(self.orch.delete("/sessions/alice").status_code, 200)
+
+        reused = self.orch.post(
+            "/sessions",
+            json={"owner_user_id": "dave", "provision": False},
+        )
+        self.assertEqual(
+            reused.status_code, 409,
+            "a used phone must be refused to another tenant, not 500 and not granted",
+        )
+        self.assertIn("not clean", reused.json().get("error", "").lower())
+        # The refusal must not tell Dave whose data is on the box.
+        self.assertNotIn("alice", reused.json().get("error", "").lower())
 
     def test_r3_07_verify_phone_script_requires_gapps_on_redroid_only(self):
         script = ROOT / "scripts" / "verify-redroid-phone.sh"
