@@ -18,6 +18,7 @@ import subprocess
 import threading
 import time
 import uuid
+from urllib.parse import urlparse
 from pathlib import Path
 
 import requests
@@ -1099,6 +1100,37 @@ def get_procedure_run(op_id):
     return jsonify(op)
 
 
+def ingest_for(inst):
+    """Where OBS should publish for this instance, or None.
+
+    Only ingest instances have a camera to feed. Redroid deliberately has no
+    virtual camera (see RUNTIME-SPLIT.md), so handing back a publish URL for
+    one would be a lie the caller discovers by streaming into a void.
+
+    The host is read off the instance's own api_url rather than configured
+    separately: one fact in one place. nginx-rtmp serves the `live`
+    application on the default RTMP port, with `cam` as the stream key
+    (docs/CUTTLEFISH_PHASE2_RTMP_BRIDGE.md).
+    """
+    purpose = resolve_purpose(inst.get("purpose"), inst.get("runtime"))
+    if purpose == PURPOSE_AUTOMATION:
+        return None
+    api_url = (inst or {}).get("api_url") or ""
+    try:
+        host = urlparse(api_url).hostname
+    except (ValueError, TypeError):
+        host = None
+    if not host:
+        # We cannot say where to publish, so we do not say.
+        return None
+    return {
+        "rtmp_url": f"rtmp://{host}/live/cam",
+        "rtmp_app": "live",
+        "stream_key": "cam",
+        "host": host,
+    }
+
+
 def _session_from_instance(owner_user_id, inst, ttl_seconds, purpose=None):
     purpose = resolve_purpose(purpose or inst.get("purpose"), inst.get("runtime"))
     return {
@@ -1111,6 +1143,7 @@ def _session_from_instance(owner_user_id, inst, ttl_seconds, purpose=None):
         "ttl_seconds": ttl_seconds,
         "name": inst.get("name"),
         "gapps": inst.get("gapps"),
+        "ingest": ingest_for({**inst, "purpose": purpose}),
     }
 
 
