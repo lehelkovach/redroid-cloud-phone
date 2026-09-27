@@ -1,9 +1,15 @@
-"""VNC / RFB viewport metadata and verbose frame logs.
+"""Viewport bookkeeping ("VNC" in name only) and verbose frame logs.
 
 Cuttlefish's operator UI is WebRTC; the classic Android emulator / scrcpy-style
-path is RFB on :5900. This module does not start a VNC server — it records the
-viewport the Control API advertises (size, port, clients) so logs and tests can
-prove a human or agent is looking at the same rectangle the commandlets tap.
+path is RFB on :5900. This module does not start a VNC server and nothing in
+this repo speaks RFB — it records the viewport the Control API advertises
+(size, port, clients, frames) so logs and tests can prove a human or agent is
+looking at the same rectangle the commandlets tap.
+
+Frames actually reach a watcher through `screen_stream.py`
+(`GET /device/stream.mjpeg`, `GET /device/stream.h264`); those endpoints call
+`attach` / `frame` / `detach` here so this record stays truthful.
+See docs/SCREEN-STREAM.md.
 """
 
 from __future__ import annotations

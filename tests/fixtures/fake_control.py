@@ -4,16 +4,25 @@ Emits labeled verbose logs for Appium, UI commandlets, and VNC viewports so the
 TDD ladder can assert the same stream a live phone would produce.
 """
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 try:
     from api.cloudphone_logging import configure, recent_logs, redact
+    from api import screen_stream
     from api import ui_control
     from api import viewport
 except ImportError:
     from cloudphone_logging import configure, recent_logs, redact  # type: ignore
+    import screen_stream  # type: ignore
     import ui_control  # type: ignore
     import viewport  # type: ignore
+
+# A 1x1 PNG so the fake stream carries a real image per part.
+FAKE_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0"
+    b"\x00\x00\x03\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 def make_control_app(runtime="redroid"):
@@ -86,6 +95,29 @@ def make_control_app(runtime="redroid"):
         log.append({"endpoint": "screenshot", "runtime": runtime})
         viewport.frame(vnc_logger, nbytes=4, size=size)
         return jsonify({"success": True, "image_base64": "AAAA"})
+
+    @app.route("/device/stream.mjpeg", methods=["GET"])
+    def stream_mjpeg():
+        """Bounded fake stream: `frames` parts (default 3), no sleeping."""
+        try:
+            frames = int(request.args.get("frames", "3"))
+        except ValueError:
+            frames = 3
+        frames = max(1, min(frames, 50))
+        log.append({"endpoint": "stream", "runtime": runtime, "frames": frames})
+        viewport.attach(vnc_logger, runtime=runtime, size=size)
+        vnc_logger.info("stream start kind=mjpeg frames=%s runtime=%s", frames, runtime)
+
+        def parts():
+            try:
+                for _ in range(frames):
+                    viewport.frame(vnc_logger, nbytes=len(FAKE_PNG), size=size)
+                    yield screen_stream.multipart_part(FAKE_PNG, "image/png")
+            finally:
+                clients = viewport.detach(vnc_logger)
+                vnc_logger.info("stream stop kind=mjpeg frames=%s clients=%s", frames, clients)
+
+        return Response(parts(), mimetype=screen_stream.MJPEG_CONTENT_TYPE)
 
     @app.route("/jobs", methods=["POST"])
     def jobs():

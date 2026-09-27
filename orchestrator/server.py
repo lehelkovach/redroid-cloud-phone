@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request, stream_with_context
 
 try:
     from orchestrator.runtimes import (
@@ -301,6 +301,52 @@ def _control_get(api_url: str, path: str, instance=None):
     resp = requests.get(url, headers=_control_headers(instance), timeout=ORCH_API_TIMEOUT)
     _raise_for_control_status(resp, url)
     return resp.json()
+
+
+# Connect timeout for a relayed stream; the read timeout is per chunk, so a
+# quiet phone (no new frame yet) is not mistaken for a dead one.
+ORCH_STREAM_READ_TIMEOUT = int(os.environ.get("ORCH_STREAM_READ_TIMEOUT", "60"))
+
+
+def _control_stream(api_url: str, path: str, instance=None):
+    """Relay a long-lived byte stream from a phone without buffering it.
+
+    Returns a Flask streaming Response whose content type is whatever the phone
+    sent (multipart MJPEG or raw H.264). The upstream socket is closed when the
+    agent-side client goes away, which ends the phone's screencap loop.
+    """
+    url = f"{api_url}{path}"
+    vnc_logger.info("relay stream GET %s", url)
+    upstream = requests.get(
+        url, headers=_control_headers(instance), stream=True,
+        timeout=(ORCH_API_TIMEOUT, ORCH_STREAM_READ_TIMEOUT),
+    )
+    try:
+        _raise_for_control_status(upstream, url)
+    except Exception:
+        upstream.close()
+        raise
+
+    def relay():
+        total = 0
+        try:
+            # 8 KiB: sub-frame granularity even when the phone is not chunked
+            for chunk in upstream.iter_content(chunk_size=8 * 1024):
+                if chunk:
+                    total += len(chunk)
+                    yield chunk
+        finally:
+            upstream.close()
+            vnc_logger.info("relay stream closed %s bytes=%s", url, total)
+
+    response = Response(
+        stream_with_context(relay()),
+        content_type=upstream.headers.get("Content-Type", "application/octet-stream"),
+    )
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.direct_passthrough = True
+    return response
 
 
 def _assert_phone_usable(health, api_url):
@@ -801,6 +847,30 @@ def phone_screenshot(instance_id):
         return err
     data = _control_get(inst["api_url"], "/device/screenshot/base64", instance=inst)
     return jsonify(data)
+
+
+def _relay_phone_stream(instance_id, path):
+    inst, err = _require_instance(instance_id)
+    if err:
+        return err
+    q = request.query_string.decode() if request.query_string else ""
+    vnc_logger.info("relay stream instance=%s path=%s", instance_id, path)
+    return _control_stream(inst["api_url"], path + (f"?{q}" if q else ""), instance=inst)
+
+
+@app.route("/phones/<instance_id>/stream.mjpeg", methods=["GET"])
+def phone_stream_mjpeg(instance_id):
+    """Live MJPEG relay of the phone screen (streamed, never buffered).
+
+    Same query knobs as the Control API: fps, quality, frames.
+    """
+    return _relay_phone_stream(instance_id, "/device/stream.mjpeg")
+
+
+@app.route("/phones/<instance_id>/stream.h264", methods=["GET"])
+def phone_stream_h264(instance_id):
+    """Raw H.264 relay (route B); decode with WebCodecs. See docs/SCREEN-STREAM.md."""
+    return _relay_phone_stream(instance_id, "/device/stream.h264")
 
 
 @app.route("/phones/<instance_id>/jobs", methods=["POST"])

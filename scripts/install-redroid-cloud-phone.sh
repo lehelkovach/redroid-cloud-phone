@@ -110,6 +110,7 @@ cp "$PROJECT_ROOT/api/server.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/cloudphone_logging.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/ui_control.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/viewport.py" /opt/cloud-phone-api/
+cp "$PROJECT_ROOT/api/screen_stream.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/requirements.txt" /opt/cloud-phone-api/
 mkdir -p /opt/cloud-phone/config/device-profiles
 if [[ -d "$PROJECT_ROOT/config/device-profiles" ]]; then

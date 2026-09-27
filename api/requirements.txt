@@ -1,2 +1,4 @@
 flask>=2.0.0
 gunicorn>=20.0.0
+# JPEG encoding for GET /device/stream.mjpeg; without it the stream ships PNG parts.
+Pillow>=9.0.0

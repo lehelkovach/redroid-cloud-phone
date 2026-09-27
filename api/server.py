@@ -22,18 +22,20 @@ import tempfile
 import threading
 import uuid
 from functools import wraps
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, stream_with_context
 
 try:
     from cloudphone_logging import configure as _configure_logging
     from cloudphone_logging import recent_logs, redact, truncate, verbose_enabled
     import ui_control
     import viewport
+    import screen_stream
 except ImportError:
     from api.cloudphone_logging import configure as _configure_logging
     from api.cloudphone_logging import recent_logs, redact, truncate, verbose_enabled
     from api import ui_control
     from api import viewport
+    from api import screen_stream
 
 app = Flask(__name__)
 
@@ -1140,6 +1142,133 @@ def screenshot_base64():
     result = _do_screenshot_base64()
     status = 200 if result.get("success") else 500
     return jsonify(result), status
+
+
+# =============================================================================
+# Live screen streams — see docs/SCREEN-STREAM.md
+#
+# "VNC" in this service is bookkeeping (viewport.py); nothing listens on :5900.
+# These endpoints are what a Watch page embeds. Every frame ticks
+# viewport.frame() and a watcher counts as a viewport client for its lifetime,
+# so /vnc/status and the [VNC] log ring describe real eyes on the screen.
+# =============================================================================
+
+def _capture_screencap(target, timeout=15):
+    """One PNG from `screencap -p`, or None. Patched by the offline ladder."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", target, "exec-out", "screencap", "-p"],
+            capture_output=True, timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        _state["last_adb_error"] = str(exc)
+        return None
+    if result.returncode == 0 and result.stdout:
+        return result.stdout
+    _state["last_adb_error"] = (result.stderr or b"").decode("utf-8", "replace").strip() or "screencap failed"
+    return None
+
+
+def _int_arg(name, default, lo, hi):
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, min(hi, value))
+
+
+def _watched(size, start_msg, start_args, inner):
+    """Attach the viewport client on the first pull, not at route time: a
+    response that is never iterated must not leave a phantom watcher behind.
+    Closing this wrapper closes ``inner`` (yield from), which runs its on_stop."""
+    viewport.attach(vnc_logger, size=size)
+    vnc_logger.info(start_msg, *start_args)
+    yield from inner
+
+
+def _stream_response(generator, content_type):
+    response = Response(stream_with_context(generator), mimetype=content_type)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"  # nginx: do not buffer the relay
+    response.direct_passthrough = True
+    return response
+
+
+@app.route("/device/stream.mjpeg", methods=["GET"])
+@require_auth
+def stream_mjpeg():
+    """Route A: multipart MJPEG at up to VNC_FPS, until the client disconnects.
+
+    Query: fps (1..VNC_FPS), quality (JPEG 10..95), frames (0 = unbounded;
+    a bounded run is handy for curl smoke checks and the offline ladder).
+    """
+    ensure_adb_connected()
+    target = current_adb_connect()
+    size = _screen_size()
+    cap = max(1, viewport.fps())
+    fps = _int_arg("fps", cap, 1, cap)
+    quality = _int_arg("quality", screen_stream.default_quality(), 10, 95)
+    max_frames = _int_arg("frames", 0, 0, 100000)
+    start = (
+        "stream start kind=mjpeg %sx%s fps=%s quality=%s frames=%s adb=%s encoder=%s",
+        (size[0], size[1], fps, quality, max_frames or "unbounded", target,
+         "jpeg" if screen_stream.pillow_available() else "png"),
+    )
+
+    def on_frame(nbytes):
+        viewport.frame(vnc_logger, nbytes=nbytes, size=size)
+
+    def on_stop(sent, reason):
+        clients = viewport.detach(vnc_logger)
+        vnc_logger.info("stream stop kind=mjpeg frames=%s reason=%s clients=%s", sent, reason, clients)
+
+    parts = screen_stream.mjpeg_parts(
+        capture=lambda: _capture_screencap(target),
+        fps=fps, quality=quality, max_frames=max_frames,
+        on_frame=on_frame, on_stop=on_stop,
+    )
+    return _stream_response(_watched(size, *start, parts), screen_stream.MJPEG_CONTENT_TYPE)
+
+
+@app.route("/device/stream.h264", methods=["GET"])
+@require_auth
+def stream_h264():
+    """Route B: raw Annex-B H.264 from `screenrecord`, chained across its 180 s
+    limit. Decode in the browser with WebCodecs (docs/SCREEN-STREAM.md).
+
+    Query: bitrate (bps), width/height (scale; default = device), runs
+    (0 = unbounded), limit (seconds per recorder run, max 180).
+    """
+    ensure_adb_connected()
+    target = current_adb_connect()
+    device = _screen_size()
+    width = _int_arg("width", device[0], 64, 4096)
+    height = _int_arg("height", device[1], 64, 4096)
+    bitrate = _int_arg("bitrate", screen_stream.default_h264_bitrate(), 100_000, 50_000_000)
+    time_limit = _int_arg("limit", screen_stream.default_h264_time_limit(), 1, 180)
+    max_runs = _int_arg("runs", 0, 0, 100000)
+    argv = screen_stream.screenrecord_argv(
+        target, size=(width, height), bitrate=bitrate, time_limit=time_limit,
+    )
+    start = (
+        "stream start kind=h264 %sx%s bitrate=%s limit=%ss runs=%s adb=%s",
+        (width, height, bitrate, time_limit, max_runs or "unbounded", target),
+    )
+
+    def on_chunk(nbytes):
+        viewport.frame(vnc_logger, nbytes=nbytes, size=(width, height))
+
+    def on_stop(runs, total, reason):
+        clients = viewport.detach(vnc_logger)
+        vnc_logger.info(
+            "stream stop kind=h264 runs=%s bytes=%s reason=%s clients=%s", runs, total, reason, clients,
+        )
+
+    chunks = screen_stream.h264_chunks(
+        argv, max_runs=max_runs, on_chunk=on_chunk, on_stop=on_stop,
+    )
+    return _stream_response(_watched((width, height), *start, chunks), screen_stream.H264_CONTENT_TYPE)
 
 # =============================================================================
 # App Management Endpoints

@@ -71,6 +71,18 @@ Includes the dual-pool ladder (Redroid vs Cuttlefish) and a mobile e2e scenario
 [`docs/TESTING.md`](docs/TESTING.md) · [`docs/LOGGING.md`](docs/LOGGING.md)
 (`[ADB]` commanders, `[APM]` Appium, `[CMD]` commandlets, `[VNC]` viewports).
 
+## Live screen stream (Watch page)
+
+`GET /device/stream.mjpeg` on the Control API (and `GET /phones/<id>/stream.mjpeg`
+on the orchestrator) streams the phone screen as multipart MJPEG until the client
+disconnects — an `<img src>` is the whole client. `API_TOKEN` applies; `fps`,
+`quality`, `frames` are the knobs. "VNC" in this repo is viewport bookkeeping,
+not an RFB server. Details, and the H.264 route B: [`docs/SCREEN-STREAM.md`](docs/SCREEN-STREAM.md).
+
+```bash
+curl -N -H "Authorization: Bearer $API_TOKEN" http://phone:8080/device/stream.mjpeg
+```
+
 ## Procedures — one script, four surfaces
 
 A procedure is a list of steps in one shared vocabulary; a surface adapter
@@ -113,6 +125,7 @@ android-arm-cloud-phone/
 - `docs/GAPPS.md` — Play install on Redroid only
 - `docs/PROCEDURES.md` — step vocabulary, surfaces, approval gates
 - `docs/AUTH-AND-HEALTH.md` — the three tokens, and why `healthy` used to lie
+- `docs/SCREEN-STREAM.md` — live MJPEG / H.264 screen stream; "VNC" is bookkeeping, not RFB
 - `docs/OPS-ORCHESTRATOR.md` — lab IP/port/token **names**
 - `docs/TESTING.md` — offline suites, coverage, dual-pool ladder R0–R4
 - `docs/LOGGING.md` — label scheme and filtering

@@ -22,6 +22,7 @@ cd "$PROJECT_ROOT"
 OFFLINE_SUITES=(
     "logging:tests.test_logging"
     "control-api:tests.test_control_api"
+    "screen-stream:tests.test_screen_stream"
     "procedures:tests.test_procedures"
     "orchestrator:tests.test_orchestrator_unit"
     "sessions:tests.test_user_sessions"

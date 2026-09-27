@@ -26,7 +26,7 @@ Passwords and tokens are redacted (`***`) before a payload is logged.
 | `ADB` | adb commanders (`adb -s … shell …`) |
 | `CMD` | UI commandlets (`/ui/command`, tap/swipe/text/key) |
 | `APM` | Appium / W3C actions (`/appium/status`, `backend=appium`) |
-| `VNC` | VNC / RFB viewports (`/vnc/status`, attach, frames) |
+| `VNC` | Viewport bookkeeping (`/vnc/status`, attach, frames) and the live screen streams (`/device/stream.mjpeg`, `/device/stream.h264` — `stream start` / `stream stop`, one frame tick per part). Not an RFB server; see `SCREEN-STREAM.md` |
 | `RDR` | Redroid container |
 | `CVD` | Cuttlefish launch |
 | `GAP` | GApps install |
@@ -51,6 +51,10 @@ An unknown label degrades to `SYS` rather than corrupting the column.
 | `UI_BACKEND` | `adb` (default) or `appium` |
 | `VNC_PORT` | RFB port advertised on `/vnc/status` (default `5900`) |
 | `VNC_WIDTH` / `VNC_HEIGHT` | Viewport size (defaults follow `REDROID_WIDTH`/`HEIGHT`) |
+| `VNC_FPS` | Frame-rate cap for `/device/stream.mjpeg` (default follows `REDROID_FPS`, 30) |
+| `STREAM_JPEG_QUALITY` | JPEG quality for the MJPEG stream (default `70`) |
+| `STREAM_MAX_FAILURES` | Consecutive failed captures / empty recorder runs before a stream ends (default `10`) |
+| `STREAM_H264_BITRATE` / `STREAM_H264_TIME_LIMIT` | `screenrecord` bit-rate and per-run limit for `/device/stream.h264` |
 
 ## Read the ring
 

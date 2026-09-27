@@ -97,6 +97,42 @@ class OrchestratorIntegrationTests(unittest.TestCase):
         resp = requests.get(f"{self.orch.url}/instances", timeout=5)
         self.assertEqual(resp.status_code, 401)
 
+    def test_screen_stream_is_relayed_not_buffered(self):
+        """`/phones/<id>/stream.mjpeg` hands the phone's multipart parts through
+        as they arrive; the fake phone bounds the stream so the test ends."""
+        import requests
+
+        created = self.orch.post("/instances")
+        self.assertEqual(created.status_code, 201)
+        instance_id = created.json()["id"]
+
+        resp = requests.get(
+            f"{self.orch.url}/phones/{instance_id}/stream.mjpeg?frames=3",
+            headers=self.orch.headers(), stream=True, timeout=8,
+        )
+        self.assertEqual(resp.status_code, 200, resp.text if resp.status_code != 200 else "")
+        self.assertTrue(resp.headers["Content-Type"].startswith("multipart/x-mixed-replace"))
+        self.assertIn("no-cache", resp.headers.get("Cache-Control", ""))
+        self.assertIsNone(resp.headers.get("Content-Length"), "a live stream has no length")
+
+        body = b"".join(resp.iter_content(chunk_size=None))
+        parts = [p for p in body.split(b"--cloudphoneframe\r\n") if p]
+        self.assertEqual(len(parts), 3, body[:200])
+        self.assertTrue(all(b"Content-Type: image/png" in p for p in parts))
+
+        self.assertIn("stream", [c["endpoint"] for c in self.log])
+        unauth = requests.get(
+            f"{self.orch.url}/phones/{instance_id}/stream.mjpeg", stream=True, timeout=5,
+        )
+        self.assertEqual(unauth.status_code, 401)
+        unauth.close()
+
+        logs = self.orch.get(f"/phones/{instance_id}/logs?type=VNC")
+        logs.raise_for_status()
+        msgs = [item["msg"] for item in logs.json()["logs"]]
+        self.assertTrue(any("stream start" in m for m in msgs), msgs)
+        self.assertTrue(any("stream stop" in m for m in msgs), msgs)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,4 +75,8 @@ curl -X POST http://<ORCH_IP>:8090/phones/<ID>/input \
 # Screenshot (base64)
 curl http://<ORCH_IP>:8090/phones/<ID>/screenshot \
   -H "Authorization: Bearer $ORCH_API_TOKEN"
+
+# Live screen (multipart MJPEG, streams until you disconnect; docs/SCREEN-STREAM.md)
+curl -N "http://<ORCH_IP>:8090/phones/<ID>/stream.mjpeg?fps=8" \
+  -H "Authorization: Bearer $ORCH_API_TOKEN"
 ```

@@ -14,6 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "api"))
 
 import server as control_api  # noqa: E402
+import screen_stream  # noqa: E402
 
 
 def fake_adb(responses=None, record=None):
@@ -503,6 +504,199 @@ class CommandletAndViewportTests(unittest.TestCase):
         filtered = self.client.get("/logs?type=CMD,APM,VNC").get_json()
         types = {item["type"] for item in filtered["logs"]}
         self.assertTrue({"CMD", "APM", "VNC"} <= types, types)
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class ScreenStreamTests(unittest.TestCase):
+    """GET /device/stream.mjpeg: a fake screencap, no sleeping, no device.
+
+    "VNC" here is bookkeeping; this endpoint is the thing a Watch page embeds.
+    """
+
+    PNG = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0"
+        b"\x00\x00\x03\x01\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    def setUp(self):
+        control_api.API_TOKEN = "s3cret"
+        self.addCleanup(setattr, control_api, "API_TOKEN", "")
+        viewport.reset()
+        cpl.clear_logs()
+        self.client = control_api.app.test_client()
+        self.headers = {"Authorization": "Bearer s3cret"}
+        self.clock = FakeClock()
+        self.captures = []
+        self.addCleanup(patch.stopall)
+        patch.object(screen_stream, "_CLOCK", self.clock).start()
+        patch.object(screen_stream, "_SLEEP", self.clock.sleep).start()
+        patch.object(control_api, "run_adb", fake_adb()).start()
+        patch.object(control_api, "_capture_screencap", self._capture).start()
+        patch.dict(os.environ, {"VNC_FPS": "4"}).start()
+
+    def _capture(self, target):
+        self.captures.append(target)
+        return self.PNG
+
+    def _open(self, query=""):
+        resp = self.client.get(f"/device/stream.mjpeg{query}", headers=self.headers, buffered=False)
+        self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True) if resp.status_code != 200 else "")
+        return resp, iter(resp.response)
+
+    def test_requires_a_token(self):
+        resp = self.client.get("/device/stream.mjpeg")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.get_json()["code"], "auth_required")
+        self.assertEqual(self.captures, [], "no screencap for an unauthenticated caller")
+        self.assertEqual(self.client.get("/device/stream.h264").status_code, 401)
+
+    def test_yields_multipart_parts_from_screencap(self):
+        resp, parts = self._open()
+        self.assertTrue(resp.headers["Content-Type"].startswith("multipart/x-mixed-replace; boundary="))
+        self.assertIn("no-cache", resp.headers["Cache-Control"])
+        first, second = next(parts), next(parts)
+        boundary = b"--" + screen_stream.BOUNDARY.encode()
+        for part in (first, second):
+            self.assertTrue(part.startswith(boundary + b"\r\n"), part[:40])
+            self.assertIn(b"Content-Length: ", part)
+        expected = b"image/jpeg" if screen_stream.pillow_available() else b"image/png"
+        self.assertIn(b"Content-Type: " + expected, first)
+        resp.close()
+        self.assertEqual(len(self.captures), 2)
+
+    def test_stops_on_disconnect_and_releases_the_viewport(self):
+        resp, parts = self._open()
+        next(parts)
+        self.assertEqual(viewport.snapshot()["clients"], 1, "a watcher is a viewport client")
+        resp.close()
+        captures_at_close = len(self.captures)
+        self.assertEqual(viewport.snapshot()["clients"], 0)
+        self.assertEqual(len(self.captures), captures_at_close, "no screencap after the client left")
+        msgs = [item["msg"] for item in cpl.recent_logs(log_type="VNC")]
+        self.assertTrue(any("stream start kind=mjpeg" in m for m in msgs), msgs)
+        self.assertTrue(any("stream stop kind=mjpeg" in m and "reason=closed" in m for m in msgs), msgs)
+        self.assertFalse(any(b"\x89PNG".decode("latin-1") in m or "\xff\xd8" in m for m in msgs), "frame bytes never logged")
+
+    def test_respects_the_fps_cap(self):
+        """fps=999 is clamped to VNC_FPS (4 here): a 0.25 s gap between frames."""
+        resp, parts = self._open("?fps=999&frames=3")
+        collected = list(parts)
+        resp.close()
+        self.assertEqual(len(collected), 3)
+        self.assertEqual(self.clock.sleeps, [0.25, 0.25])
+        self.assertEqual(viewport.snapshot()["frames"], 3, "each part ticks viewport.frame")
+
+    def test_lower_fps_is_honoured(self):
+        resp, parts = self._open("?fps=2&frames=2")
+        list(parts)
+        resp.close()
+        self.assertEqual(self.clock.sleeps, [0.5])
+
+    def test_frames_query_bounds_the_stream(self):
+        resp, parts = self._open("?frames=2")
+        self.assertEqual(len(list(parts)), 2)
+        resp.close()
+        self.assertEqual(viewport.snapshot()["clients"], 0)
+
+    def test_screencap_failure_ends_the_stream_instead_of_spinning(self):
+        patch.object(control_api, "_capture_screencap", lambda target: None).start()
+        patch.dict(os.environ, {"STREAM_MAX_FAILURES": "3"}).start()
+        resp, parts = self._open()
+        self.assertEqual(list(parts), [])
+        resp.close()
+        msgs = [item["msg"] for item in cpl.recent_logs(log_type="VNC")]
+        self.assertTrue(any("reason=capture_failed" in m for m in msgs), msgs)
+        self.assertEqual(viewport.snapshot()["clients"], 0)
+
+    def test_per_request_adb_target_reaches_screencap(self):
+        resp, parts = self._open("?frames=1")
+        list(parts)
+        resp.close()
+        self.captures.clear()
+        resp = self.client.get(
+            "/device/stream.mjpeg?frames=1",
+            headers={**self.headers, "X-Cloud-Phone-Adb": "127.0.0.1:5561"},
+            buffered=False,
+        )
+        list(resp.response)
+        resp.close()
+        self.assertEqual(self.captures, ["127.0.0.1:5561"])
+
+
+class H264StreamTests(unittest.TestCase):
+    """GET /device/stream.h264 relays a fake `screenrecord` and kills it on close."""
+
+    def setUp(self):
+        control_api.API_TOKEN = ""
+        viewport.reset()
+        cpl.clear_logs()
+        self.client = control_api.app.test_client()
+        self.spawned = []
+        self.killed = []
+        self.addCleanup(patch.stopall)
+        patch.object(control_api, "run_adb", fake_adb()).start()
+        patch.object(screen_stream, "_popen", self._popen).start()
+
+    def _popen(self, argv):
+        self.spawned.append(argv)
+        import io as _io
+
+        class Proc:
+            stdout = _io.BytesIO(b"\x00\x00\x00\x01" + b"\x67" * 20 + b"\x00\x00\x00\x01" + b"\x65" * 40)
+            rc = None
+
+            def poll(s):
+                return s.rc
+
+            def kill(s):
+                s.rc = -9
+                self.killed.append(s)
+
+            def wait(s, timeout=None):
+                s.rc = 0 if s.rc is None else s.rc
+                return s.rc
+
+        return Proc()
+
+    def test_streams_raw_h264_and_chains_runs(self):
+        resp = self.client.get("/device/stream.h264?runs=2&width=640&height=360&bitrate=1500000&limit=30", buffered=False)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers["Content-Type"], "video/h264")
+        body = b"".join(resp.response)
+        resp.close()
+        self.assertTrue(body.startswith(b"\x00\x00\x00\x01"), "Annex-B start code")
+        self.assertEqual(len(body), 2 * 68)
+        self.assertEqual(len(self.spawned), 2)
+        argv = self.spawned[0]
+        self.assertIn("--size=640x360", argv)
+        self.assertIn("--bit-rate=1500000", argv)
+        self.assertIn("--time-limit=30", argv)
+        self.assertEqual(argv[-1], "-")
+        self.assertEqual(viewport.snapshot()["clients"], 0)
+
+    def test_disconnect_kills_screenrecord(self):
+        resp = self.client.get("/device/stream.h264", buffered=False)
+        it = iter(resp.response)
+        next(it)
+        self.assertEqual(viewport.snapshot()["clients"], 1)
+        resp.close()
+        self.assertEqual(len(self.killed), 1)
+        self.assertEqual(viewport.snapshot()["clients"], 0)
+        msgs = [item["msg"] for item in cpl.recent_logs(log_type="VNC")]
+        self.assertTrue(any("stream stop kind=h264" in m for m in msgs), msgs)
 
 
 if __name__ == "__main__":

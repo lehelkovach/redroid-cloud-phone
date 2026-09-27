@@ -78,6 +78,15 @@ activity whose `am start` errors is a **502**. Neither reports success.
 inside `adb shell` closes early, kills the upstream dumpsys, and returns `""`, which
 reads as a failed device rather than a bad command.
 
+## Streams are device endpoints too
+
+`GET /device/stream.mjpeg` and `GET /device/stream.h264` sit behind the same
+`require_auth` as `/status`: a missing or wrong bearer is the same 401 body,
+sent before any `screencap` runs. The orchestrator relays them as
+`/phones/<id>/stream.*` with `ORCH_CONTROL_API_TOKEN` outbound and `ORCH_API_TOKEN`
+inbound, so a token mismatch surfaces as `ControlAuthError` on the first
+request, never as a silently empty stream. See [`SCREEN-STREAM.md`](./SCREEN-STREAM.md).
+
 ## Checking it
 
 ```bash
