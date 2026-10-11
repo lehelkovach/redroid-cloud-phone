@@ -1,0 +1,144 @@
+name: Phone lab probe (read-only)
+
+# Is the Redroid phone lab alive, and what is on it? Answers the five
+# questions a mobile procedure run depends on, from the one place that can
+# reach the VMs (an agent sandbox cannot; see docs/OPS-ORCHESTRATOR.md):
+#
+#   1. do the phone VM and the orchestrator VM answer on :22 / :8080 / :8090?
+#   2. is the control API healthy on the phone host's loopback (adb connected)?
+#   3. does the image carry Play Store / Play services (the GApps rung)?
+#   4. which Google account, if any, is signed in (the google_account rung)?
+#   5. is the target app installed (the app_installed rung)?
+#
+# Reads only. Prints no token: the health endpoint is open by design and the
+# rest is `adb shell pm path` / `dumpsys account`. The on-host steps need an
+# OCI_SSH_PRIVATE_KEY repository secret (the same one osl-oc-agent's
+# browser-vm-webio.yml uses); without it, or with a key the VM was not
+# launched with, the ssh step says so and the TCP probe still stands.
+
+on:
+  workflow_dispatch:
+    inputs:
+      phone_host:
+        description: "Phone VM public IP (control API on :8080)"
+        required: false
+        default: "129.146.55.133"
+        type: string
+      orch_host:
+        description: "Orchestrator VM public IP (:8090). Blank = skip"
+        required: false
+        default: "129.146.105.26"
+        type: string
+      ssh_user:
+        description: "SSH user on the VMs"
+        required: false
+        default: "ubuntu"
+        type: string
+      package:
+        description: "App package to look for on the phone (rung app_installed)"
+        required: false
+        default: "com.tinder"
+        type: string
+
+concurrency:
+  group: phone-lab-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PHONE: ${{ inputs.phone_host }}
+      ORCH: ${{ inputs.orch_host }}
+      SSH_USER: ${{ inputs.ssh_user }}
+      PKG: ${{ inputs.package }}
+    steps:
+      - name: TCP reachability from the runner
+        run: |
+          set -u
+          probe() {
+            if timeout 8 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then echo "$1:$2 open"; else echo "$1:$2 no connection within 8s"; fi
+          }
+          echo "== phone VM $PHONE"
+          probe "$PHONE" 22; probe "$PHONE" 8080; probe "$PHONE" 5555
+          if [ -n "$ORCH" ]; then echo "== orchestrator VM $ORCH"; probe "$ORCH" 22; probe "$ORCH" 8090; fi
+          echo "== control API over the public address (open /health, no token)"
+          curl -sS --max-time 8 "http://$PHONE:8080/health" || echo "(no answer on :8080 from the runner — VCN-scoped, as documented)"
+
+      - name: SSH key
+        id: key
+        env:
+          OCI_SSH_PRIVATE_KEY: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OCI_SSH_PRIVATE_KEY:-}" ]; then
+            echo "::warning::no OCI_SSH_PRIVATE_KEY secret — on-host checks skipped"
+            echo "have=0" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf "%s\n" "$OCI_SSH_PRIVATE_KEY" > ~/.ssh/phone_vm
+          chmod 600 ~/.ssh/phone_vm
+          # Fingerprints are not secrets; the public half is what an operator
+          # pastes into the VM's authorized_keys when ssh below is refused.
+          PUB="$(ssh-keygen -y -f ~/.ssh/phone_vm)"
+          echo "key: $(printf '%s' "$PUB" | ssh-keygen -lf - | awk '{print $2}')"
+          echo "public half (authorize this on the VM if ssh is refused):"
+          echo "  $PUB"
+          for h in "$PHONE" "$ORCH"; do [ -n "$h" ] && ssh-keyscan -T 8 -H "$h" >> ~/.ssh/known_hosts 2>/dev/null || true; done
+          echo "have=1" >> "$GITHUB_OUTPUT"
+
+      - name: On the phone host — control API, ADB, GApps, account, app
+        if: steps.key.outputs.have == '1'
+        continue-on-error: true
+        run: |
+          set -u
+          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o BatchMode=yes \
+              -i ~/.ssh/phone_vm "$SSH_USER@$PHONE" "PKG=$(printf %q "$PKG") bash -s" <<'REMOTE' || echo "::warning::ssh to the phone VM failed (refused key, or the box is down — see the TCP probe above)"
+          set -u
+          sec() { echo; echo "===== $* ====="; }
+          sec host; hostname; uptime
+          sec "control API on loopback (/health is open; status+gapps only)"
+          curl -sS --max-time 8 http://127.0.0.1:8080/health || echo "control API not answering on :8080"
+          sec "units and containers"
+          systemctl list-units --no-pager --type=service 2>/dev/null | grep -iE 'redroid|cloud-phone|control|orchestr' || echo "(no matching units)"
+          (docker ps --format '{{.Names}}  {{.Image}}  {{.Status}}' 2>/dev/null || sudo -n docker ps --format '{{.Names}}  {{.Image}}  {{.Status}}' 2>/dev/null) || echo "(docker not readable)"
+          sec "GApps zip on the host"
+          ls -la /opt/gapps/gapps.zip 2>/dev/null || echo "no /opt/gapps/gapps.zip"
+          ADB="$(command -v adb || echo /usr/bin/adb)"
+          sec "adb devices"
+          "$ADB" devices 2>/dev/null || echo "adb not installed on the host"
+          D="$("$ADB" devices 2>/dev/null | awk 'NR>1 && $2=="device"{print $1; exit}')"
+          if [ -z "$D" ]; then echo "no adb device in state 'device'"; exit 0; fi
+          sec "rung gapps: Play Store / Play services"
+          "$ADB" -s "$D" shell pm path com.android.vending 2>/dev/null | grep -q package && echo "com.android.vending: present" || echo "com.android.vending: MISSING"
+          "$ADB" -s "$D" shell pm path com.google.android.gms 2>/dev/null | grep -q package && echo "com.google.android.gms: present" || echo "com.google.android.gms: MISSING"
+          sec "rung google_account: accounts of type com.google (emails only)"
+          "$ADB" -s "$D" shell dumpsys account 2>/dev/null | grep -oE 'name=[^,}[:space:]]+@[^,}[:space:]]+, type=com.google' || echo "no Google account signed in"
+          sec "rung app_installed: $PKG"
+          "$ADB" -s "$D" shell pm path "$PKG" 2>/dev/null | grep -q package && echo "$PKG: installed" || echo "$PKG: not installed"
+          sec "screen (what is in focus)"
+          "$ADB" -s "$D" shell dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -2 || true
+          "$ADB" -s "$D" shell getprop ro.build.version.release 2>/dev/null | sed 's/^/android: /'
+          REMOTE
+
+      - name: On the orchestrator host — health and units
+        if: steps.key.outputs.have == '1' && inputs.orch_host != ''
+        continue-on-error: true
+        run: |
+          set -u
+          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o BatchMode=yes \
+              -i ~/.ssh/phone_vm "$SSH_USER@$ORCH" 'bash -s' <<'REMOTE' || echo "::warning::ssh to the orchestrator VM failed (refused key, or the box is down)"
+          set -u
+          echo "===== host ====="; hostname; uptime
+          echo "===== orchestrator /health on loopback ====="
+          curl -sS --max-time 8 http://127.0.0.1:8090/health || echo "orchestrator not answering on :8090"
+          echo; echo "===== listeners ====="
+          (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ':8090|:8080' || echo "(nothing listening on 8090/8080)"
+          echo "===== units ====="
+          systemctl list-units --no-pager --type=service 2>/dev/null | grep -iE 'orchestr|cloud-phone' || echo "(no matching units — docs/OPS-ORCHESTRATOR.md: there is no in-repo unit yet)"
+          REMOTE
+
+      - name: Clean up the key
+        if: always()
+        run: rm -f ~/.ssh/phone_vm
