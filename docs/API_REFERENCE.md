@@ -723,3 +723,75 @@ Add changes to `docs/CHANGELOG.md` under the `[Unreleased]` section.
 - [ ] Tests pass locally
 - [ ] Tests pass against live instance
 - [ ] Changelog updated
+
+---
+
+## Device control, container control, install from URL, frame stream (2026-10-19)
+
+These routes exist so OSLO never has to author a raw `adb shell` line for
+"where and when the phone thinks it is". Every value that reaches an adb argv is
+validated first (`api/device_control.py`). All need the bearer token.
+
+### Clock and zone
+
+| Route | Body / query | Answer |
+|---|---|---|
+| `GET /device/clock` | — | `{ success, epoch, iso, timezone, auto_time, auto_time_zone }` |
+| `POST /device/time` | `{ epoch }` \| `{ iso }` \| `{ auto: true }` | `{ success, requested_epoch, epoch, iso, form: "epoch"\|"toybox", auto_time }`; `502 code: time_not_applied` when the clock did not move (no root for `date`) |
+| `POST /device/timezone` | `{ tz: "America/New_York" }` \| `{ auto: true }` | `{ success, requested, timezone, auto_time_zone }`; `400` for anything that is not an Olson id; `502 code: timezone_not_applied` when the readback differs |
+
+Manual time turns `auto_time` off, sets `date @epoch` (toybox fallback
+`date -u MMDDhhmmCCYY.ss`), broadcasts `TIME_SET`, then reads the clock back
+and only then says `success`. Zone sets `persist.sys.timezone`, broadcasts
+`TIMEZONE_CHANGED`, reads the prop back.
+
+### Settings
+
+| Route | Body / query |
+|---|---|
+| `GET /device/settings?namespace=global&key=http_proxy` | `{ success, namespace, key, value }` (`null` when unset) |
+| `POST /device/settings` | `{ namespace, key, value }` → put, then read back |
+| `DELETE /device/settings?namespace=&key=` | `settings delete` |
+
+`namespace` must be `system`, `secure` or `global`; `key` matches
+`[a-z0-9_.]{1,80}`; the value is shell-quoted and may not contain control
+characters or exceed 512 bytes.
+
+### Container
+
+Enabled when the Control API host sets `CONTAINER_NAME` (or `REDROID_NAME`);
+otherwise `501 code: container_control_disabled`. The name never comes from a request.
+
+| Route | Answer |
+|---|---|
+| `GET /container` | `{ success, container, state }` (`docker inspect -f {{.State.Status}}`) |
+| `POST /container/restart` \| `/start` \| `/stop` | `{ success, container, action, state }`; any other action is `400` |
+
+A restart clears the cached ADB state; `/health` re-probes adbd.
+
+### Install from a URL
+
+`POST /apps/install_url` `{ url, sha256?, options?: "-r", proxy?, package? }`
+
+The host downloads (cap `APK_MAX_MB`, default 400; optional `proxy` for the
+download only), inspects the file, and installs:
+
+| Outcome | Status |
+|---|---|
+| single APK (`AndroidManifest.xml` in the zip) → `adb install -r` | `200 { success, kind: "apk", sha256, bytes, package, installed, message }` |
+| bundle (`.xapk` / `.apks`: zip of `*.apk`) → `adb install-multiple` | `200 { kind: "bundle", apks: [...] }` |
+| not an APK (an HTML error page saved as `.apk`) | `422 code: not_an_apk` |
+| `sha256` given and different | `422 code: sha256_mismatch` (nothing installed) |
+| download failed | `502 code: download_failed` |
+| `adb install` failed | `502 { error: "<adb stderr>" }` |
+
+`GET /apps/<package>/info` → `{ installed, paths, version_name, version_code }`.
+
+### Frame stream
+
+`GET /device/stream.mjpeg?fps=4` pushes screencaps as
+`multipart/x-mixed-replace; boundary=cloudphoneframe` (PNG parts with
+`Content-Length`), up to 10 fps, `max_frames=N` to stop after N. `/health`
+advertises it under `stream`. OSLO's `CloudPhoneWatchBackend` consumes it
+when `CLOUD_PHONE_STREAM=1` and falls back to `/device/screenshot` otherwise.
+There is still no VNC/RFB server on the host; `/vnc/*` remains bookkeeping.

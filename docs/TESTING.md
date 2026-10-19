@@ -27,6 +27,8 @@ lines from those reports. See [`LOGGING.md`](./LOGGING.md).
 | **R2** | Process integration | A real orchestrator process talks HTTP to one fake Control API: health, tap, screenshot, jobs, Play login, `/ui` `/appium` `/vnc` `/logs` | `test_orchestrator_integration`, `test_orchestrator_e2e` |
 | **R3** | Dual-pool e2e | Two fake phones at once. Default session → Redroid with `gapps.ready`. `purpose=camera` → Cuttlefish ingest, **no** GApps. Play launch hits only Redroid. Lease/409/release reuse the automation pool. `verify-redroid-phone.sh --require-gapps` passes Redroid and fails Cuttlefish. Verbose CMD/APM/VNC log ring is populated. | `test_ladder_e2e` |
 | **R4** | Live | Real Control API. Skipped unless `CLOUD_PHONE_LIVE=1` (optional `REQUIRE_GAPPS=1`). | `test_live`; also `tests/test_agent_api.py --api-url …`, `PUBLIC_IP=… tests/test_connectivity.py` |
+| **R0/R1** (2026-10-19) | Device control, container control, install-from-URL, frame stream: every validator (time spec, Olson zone, settings namespace/key/value, APK inspection, multipart framing) and every route with adb/docker/download patched | `test_device_control`, `test_install_url`, `test_stream` |
+| **I0–I2** (2026-10-19) | Cuttlefish ingest probe: palette/tone analysis, a generated clip judged frame by frame, an RTMP loopback (ffmpeg as the server) judged like the live sinks — [`CUTTLEFISH_INGEST_E2E.md`](./CUTTLEFISH_INGEST_E2E.md) | `test_ingest_probe` (needs ffmpeg on PATH; skips the clip/loopback rungs without it) |
 
 ## Adding a test
 

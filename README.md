@@ -118,5 +118,8 @@ android-arm-cloud-phone/
 - `docs/LOGGING.md` — label scheme and filtering
 - `docs/DEPLOYMENT.md` — Cuttlefish ingest deploy
 - `docs/CUTTLEFISH_PHASE1.md` / `CUTTLEFISH_PHASE2_RTMP_BRIDGE.md` / `CUTTLEFISH_OCI_GOLDEN_IMAGE.md`
+- `docs/CUTTLEFISH_INGEST_E2E.md` — the signal published is the signal the guest camera/mic receive (`tools/ingest_probe.py`, `scripts/cuttlefish-ingest-e2e.sh`)
+- `docs/REDROID-CAMERA-HAL-RESEARCH.md` — can Redroid take a v4l2loopback camera and drop the Cuttlefish hop? (researched 2026-10-19: yes with a from-source rebuild on Redroid 14; preview and mic still open)
+- `docs/API_REFERENCE.md` § Device control — clock / timezone / settings / container / install-from-URL / frame stream (2026-10-19)
 - `docs/CLEANROOM_BOOTSTRAP.md`
 - `FUTURE_CONSIDERATIONS_CAMERA_STACK.md` — parked HAL-on-container notes

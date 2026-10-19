@@ -2,7 +2,17 @@
 
 This document captures future-facing guidance only. It does not change the current implementation plan.
 
-**Current split:** Redroid is the GApps automation pool; Cuttlefish is the ingest image. Do not retry camera HAL on Redroid — see [`docs/RUNTIME-SPLIT.md`](docs/RUNTIME-SPLIT.md).
+**Current split:** Redroid is the GApps automation pool; Cuttlefish is the ingest image. Do not retry camera HAL on Redroid by copying libraries — see [`docs/RUNTIME-SPLIT.md`](docs/RUNTIME-SPLIT.md).
+
+> **Re-read 2026-10-19:** a from-source rebuild is now a documented path.
+> [`docs/REDROID-CAMERA-HAL-RESEARCH.md`](docs/REDROID-CAMERA-HAL-RESEARCH.md)
+> records a verified third-party recipe (droidpool, Sept 2026) for AOSP's
+> External Camera Provider on a self-built Redroid **14** arm64 image fed by
+> `ffmpeg → v4l2loopback` (MJPEG only, landscape only), the seven fixes it
+> needed, why every "copy libs in" attempt failed, and what still keeps
+> Cuttlefish: live preview needs a hardware GPU and Redroid has no mic path.
+> The minimal experiment is listed there; it starts with a Redroid 14 build,
+> not with the 11 image in use.
 
 ## 1) Building a Docker Android ARM64 image with a working virtual camera HAL
 

@@ -32,6 +32,10 @@ OFFLINE_SUITES=(
     "runtime-pool:tests.test_runtime_pool"
     "mobile-e2e:tests.test_mobile_e2e_scenario"
     "procedure-api:tests.test_procedure_api"
+    "device-control:tests.test_device_control"
+    "install-url:tests.test_install_url"
+    "stream:tests.test_stream"
+    "ingest-probe:tests.test_ingest_probe"
 )
 
 SCRIPT_SUITES=(

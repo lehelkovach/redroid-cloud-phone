@@ -29,11 +29,13 @@ try:
     from cloudphone_logging import recent_logs, redact, truncate, verbose_enabled
     import ui_control
     import viewport
+    import device_control
 except ImportError:
     from api.cloudphone_logging import configure as _configure_logging
     from api.cloudphone_logging import recent_logs, redact, truncate, verbose_enabled
     from api import ui_control
     from api import viewport
+    from api import device_control
 
 app = Flask(__name__)
 
@@ -54,6 +56,14 @@ CONFIG_FILE = os.environ.get("CONFIG_FILE", "/etc/cloud-phone/config.json")
 PROXY_SCRIPT = "/opt/cloud-phone-scripts/proxy-control.sh"
 JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", "3600"))
 JOB_MAX = int(os.environ.get("JOB_MAX", "500"))
+# Container control (docs/API_REFERENCE.md § Container). Empty = routes answer 501.
+# The name is fixed by the host, never by a request body.
+CONTAINER_NAME = os.environ.get("CONTAINER_NAME", os.environ.get("REDROID_NAME", "")).strip()
+CONTAINER_ACTIONS = ("restart", "start", "stop")
+# install_url download cap; a phone host has the disk, an agent box may not.
+APK_MAX_MB = int(os.environ.get("APK_MAX_MB", "400"))
+APK_DOWNLOAD_TIMEOUT = int(os.environ.get("APK_DOWNLOAD_TIMEOUT", "600"))
+dev_logger = logger.bind("CMD")
 
 # In-memory state
 _state = {
@@ -122,6 +132,51 @@ def run_adb(*args, timeout=30):
 def run_adb_shell(command, timeout=30):
     """Run ADB shell command"""
     return run_adb("shell", command, timeout=timeout)
+
+
+def run_docker(*args, timeout=60):
+    """Run one docker command with a fixed argv (tests patch this)."""
+    cmd = ["docker"] + [str(a) for a in args]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, "", "docker command timed out"
+    except Exception as e:  # docker missing, permission
+        return False, "", str(e)
+    return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
+
+
+def _screencap_png():
+    """One PNG frame from the device, or None (tests patch this)."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", current_adb_connect(), "exec-out", "screencap", "-p"],
+            capture_output=True, timeout=15,
+        )
+    except Exception:
+        return None
+    if result.returncode == 0 and result.stdout:
+        return result.stdout
+    return None
+
+
+def _fetch_to_file(url, dest, proxy=None, max_bytes=None, timeout=300):
+    """Stream `url` to `dest`; raise on HTTP/network failure or a size cap (tests patch this)."""
+    import requests  # already a dependency of the orchestrator; lazy so the API boots without it
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    total = 0
+    with requests.get(url, stream=True, timeout=timeout, proxies=proxies, allow_redirects=True) as resp:
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 16):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if max_bytes and total > max_bytes:
+                    raise RuntimeError(f"download exceeds {max_bytes} bytes")
+                f.write(chunk)
+    return total
 
 def ensure_adb_connected():
     """Ensure ADB is connected to device"""
@@ -614,6 +669,13 @@ def health():
         "gapps": gapps,
         "appium": appium,
         "vnc": vnc,
+        "stream": {
+            "path": "/device/stream.mjpeg",
+            "transport": "multipart",
+            "default_fps": device_control.DEFAULT_STREAM_FPS,
+            "max_fps": device_control.MAX_STREAM_FPS,
+        },
+        "container": {"name": CONTAINER_NAME or None, "control": bool(CONTAINER_NAME)},
         "state": _state
     })
 
@@ -1680,6 +1742,337 @@ def get_job(job_id):
     if not job:
         return jsonify({"error": "job not found"}), 404
     return jsonify(job)
+
+
+# =============================================================================
+# Device clock / timezone / settings  (docs/API_REFERENCE.md § Device control)
+# =============================================================================
+
+def _get_setting(namespace, key):
+    ok, out, _ = run_adb_shell(f"settings get {namespace} {key}")
+    value = (out or "").strip()
+    if value == "null":
+        value = None
+    return ok, value
+
+
+@app.route("/device/clock", methods=["GET"])
+@require_auth
+def device_clock():
+    """What the device thinks the time, zone and auto-sync flags are."""
+    ensure_adb_connected()
+    ok_t, epoch_out, _ = run_adb_shell("date +%s")
+    try:
+        epoch = int((epoch_out or "").strip())
+    except ValueError:
+        epoch = None
+    _, tz, _ = run_adb_shell("getprop persist.sys.timezone")
+    _, auto_time = _get_setting("global", "auto_time")
+    _, auto_tz = _get_setting("global", "auto_time_zone")
+    return jsonify({
+        "success": bool(ok_t and epoch),
+        "epoch": epoch,
+        "iso": device_control.epoch_to_iso(epoch) if epoch else None,
+        "timezone": (tz or "").strip() or None,
+        "auto_time": (auto_time or "").strip() == "1",
+        "auto_time_zone": (auto_tz or "").strip() == "1",
+    })
+
+
+@app.route("/device/time", methods=["POST"])
+@require_auth
+def device_set_time():
+    """Set the system clock (manual) or hand it back to the network (`auto`).
+
+    Body: {"epoch": 1760860800} | {"iso": "2026-10-19T08:00:00Z"} | {"auto": true}
+    Verified by reading the clock back: a `date` that printed nothing and exited
+    0 is not "set", and a Redroid without root for `date` must say so.
+    """
+    data = request.get_json(silent=True) or {}
+    ensure_adb_connected()
+    if data.get("auto"):
+        ok, _, err = run_adb_shell("settings put global auto_time 1")
+        dev_logger.info("time auto=1 ok=%s", ok)
+        return jsonify({"success": ok, "auto_time": True, "error": None if ok else (err or "settings put failed")}), (200 if ok else 502)
+    epoch = device_control.parse_time_spec(data)
+    if epoch is None:
+        return jsonify({"success": False, "error": "time needs {epoch} seconds or {iso} 8601, or {auto:true}"}), 400
+    run_adb_shell("settings put global auto_time 0")
+    ok, _, err = run_adb_shell(f"date @{epoch}")
+    form = "epoch"
+    if not ok:
+        ok, _, err = run_adb_shell(f"date -u {device_control.epoch_to_toybox_set(epoch)}")
+        form = "toybox"
+    run_adb_shell("am broadcast -a android.intent.action.TIME_SET")
+    _, back, _ = run_adb_shell("date +%s")
+    try:
+        now = int((back or "").strip())
+    except ValueError:
+        now = None
+    applied = now is not None and abs(now - epoch) <= 120
+    dev_logger.info("time set requested=%s form=%s readback=%s applied=%s", epoch, form, now, applied)
+    body = {
+        "success": applied,
+        "requested_epoch": epoch,
+        "epoch": now,
+        "iso": device_control.epoch_to_iso(now) if now else None,
+        "form": form,
+        "auto_time": False,
+    }
+    if not applied:
+        body["code"] = "time_not_applied"
+        body["error"] = err or "clock did not move to the requested time (no root for `date`?)"
+        return jsonify(body), 502
+    return jsonify(body)
+
+
+@app.route("/device/timezone", methods=["POST"])
+@require_auth
+def device_set_timezone():
+    """Set the zone (`tz`, an Olson id) or hand it back to the network (`auto`)."""
+    data = request.get_json(silent=True) or {}
+    ensure_adb_connected()
+    if data.get("auto"):
+        ok, _, err = run_adb_shell("settings put global auto_time_zone 1")
+        return jsonify({"success": ok, "auto_time_zone": True, "error": None if ok else (err or "settings put failed")}), (200 if ok else 502)
+    tz = data.get("tz") or data.get("timezone")
+    if not device_control.is_valid_timezone(tz):
+        return jsonify({"success": False, "error": "tz must be an Olson id such as America/New_York"}), 400
+    run_adb_shell("settings put global auto_time_zone 0")
+    ok, _, err = run_adb_shell(f"setprop persist.sys.timezone {tz}")
+    run_adb_shell(f"am broadcast -a android.intent.action.TIMEZONE_CHANGED --es time-zone {tz}")
+    _, back, _ = run_adb_shell("getprop persist.sys.timezone")
+    back = (back or "").strip()
+    applied = ok and back == tz
+    dev_logger.info("timezone set requested=%s readback=%s applied=%s", tz, back, applied)
+    body = {"success": applied, "requested": tz, "timezone": back or None, "auto_time_zone": False}
+    if not applied:
+        body["code"] = "timezone_not_applied"
+        body["error"] = err or f"persist.sys.timezone reads {back!r} after set"
+        return jsonify(body), 502
+    return jsonify(body)
+
+
+def _settings_args():
+    if request.method in ("POST", "PUT"):
+        data = request.get_json(silent=True) or {}
+    else:
+        data = {}
+    namespace = data.get("namespace") or request.args.get("namespace") or request.args.get("ns")
+    key = data.get("key") or request.args.get("key")
+    return data, namespace, key
+
+
+@app.route("/device/settings", methods=["GET", "POST", "PUT", "DELETE"])
+@require_auth
+def device_settings():
+    """`settings get|put|delete <namespace> <key> [value]` with every part validated."""
+    data, namespace, key = _settings_args()
+    if not device_control.is_valid_setting(namespace, key):
+        return jsonify({"success": False, "error": "namespace must be system|secure|global and key [a-z0-9_.]"}), 400
+    ensure_adb_connected()
+    if request.method == "GET":
+        ok, value = _get_setting(namespace, key)
+        return jsonify({"success": ok, "namespace": namespace, "key": key, "value": value})
+    if request.method == "DELETE":
+        ok, _, err = run_adb_shell(f"settings delete {namespace} {key}")
+        dev_logger.info("settings delete %s %s ok=%s", namespace, key, ok)
+        return jsonify({"success": ok, "namespace": namespace, "key": key, "error": None if ok else err}), (200 if ok else 502)
+    try:
+        quoted = device_control.quote_setting_value(data.get("value"))
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    ok, _, err = run_adb_shell(f"settings put {namespace} {key} {quoted}")
+    _, value = _get_setting(namespace, key)
+    dev_logger.info("settings put %s %s ok=%s", namespace, key, ok)
+    return jsonify({"success": ok, "namespace": namespace, "key": key, "value": value, "error": None if ok else err}), (200 if ok else 502)
+
+
+# =============================================================================
+# Container control (the phone process itself)
+# =============================================================================
+
+def _container_disabled():
+    return jsonify({
+        "success": False,
+        "code": "container_control_disabled",
+        "error": "set CONTAINER_NAME on the Control API host to enable container control",
+    }), 501
+
+
+def _container_state():
+    ok, out, err = run_docker("inspect", "-f", "{{.State.Status}}", CONTAINER_NAME)
+    return (out.strip() if ok else None), (None if ok else (err or "docker inspect failed"))
+
+
+@app.route("/container", methods=["GET"])
+@require_auth
+def container_status():
+    if not CONTAINER_NAME:
+        return _container_disabled()
+    state, err = _container_state()
+    return jsonify({"success": state is not None, "container": CONTAINER_NAME, "state": state, "error": err})
+
+
+@app.route("/container/<action>", methods=["POST"])
+@require_auth
+def container_action(action):
+    """restart | start | stop the phone container. Argv is fixed; the body is ignored."""
+    if not CONTAINER_NAME:
+        return _container_disabled()
+    if action not in CONTAINER_ACTIONS:
+        return jsonify({"success": False, "error": f"action must be one of {list(CONTAINER_ACTIONS)}"}), 400
+    ok, out, err = run_docker(action, CONTAINER_NAME, timeout=120)
+    state, _ = _container_state()
+    dev_logger.info("container %s %s ok=%s state=%s", action, CONTAINER_NAME, ok, state)
+    if ok:
+        _state["connected"] = False  # adbd comes back on its own clock; /health re-probes
+    return jsonify({"success": ok, "container": CONTAINER_NAME, "action": action, "state": state, "error": None if ok else (err or out)}), (200 if ok else 502)
+
+
+# =============================================================================
+# Install from a URL / app info
+# =============================================================================
+
+@app.route("/apps/install_url", methods=["POST"])
+@require_auth
+def install_from_url():
+    """Download an APK (or an .xapk/.apks bundle) on this host and install it.
+
+    Body: {"url", "sha256"?, "options"?: "-r", "proxy"?, "package"?}
+    Refuses anything that is not an APK/bundle (a saved error page, say) and a
+    sha256 that does not match the one the caller named.
+    """
+    data = request.get_json(silent=True) or {}
+    url = str(data.get("url") or "").strip()
+    if not re.match(r"^https?://", url, re.I):
+        return jsonify({"success": False, "error": "url must be http(s)"}), 400
+    expected = str(data.get("sha256") or "").strip().lower() or None
+    options = str(data.get("options") or "-r").split()
+    proxy = data.get("proxy") or None
+    package = data.get("package") or None
+    if package and not device_control.is_valid_package(package):
+        return jsonify({"success": False, "error": "package is not a valid Android package name"}), 400
+
+    tmpdir = tempfile.mkdtemp(prefix="cp-apk-")
+    dest = os.path.join(tmpdir, "download.bin")
+    try:
+        try:
+            nbytes = _fetch_to_file(url, dest, proxy=proxy, max_bytes=APK_MAX_MB * 1024 * 1024, timeout=APK_DOWNLOAD_TIMEOUT)
+        except Exception as e:
+            dev_logger.warning("install_url download failed url=%s err=%s", redact(url), truncate(str(e)))
+            return jsonify({"success": False, "code": "download_failed", "error": str(e), "url": url}), 502
+        info = device_control.inspect_apk_file(dest)
+        if info["kind"] == "invalid":
+            return jsonify({"success": False, "code": "not_an_apk", "error": "downloaded file is not an APK or an APK bundle", "bytes": nbytes, "url": url}), 422
+        if expected and info["sha256"] != expected:
+            return jsonify({"success": False, "code": "sha256_mismatch", "expected": expected, "sha256": info["sha256"], "url": url}), 422
+        ensure_adb_connected()
+        if info["kind"] == "apk":
+            apk_path = os.path.join(tmpdir, "app.apk")
+            os.replace(dest, apk_path)
+            ok, out, err = run_adb("install", *options, apk_path, timeout=300)
+        else:
+            paths = []
+            with __import__("zipfile").ZipFile(dest) as z:
+                for name in info["apks"]:
+                    target = os.path.join(tmpdir, os.path.basename(name))
+                    with z.open(name) as src, open(target, "wb") as dst:
+                        dst.write(src.read())
+                    paths.append(target)
+            ok, out, err = run_adb("install-multiple", *options, *paths, timeout=600)
+        installed = None
+        if package:
+            ok_p, pm, _ = run_adb_shell(f"pm path {package}")
+            installed = bool(ok_p and "package:" in (pm or ""))
+        dev_logger.info("install_url kind=%s bytes=%s sha256=%s ok=%s package=%s installed=%s", info["kind"], info["bytes"], info["sha256"], ok, package, installed)
+        body = {
+            "success": ok,
+            "kind": info["kind"],
+            "apks": info["apks"],
+            "sha256": info["sha256"],
+            "bytes": info["bytes"],
+            "package": package,
+            "installed": installed,
+            "message": out or err,
+        }
+        if not ok:
+            body["error"] = err or out or "adb install failed"
+            return jsonify(body), 502
+        return jsonify(body)
+    finally:
+        import shutil
+
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@app.route("/apps/<package>/info", methods=["GET"])
+@require_auth
+def app_info(package):
+    if not device_control.is_valid_package(package):
+        return jsonify({"success": False, "error": "not a valid Android package name"}), 400
+    ensure_adb_connected()
+    ok, pm, _ = run_adb_shell(f"pm path {package}")
+    paths = [line.replace("package:", "").strip() for line in (pm or "").splitlines() if line.startswith("package:")]
+    installed = bool(ok and paths)
+    version_name = version_code = None
+    if installed:
+        _, dump, _ = run_adb_shell(f"dumpsys package {package}")
+        version_name, version_code = device_control.parse_version_from_dumpsys(dump)
+    return jsonify({
+        "success": True,
+        "package": package,
+        "installed": installed,
+        "paths": paths,
+        "version_name": version_name,
+        "version_code": version_code,
+    })
+
+
+# =============================================================================
+# Live frame stream
+# =============================================================================
+
+@app.route("/device/stream.mjpeg", methods=["GET"])
+@require_auth
+def device_stream():
+    """Push screencaps as `multipart/x-mixed-replace` at up to `fps` (default 4, max 10).
+
+    `max_frames` ends the stream after N frames (tests, probes). A failed
+    capture is skipped, not fatal: adbd hiccups during an app launch.
+    """
+    fps = device_control.clamp_fps(request.args.get("fps"))
+    try:
+        max_frames = int(request.args.get("max_frames") or 0)
+    except ValueError:
+        max_frames = 0
+    interval = 1.0 / fps
+    ensure_adb_connected()
+    size = _screen_size()
+
+    def generate():
+        viewport.attach(vnc_logger, size=size)
+        sent = 0
+        try:
+            while not max_frames or sent < max_frames:
+                started = time.time()
+                frame = _screencap_png()
+                if frame:
+                    viewport.frame(vnc_logger, nbytes=len(frame), size=size)
+                    yield device_control.mjpeg_part(frame, "image/png")
+                    sent += 1
+                elapsed = time.time() - started
+                if elapsed < interval:
+                    time.sleep(interval - elapsed)
+            yield device_control.mjpeg_close()
+        finally:
+            viewport.detach(vnc_logger)
+
+    return Response(
+        generate(),
+        mimetype=f"multipart/x-mixed-replace; boundary={device_control.MJPEG_BOUNDARY}",
+        headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"},
+    )
 
 # =============================================================================
 # Main
