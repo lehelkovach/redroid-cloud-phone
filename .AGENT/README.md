@@ -26,3 +26,15 @@ Never print `ORCH_API_TOKEN` / `API_TOKEN` values. Record **names** only.
   Nothing in this repo has run against a live phone since. Founder: OCI console.
 - Camera HAL on Redroid: `docs/REDROID-CAMERA-HAL-RESEARCH.md`. Try Redroid 14
   + droidpool patches first; do not retry on the 11 image by copying libs.
+
+## Release rule (stack-wide, 2026-10-19)
+
+Every build, merge and release cut of this repo ends with (1) the test ladder
+run green on the deployed target before the Control API / orchestrator takes
+traffic (`./cloud-phone test` offline suites → `scripts/cuttlefish-ingest-e2e.sh`
+/ phone-lab probes where a phone is reachable), and (2) a live conversation
+with the running OSLO that uses the new endpoint through its mobile tools
+(`osl-oc-agent/scripts/live/oslo_sanity.mjs --plan mobile`, or the
+`workflow_battery.mjs` `device_control` / `mobile_onboarding` workflows),
+with the reply, trace and logs read. A rung that could not run is reported
+UNVERIFIED, never green.
