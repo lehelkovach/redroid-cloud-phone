@@ -27,6 +27,14 @@ Never print `ORCH_API_TOKEN` / `API_TOKEN` values. Record **names** only.
 - Camera HAL on Redroid: `docs/REDROID-CAMERA-HAL-RESEARCH.md`. Try Redroid 14
   + droidpool patches first; do not retry on the 11 image by copying libs.
 
+- 2026-10-19: `POST|GET|DELETE /device/browser/devtools` (`api/server.py`,
+  relay in `api/devtools_relay.py`, 4 tests in `tests/test_control_api.py`,
+  `docs/API_REFERENCE.md` § Browser DevTools): forward + verify + relay the
+  phone browser's CDP socket and return `cdp_url` — the path for an app with
+  no APK (Airbnb is not on Aptoide). Needs a Chromium on the image (stock
+  Chrome listens on `chrome_devtools_remote` without a flag). UNVERIFIED on a
+  phone: the lab is unreachable.
+
 ## Release rule (stack-wide, 2026-10-19)
 
 Every build, merge and release cut of this repo ends with (1) the test ladder

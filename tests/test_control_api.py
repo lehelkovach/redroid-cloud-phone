@@ -507,3 +507,110 @@ class CommandletAndViewportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrowserDevtoolsTests(unittest.TestCase):
+    """The browser-in-phone path: forward Chrome's DevTools socket, verify it,
+    relay it, hand back a CDP url a controller can `connectOverCDP` to."""
+
+    def setUp(self):
+        self.client = control_api.app.test_client()
+        control_api.API_TOKEN = ""
+        control_api._state["devtools"] = {"active": False}
+
+    def test_open_forwards_verifies_relays_and_reports_cdp_url(self):
+        calls = []
+        relays = []
+
+        class FakeRelay:
+            def __init__(self, port):
+                self.listen_port = port
+                self.running = True
+
+            def stop(self):
+                self.running = False
+
+        def fake_relay(listen_host, listen_port, target_port):
+            relays.append((listen_host, listen_port, target_port))
+            return FakeRelay(listen_port)
+
+        version = {"Browser": "Chrome/120.0", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/abc"}
+        with patch.object(control_api, "run_adb", fake_adb(record=calls)), \
+             patch.object(control_api, "_devtools_version", lambda port, timeout=3: version), \
+             patch.object(control_api, "_start_devtools_relay", fake_relay):
+            res = self.client.post("/device/browser/devtools", json={}, headers={"Host": "10.0.1.127:8080"})
+            body = res.get_json()
+            self.assertEqual(res.status_code, 200, body)
+            self.assertTrue(body["success"])
+            self.assertEqual(body["socket"], "chrome_devtools_remote")
+            self.assertEqual(body["local_port"], 9222)
+            self.assertEqual(body["cdp_url"], "http://10.0.1.127:9222")
+            self.assertEqual(body["browser"]["Browser"], "Chrome/120.0")
+            self.assertTrue(any(c[1] == "forward tcp:9222 localabstract:chrome_devtools_remote" for c in calls))
+            self.assertEqual(relays, [("0.0.0.0", 9222, 9222)])
+
+            status = self.client.get("/device/browser/devtools").get_json()
+            self.assertTrue(status["active"])
+            self.assertTrue(status["relay_running"])
+            self.assertTrue(status["reachable"])
+
+            calls.clear()
+            closed = self.client.delete("/device/browser/devtools").get_json()
+            self.assertTrue(closed["success"])
+            self.assertTrue(closed["closed"])
+            self.assertTrue(any(c[1] == "forward --remove tcp:9222" for c in calls))
+            self.assertFalse(self.client.get("/device/browser/devtools").get_json()["active"])
+
+    def test_open_without_a_browser_removes_the_forward_and_says_so(self):
+        calls = []
+        with patch.object(control_api, "run_adb", fake_adb(record=calls)), \
+             patch.object(control_api, "_devtools_version", lambda port, timeout=3: None):
+            res = self.client.post("/device/browser/devtools", json={"socket": "chrome_devtools_remote"})
+            self.assertEqual(res.status_code, 409)
+            body = res.get_json()
+            self.assertFalse(body["success"])
+            self.assertIn("DevTools", body["error"])
+            self.assertTrue(any(c[1] == "forward --remove tcp:9222" for c in calls))
+            self.assertFalse(control_api._state["devtools"]["active"])
+
+    def test_socket_and_ports_are_validated(self):
+        with patch.object(control_api, "run_adb", fake_adb()):
+            bad = self.client.post("/device/browser/devtools", json={"socket": "chrome; rm -rf /"})
+            self.assertEqual(bad.status_code, 400)
+            low = self.client.post("/device/browser/devtools", json={"local_port": 80})
+            self.assertEqual(low.status_code, 400)
+
+    def test_relay_copies_bytes_both_ways_and_stops(self):
+        import socket
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+        import devtools_relay
+
+        echo = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        echo.bind(("127.0.0.1", 0))
+        echo.listen(1)
+        echo_port = echo.getsockname()[1]
+
+        def serve():
+            conn, _ = echo.accept()
+            data = conn.recv(1024)
+            conn.sendall(b"echo:" + data)
+            conn.close()
+
+        import threading
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        relay = devtools_relay.start_relay("127.0.0.1", 0, "127.0.0.1", echo_port)
+        try:
+            self.assertTrue(relay.running)
+            c = socket.create_connection(("127.0.0.1", relay.listen_port), timeout=3)
+            c.sendall(b"GET /json/version")
+            got = c.recv(1024)
+            self.assertEqual(got, b"echo:GET /json/version")
+            c.close()
+            t.join(timeout=2)
+            self.assertEqual(relay.connections, 1)
+        finally:
+            relay.stop()
+            echo.close()
+        self.assertFalse(relay.running)

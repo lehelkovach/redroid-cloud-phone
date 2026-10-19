@@ -795,3 +795,36 @@ download only), inspects the file, and installs:
 advertises it under `stream`. OSLO's `CloudPhoneWatchBackend` consumes it
 when `CLOUD_PHONE_STREAM=1` and falls back to `/device/screenshot` otherwise.
 There is still no VNC/RFB server on the host; `/vnc/*` remains bookkeeping.
+
+### Browser DevTools (CDP) — the browser-in-phone path
+
+`POST /device/browser/devtools` `{ socket?: "chrome_devtools_remote", local_port?: 9222, public_port?: 9222, relay?: true }`
+
+For an app that has no APK, the controller drives the site in the phone's own
+Chrome. The route runs `adb forward tcp:<local_port> localabstract:<socket>`,
+verifies `http://127.0.0.1:<local_port>/json/version` answers (Chrome must be
+running with remote debugging — stock Chrome always listens on
+`chrome_devtools_remote`; a WebView is `webview_devtools_remote_<pid>`), then
+binds a TCP relay on this host's interface (`API_HOST`, default `0.0.0.0`,
+port `public_port`) that copies bytes to the loopback forward — `adb
+forward` listens on loopback only, so without the relay nothing off-host could
+reach it. Chrome builds `webSocketDebuggerUrl` from the Host header it
+receives, so a client that connects through the relay gets a URL it can also
+open through the relay.
+
+| Outcome | Status |
+|---|---|
+| forwarded, verified, relayed | `200 { success, socket, local_port, public_port, cdp_url: "http://<this host>:<public_port>", browser: <json/version> }` |
+| bad socket name / port | `400` |
+| `adb forward` failed | `502` |
+| nothing answers behind the socket (forward removed again) | `409` |
+| relay could not bind (forward removed again) | `502` |
+
+`GET /device/browser/devtools` → `{ active, socket, local_port, public_port, relay_running, reachable, browser }`.
+`DELETE /device/browser/devtools` removes the forward and stops the relay.
+
+OSLO's `mobile.browser_devtools` calls this and hands `cdp_url` to a web
+session (`PlaywrightWebEnv({ cdpUrl })` / `WEBIO_CDP_URL`), so `web.*`
+commandlets run inside the phone. The relay is unauthenticated on purpose —
+CDP has no auth of its own — so expose it only on the phone lab's private
+subnet and close it when the session ends.

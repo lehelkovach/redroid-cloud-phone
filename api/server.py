@@ -2030,6 +2030,136 @@ def app_info(package):
 
 
 # =============================================================================
+# Browser DevTools (CDP) — the browser-in-phone path
+# =============================================================================
+
+DEVTOOLS_SOCKET_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+
+
+def _devtools_version(port, timeout=3):
+    """Chrome's /json/version over the adb-forwarded port, or None."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{int(port)}/json/version", timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 — any failure reads as "not reachable"
+        return None
+
+
+def _start_devtools_relay(listen_host, listen_port, target_port):
+    import devtools_relay
+    return devtools_relay.start_relay(listen_host, listen_port, "127.0.0.1", target_port)
+
+
+def _devtools_state():
+    return _state.setdefault("devtools", {"active": False})
+
+
+def _devtools_public_host():
+    host = (request.headers.get("X-Forwarded-Host") or request.host or "").split(",")[0].strip()
+    return host.split(":")[0] if host else "127.0.0.1"
+
+
+@app.route("/device/browser/devtools", methods=["GET"])
+@require_auth
+def browser_devtools_status():
+    st = dict(_devtools_state())
+    relay = st.pop("relay", None)
+    st["relay_running"] = bool(relay and getattr(relay, "running", False))
+    if st.get("active"):
+        st["browser"] = _devtools_version(st.get("local_port"))
+        st["reachable"] = st["browser"] is not None
+    return jsonify({"success": True, **st})
+
+
+@app.route("/device/browser/devtools", methods=["POST"])
+@require_auth
+def browser_devtools_open():
+    """Expose the phone browser's DevTools socket so a controller can drive it
+    over CDP (Playwright `connectOverCDP`): `adb forward tcp:<local_port>
+    localabstract:<socket>`, verify `/json/version`, then relay the loopback
+    port on this host's interface. Body: {"socket": "chrome_devtools_remote",
+    "local_port": 9222, "public_port": 9222, "relay": true}.
+    """
+    data = request.get_json(silent=True) or {}
+    sock = str(data.get("socket") or "chrome_devtools_remote").strip()
+    if not DEVTOOLS_SOCKET_RE.match(sock):
+        return jsonify({"success": False, "error": "socket must be a plain abstract socket name"}), 400
+    try:
+        local_port = int(data.get("local_port") or 9222)
+        public_port = int(data.get("public_port") or local_port)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "ports must be integers"}), 400
+    if not (1024 <= local_port <= 65535 and 1024 <= public_port <= 65535):
+        return jsonify({"success": False, "error": "ports must be in 1024..65535"}), 400
+    want_relay = data.get("relay", True) is not False
+
+    ensure_adb_connected()
+    ok, out, err = run_adb("forward", f"tcp:{local_port}", f"localabstract:{sock}")
+    if not ok:
+        return jsonify({"success": False, "error": f"adb forward failed: {err or out or 'unknown'}", "socket": sock}), 502
+    browser = _devtools_version(local_port)
+    if browser is None:
+        run_adb("forward", "--remove", f"tcp:{local_port}")
+        return jsonify({
+            "success": False,
+            "error": f"no DevTools endpoint behind localabstract:{sock} — is a Chromium browser running on the phone with remote debugging?",
+            "socket": sock,
+        }), 409
+
+    st = _devtools_state()
+    old = st.get("relay")
+    if old is not None:
+        try:
+            old.stop()
+        except Exception:  # noqa: BLE001
+            pass
+    relay = None
+    if want_relay:
+        try:
+            relay = _start_devtools_relay(os.environ.get("API_HOST", "0.0.0.0"), public_port, local_port)
+            public_port = relay.listen_port
+        except OSError as e:
+            run_adb("forward", "--remove", f"tcp:{local_port}")
+            return jsonify({"success": False, "error": f"relay bind failed: {e}"}), 502
+    host = _devtools_public_host()
+    st.update({
+        "active": True,
+        "socket": sock,
+        "local_port": local_port,
+        "public_port": public_port if want_relay else None,
+        "relay": relay,
+        "opened_at": time.time(),
+    })
+    cdp_url = f"http://{host}:{public_port}" if want_relay else f"http://127.0.0.1:{local_port}"
+    return jsonify({
+        "success": True,
+        "socket": sock,
+        "local_port": local_port,
+        "public_port": public_port if want_relay else None,
+        "cdp_url": cdp_url,
+        "browser": browser,
+    })
+
+
+@app.route("/device/browser/devtools", methods=["DELETE"])
+@require_auth
+def browser_devtools_close():
+    st = _devtools_state()
+    relay = st.pop("relay", None)
+    if relay is not None:
+        try:
+            relay.stop()
+        except Exception:  # noqa: BLE001
+            pass
+    local_port = st.get("local_port")
+    if local_port:
+        run_adb("forward", "--remove", f"tcp:{int(local_port)}")
+    _state["devtools"] = {"active": False}
+    return jsonify({"success": True, "closed": bool(local_port)})
+
+
+# =============================================================================
 # Live frame stream
 # =============================================================================
 
