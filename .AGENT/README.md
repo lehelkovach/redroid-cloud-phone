@@ -35,6 +35,24 @@ Never print `ORCH_API_TOKEN` / `API_TOKEN` values. Record **names** only.
   Chrome listens on `chrome_devtools_remote` without a flag). UNVERIFIED on a
   phone: the lab is unreachable.
 
+- 2026-10-20 — **the lab was off, not firewalled.** Read with the OCI API from
+  the agent sandbox (`scripts/configure-oci-cli-from-env.sh` in osl-oc-agent):
+  `cloud-phone-agent-6c58` and `cloud-phone-orch-6c58` were `STOPPED`, as were
+  `cloud-phone-dev`, both `cloud-phone-gapps-test`, `redroid-camera-build` and
+  13 others (only prod, ksg-dev-a1, iac-bus and oslo-chrome-x86 ran). Started
+  the two lab VMs by API; a runner then saw :22 open on both and :8080/:5555/:8090
+  refused → units down after boot. Blocked from here: the subnet security-list
+  rule for :8090 (none exists; prod cannot reach the orchestrator), the IAM
+  dynamic group + policy for OCI Run Command, and SSH (the prod deploy key is
+  not authorized on the phone VMs; the sandbox cannot open :22 anyway). Built:
+  loaded static pool + `static` mode + restart-safe state in the orchestrator,
+  `systemd/cloud-phone-orchestrator.service` + `scripts/install-orchestrator.sh`
+  + `config/pool.example.json`, `scripts/fleet_doctor.py` (pure diagnosis,
+  tested), and osl-oc-agent `phone-lab-ops.yml` (diagnose/repair over SSH).
+  Not found: who stopped the VMs — the tenancy audit query ran past the
+  sandbox's time limit twice; check the console's audit for `StopInstance`
+  around 2026-10-0x..11 (Oracle reclaims idle Always-Free A1 capacity, which fits).
+
 ## Release rule (stack-wide, 2026-10-19)
 
 Every build, merge and release cut of this repo ends with (1) the test ladder

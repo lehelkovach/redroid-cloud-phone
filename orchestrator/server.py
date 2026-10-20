@@ -71,6 +71,14 @@ cvd_logger = logger.bind("CVD")
 # mock | redroid | oci
 # oci: Redroid golden for automation (default), Cuttlefish golden for camera
 ORCH_DEPLOY_MODE = os.environ.get("ORCH_DEPLOY_MODE", "mock")
+# A pool that is *loaded*, not provisioned: the phones the lab already has, one
+# entry each (see config/pool.example.json). Leased first in every mode; mode
+# "static" never provisions beyond it. Lab 2026-10-20: one Redroid host and one
+# Cuttlefish host for one user, scale-up later.
+ORCH_POOL_FILE = os.environ.get("ORCH_POOL_FILE", "")
+ORCH_POOL_JSON = os.environ.get("ORCH_POOL_JSON", "")
+# Leases, tenancy and sessions survive a restart when this names a file.
+ORCH_STATE_FILE = os.environ.get("ORCH_STATE_FILE", "")
 ORCH_MOCK_API_URL = os.environ.get("ORCH_MOCK_API_URL", "http://127.0.0.1:8080")
 ORCH_MOCK_CAMERA_API_URL = os.environ.get("ORCH_MOCK_CAMERA_API_URL", "")
 ORCH_API_TOKEN = os.environ.get("ORCH_API_TOKEN", "")
@@ -107,22 +115,159 @@ ORCH_OCI_AUTH = os.environ.get("ORCH_OCI_AUTH", "security_token")
 
 # In-memory state
 _instances = {}
-_instances_lock = threading.Lock()
+# Re-entrant: _persist_state() runs inside lease/session mutations that may
+# already hold one of these on the same thread (renewal, purpose switch).
+_instances_lock = threading.RLock()
 _ops = {}
 _ops_lock = threading.Lock()
 _leases = {}
-_leases_lock = threading.Lock()
+_leases_lock = threading.RLock()
 
 # Who last had Android state on an instance, and when it was last provably
 # reset. A lease is a *booking*; tenancy is about *data left behind*, and the
 # two have different lifetimes: releasing a lease frees the slot, it does not
 # empty /data.
 _instance_tenancy = {}
-_instance_tenancy_lock = threading.Lock()
+_instance_tenancy_lock = threading.RLock()
 _user_sessions = {}
-_user_sessions_lock = threading.Lock()
+_user_sessions_lock = threading.RLock()
 _next_adb_port = ORCH_REDROID_ADB_PORT_BASE
 _adb_port_lock = threading.Lock()
+_state_lock = threading.Lock()
+
+
+def _persist_state():
+    """Write instances, leases, tenancy and sessions to ORCH_STATE_FILE (atomic). No-op without one."""
+    if not ORCH_STATE_FILE:
+        return
+    with _instances_lock:
+        instances = dict(_instances)
+    with _leases_lock:
+        leases = dict(_leases)
+    with _instance_tenancy_lock:
+        tenancy = dict(_instance_tenancy)
+    with _user_sessions_lock:
+        sessions = dict(_user_sessions)
+    payload = {"saved_at": time.time(), "instances": instances, "leases": leases, "tenancy": tenancy, "sessions": sessions}
+    path = Path(ORCH_STATE_FILE)
+    try:
+        with _state_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload))
+            tmp.replace(path)
+    except OSError as exc:
+        logger.warning("state not persisted to %s: %s", ORCH_STATE_FILE, exc)
+
+
+def _restore_state(path=None):
+    """Load what a previous run persisted. Static pool entries are re-read from the pool file, not from here."""
+    path = Path(path or ORCH_STATE_FILE) if (path or ORCH_STATE_FILE) else None
+    if not path or not path.exists():
+        return {"restored": False}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.warning("state file %s unreadable: %s", path, exc)
+        return {"restored": False, "error": str(exc)}
+    now = time.time()
+    with _instances_lock:
+        for inst_id, rec in (payload.get("instances") or {}).items():
+            if rec.get("static"):
+                continue  # the pool file is the source of truth for static phones
+            _instances.setdefault(inst_id, rec)
+    live = 0
+    with _leases_lock:
+        for inst_id, lease in (payload.get("leases") or {}).items():
+            if lease.get("expires_at", 0) > now:
+                _leases[inst_id] = lease
+                live += 1
+    with _instance_tenancy_lock:
+        for inst_id, entry in (payload.get("tenancy") or {}).items():
+            _instance_tenancy.setdefault(inst_id, entry)
+    with _user_sessions_lock:
+        for owner, sess in (payload.get("sessions") or {}).items():
+            inst_id = sess.get("instance_id")
+            if inst_id and inst_id in _leases:
+                _user_sessions[owner] = sess
+    logger.info("state restored from %s: %d live lease(s), %d session(s)", path, live, len(_user_sessions))
+    return {"restored": True, "leases": live, "sessions": len(_user_sessions)}
+
+
+def _static_pool_entries():
+    """The pool file's entries, validated. Disabled entries are skipped; a bad entry is logged, not fatal."""
+    raw = None
+    if ORCH_POOL_JSON:
+        raw = ORCH_POOL_JSON
+    elif ORCH_POOL_FILE:
+        try:
+            raw = Path(ORCH_POOL_FILE).read_text()
+        except OSError as exc:
+            logger.warning("pool file %s unreadable: %s", ORCH_POOL_FILE, exc)
+            return []
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except ValueError as exc:
+        logger.warning("pool definition is not JSON: %s", exc)
+        return []
+    if isinstance(entries, dict):
+        entries = entries.get("pool") or entries.get("phones") or []
+    out = []
+    for e in entries if isinstance(entries, list) else []:
+        if not isinstance(e, dict) or e.get("enabled") is False:
+            continue
+        api_url = str(e.get("api_url") or "").strip()
+        if not api_url.startswith("http"):
+            logger.warning("pool entry %s skipped: api_url missing", e.get("id") or e.get("name"))
+            continue
+        try:
+            purpose = resolve_purpose(e.get("purpose"), e.get("runtime"))
+        except ValueError as exc:
+            logger.warning("pool entry %s skipped: %s", e.get("id") or e.get("name"), exc)
+            continue
+        out.append({
+            "id": str(e.get("id") or e.get("name") or uuid.uuid4().hex),
+            "name": str(e.get("name") or e.get("id")),
+            "api_url": api_url,
+            "runtime": runtime_for_purpose(purpose),
+            "purpose": purpose,
+            "adb_connect": e.get("adb_connect"),
+            "instance_ocid": e.get("instance_ocid"),
+            "public_ip": e.get("public_ip"),
+        })
+    return out
+
+
+def _load_static_pool():
+    """Register the pool file's phones as ready instances (idempotent by id)."""
+    loaded = []
+    for e in _static_pool_entries():
+        with _instances_lock:
+            prev = _instances.get(e["id"])
+            record = {
+                "id": e["id"],
+                "name": e["name"],
+                "api_url": e["api_url"],
+                "created_at": prev.get("created_at") if prev else time.time(),
+                "last_used": prev.get("last_used") if prev else time.time(),
+                "mode": "static",
+                "runtime": e["runtime"],
+                "purpose": e["purpose"],
+                "adb_connect": e.get("adb_connect"),
+                "instance_ocid": e.get("instance_ocid"),
+                "public_ip": e.get("public_ip"),
+                "gapps": e["purpose"] == PURPOSE_AUTOMATION,
+                "static": True,
+            }
+            _instances[e["id"]] = record
+        loaded.append(record)
+    if loaded:
+        logger.info("[pool] loaded %d static phone(s): %s", len(loaded), ", ".join(f"{r['id']}({r['runtime']} @ {r['api_url']})" for r in loaded))
+    elif ORCH_POOL_FILE or ORCH_POOL_JSON:
+        logger.warning("[pool] pool definition present but no usable entries")
+    return loaded
 def _presented_token():
     header = request.headers.get("Authorization", "")
     if header.lower().startswith("bearer "):
@@ -191,6 +336,7 @@ def _set_lease(instance_id, owner, ttl_seconds):
     # The guard can only refuse what it knows about, so recording is part of
     # taking the lease rather than a separate step someone has to remember.
     record_tenancy(instance_id, owner)
+    _persist_state()
 
 
 def record_tenancy(instance_id, owner):
@@ -244,6 +390,7 @@ def can_lease_to(instance_id, owner):
 def _clear_lease(instance_id):
     with _leases_lock:
         _leases.pop(instance_id, None)
+    _persist_state()
 
 
 def _is_lease_valid(instance_id, owner=None):
@@ -482,6 +629,11 @@ def _provision_instance(purpose=None, runtime=None):
                 f"Camera streams use Cuttlefish; automation uses Redroid."
             )
 
+    if ORCH_DEPLOY_MODE == "static":
+        raise RuntimeError(
+            f"{runtime} pool exhausted: every static phone is leased and ORCH_DEPLOY_MODE=static never provisions. "
+            "Release a lease, add a phone to ORCH_POOL_FILE, or switch the mode to redroid/oci to scale up."
+        )
     if ORCH_DEPLOY_MODE == "mock":
         api_url = _mock_api_url(runtime)
         name = f"{ORCH_INSTANCE_NAME_PREFIX}-{runtime}-mock-{_count_runtime(runtime) + 1}"
@@ -891,8 +1043,22 @@ def _pool_snapshot(items=None):
             "total": len(members),
             "leased": leased,
             "idle": len(members) - leased,
+            "static": sum(1 for i in members if i.get("static")),
             "max": _runtime_limit(runtime),
+            # Who is in the pool, without tokens: id, name, host, leased-or-not.
+            "members": [
+                {
+                    "id": i["id"],
+                    "name": i.get("name"),
+                    "host": (i.get("api_url") or "").split("//")[-1].split("/")[0],
+                    "static": bool(i.get("static")),
+                    "leased": _is_lease_valid(i["id"]),
+                    "lease_owner": (_get_lease(i["id"]) or {}).get("owner") if _is_lease_valid(i["id"]) else None,
+                }
+                for i in members
+            ],
         }
+    snapshot["deploy_mode"] = ORCH_DEPLOY_MODE
     return snapshot
 
 
@@ -1186,6 +1352,7 @@ def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpo
     sess = _session_from_instance(owner_user_id, inst, ttl_seconds, purpose)
     with _user_sessions_lock:
         _user_sessions[owner_user_id] = sess
+    _persist_state()
     logger.info(
         "Acquired session owner=%s instance=%s runtime=%s purpose=%s",
         owner_user_id, inst["id"], sess["runtime"], purpose,
@@ -1237,7 +1404,7 @@ def create_session():
         # with the instance's state. A 500 would read as an orchestrator fault
         # and invite a retry, which would be refused identically.
         conflict = any(
-            k in msg for k in ("in use", "full", "limit", "not clean")
+            k in msg for k in ("in use", "full", "limit", "not clean", "exhausted")
         )
         status = 409 if conflict else 500
         return jsonify({"error": str(exc)}), status
@@ -1286,6 +1453,10 @@ def health():
         "pool": pool,
     })
 
+
+# Boot: the loaded pool first, then whatever a previous run left in the state file.
+_load_static_pool()
+_restore_state()
 
 if __name__ == "__main__":
     host = os.environ.get("ORCH_HOST", "0.0.0.0")

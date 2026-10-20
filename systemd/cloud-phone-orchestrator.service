@@ -1,0 +1,25 @@
+[Unit]
+Description=Cloud Phone Orchestrator (leases Redroid / Cuttlefish phones to agents)
+Documentation=docs/OPS-ORCHESTRATOR.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cloud-phone-orchestrator
+ExecStart=/opt/cloud-phone-orchestrator/venv/bin/python orchestrator/server.py
+Restart=on-failure
+RestartSec=5
+User=root
+Environment=PYTHONUNBUFFERED=1
+Environment=ORCH_HOST=0.0.0.0
+Environment=ORCH_PORT=8090
+Environment=ORCH_DEPLOY_MODE=static
+Environment=ORCH_POOL_FILE=/etc/cloud-phone/pool.json
+Environment=ORCH_STATE_FILE=/var/lib/cloud-phone-orchestrator/state.json
+Environment=ORCH_LOG_LEVEL=INFO
+EnvironmentFile=-/etc/default/cloud-phone-orchestrator
+ExecStartPost=/bin/bash -c 'for i in {1..10}; do curl -sf http://127.0.0.1:8090/health >/dev/null && exit 0; sleep 2; done; exit 1'
+
+[Install]
+WantedBy=multi-user.target

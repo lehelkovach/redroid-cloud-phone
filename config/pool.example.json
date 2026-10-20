@@ -1,0 +1,23 @@
+[
+  {
+    "id": "redroid-lab-1",
+    "name": "cloud-phone-agent-6c58",
+    "runtime": "redroid",
+    "purpose": "automation",
+    "api_url": "http://10.0.1.127:8080",
+    "adb_connect": "127.0.0.1:5555",
+    "instance_ocid": "ocid1.instance.oc1.phx.anyhqljrgmifkaqcb7eowcjmmsqe7g53jddy4zzj2nv3p64tybe7nieptvtq",
+    "public_ip": "129.146.55.133"
+  },
+  {
+    "id": "cuttlefish-lab-1",
+    "name": "cloud-phone-gapps-test",
+    "runtime": "cuttlefish",
+    "purpose": "camera",
+    "api_url": "http://10.0.1.242:8080",
+    "adb_connect": "127.0.0.1:6520",
+    "instance_ocid": null,
+    "public_ip": "137.131.52.136",
+    "enabled": false
+  }
+]
