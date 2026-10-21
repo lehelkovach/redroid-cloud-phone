@@ -1,3 +1,5 @@
+> Archived: historical notes, may be out of date.
+
 # Clean-Room Bootstrap (Post-Wipe Recovery)
 
 Use this runbook when starting from a fresh machine or fresh CI/agent workspace.

@@ -11,10 +11,12 @@ filtered by origin instead of guessed at from message wording.
 ```
 
 `LOG_FORMAT=json` switches to one JSON object per line for shipping.
-`CLOUD_PHONE_VERBOSE=1` (also set by `./cloud-phone test`) promotes the process
+`CLOUD_PHONE_VERBOSE=1` promotes the process
 to DEBUG so ADB argv, Appium W3C payloads, and VNC frame ticks all show up.
 
-Passwords and tokens are redacted (`***`) before a payload is logged.
+Values under keys such as `password`, `token`, `authorization`, `secret` and
+`api_key` are replaced with `***` when a payload is logged through `redact()`.
+Not every log call uses it; see [SECURITY.md](../SECURITY.md).
 
 ## Labels
 
@@ -38,26 +40,33 @@ Passwords and tokens are redacted (`***`) before a payload is logged.
 
 An unknown label degrades to `SYS` rather than corrupting the column.
 
-## Env
+## Settings
 
 | Variable | Effect |
 |---|---|
-| `LOG_LEVEL` | `DEBUG` / `INFO` / `WARN` / `ERROR` (default `INFO`) |
-| `CLOUD_PHONE_VERBOSE` | `1` forces DEBUG and INFO-level ADB commanders |
+| `LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR` |
+| `CLOUD_PHONE_VERBOSE` | `1` forces DEBUG and logs every ADB command at INFO |
 | `LOG_FORMAT` | `text` (default) or `json` |
-| `LOG_FILE` | Also write to this path; a bad path warns, it does not crash the service |
-| `ORCH_LOG_LEVEL` | Orchestrator override |
-| `APPIUM_URL` | Appium server (default `http://127.0.0.1:4723`) |
-| `UI_BACKEND` | `adb` (default) or `appium` |
-| `VNC_PORT` | RFB port advertised on `/vnc/status` (default `5900`) |
-| `VNC_WIDTH` / `VNC_HEIGHT` | Viewport size (defaults follow `REDROID_WIDTH`/`HEIGHT`) |
+| `LOG_FILE` | Also write to this path. A bad path logs a warning; the service still starts. |
+| `LOG_RING_SIZE` | Lines kept in memory for `GET /logs` (default 4000) |
+| `ORCH_LOG_LEVEL` | Orchestrator level; falls back to `LOG_LEVEL` |
 
-## Read the ring
+All settings, with their source lines, are in [configuration.md](configuration.md).
+
+## Read recent lines over HTTP
+
+Each process keeps the last `LOG_RING_SIZE` lines in memory.
 
 ```bash
-curl http://127.0.0.1:8080/logs?type=CMD,APM,VNC
-curl http://127.0.0.1:8090/phones/<id>/logs?type=ADB,CMD,APM,VNC
+# Control API (no token needed)
+curl -s 'http://127.0.0.1:8080/logs?type=CMD,APM,VNC&n=100'
+
+# Orchestrator: its own lines, and a phone's lines relayed (token needed)
+curl -s 'http://127.0.0.1:8090/logs?type=ORC' -H "Authorization: Bearer $ORCH_API_TOKEN"
+curl -s 'http://127.0.0.1:8090/phones/<id>/logs?type=ADB,CMD' -H "Authorization: Bearer $ORCH_API_TOKEN"
 ```
+
+`type` is a comma-separated list of labels; `n` defaults to 200.
 
 ## Python
 

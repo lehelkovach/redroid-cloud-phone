@@ -1,3 +1,5 @@
+> Archived: historical notes, may be out of date.
+
 # Orchestrator ops (code-side)
 
 **Live lab IPs, Cursor secret names, OSLO env:** sibling

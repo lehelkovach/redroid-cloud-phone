@@ -1,3 +1,5 @@
+> Archived: historical notes, may be out of date.
+
 # Future Considerations: Android ARM64 Virtual Camera Stack
 
 This document captures future-facing guidance only. It does not change the current implementation plan.
