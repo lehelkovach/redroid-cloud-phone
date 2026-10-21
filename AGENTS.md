@@ -33,3 +33,7 @@ Offline tests must not call Docker, `oci` or a real phone.
   zips out of the repo, logs and commit messages.
 - Known bugs are listed in [ROADMAP.md](ROADMAP.md); check there before
   "fixing" behaviour that looks wrong.
+- Write every audit, diagnosis or measurement you make to
+  `.AGENT/reports/YYYY-MM-DD-<slug>.md` and index it in
+  [`.AGENT/reports/README.md`](.AGENT/reports/README.md), so the owner and later
+  sessions can read it without the chat.
