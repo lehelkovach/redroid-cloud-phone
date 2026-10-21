@@ -1,3 +1,5 @@
+> Archived: historical notes, may be out of date.
+
 # Cuttlefish Phase 2: OBS RTMP Bridge
 
 Phase 2 adds RTMP ingest support for OBS while keeping camera injection pluggable.

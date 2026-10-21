@@ -1,3 +1,5 @@
+> Archived: historical notes, may be out of date.
+
 # Auth and health — why a working phone read as a dead one
 
 **Status:** fixed in this tree · **Applies to:** `api/server.py`, `orchestrator/server.py`
