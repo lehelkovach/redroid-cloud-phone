@@ -169,19 +169,40 @@ are listed in [ROADMAP.md](ROADMAP.md).
 
 ## Responsible use
 
-The Control API includes endpoints that change how the device identifies
-itself (`/device/identity`, `/device/antidetect`), and the orchestrator ships
-rules for automated swiping and follow-up messages. They are documented
-factually in [docs/api/control-api.md](docs/api/control-api.md) and
-[docs/procedures.md](docs/procedures.md).
+This project is for phones you own or are authorised to operate: testing your
+own apps, automating your own accounts, QA fleets, and research on devices and
+services whose terms allow it. Two parts of the code deserve a plain warning:
 
-> **OWNER-TODO:** state the intended uses of this project, the uses you do not
-> support, and that users must follow the terms of service of the apps and
-> services they automate and the laws that apply to them.
+- `/device/identity` and `/device/antidetect` change how the device presents
+  itself. They exist so a test fleet can look like real hardware to the app
+  under test. Using them to evade another service's abuse controls, to operate
+  accounts that are not yours, or to misrepresent who is acting is not a use
+  this project supports.
+- The orchestrator's swipe and follow-up rules automate a person's own
+  activity in an app. They send nothing on their own; every message is a
+  draft until a person approves it. Automating someone else's account, or
+  volume that an app's terms forbid, is not supported.
+
+You are responsible for the terms of service of every app and service you
+drive through these phones and for the laws that apply where you and your
+users are. The maintainer will not add features whose main purpose is evading
+detection, and reports of such use will be treated as bugs to close, not
+features to extend.
 
 ## License
 
-> **OWNER-TODO:** no license has been chosen yet and there is no `LICENSE`
-> file. Until one is added, default copyright applies and others have no
-> permission to use, copy or modify this code. Pick a license and add a
-> `LICENSE` file at the repository root.
+This repository's own code and documentation are under the
+[MIT License](LICENSE).
+
+It does not redistribute Android. At run time it pulls and drives third-party
+components that carry their own licenses, which you accept when you use them:
+
+| Component | Source | License |
+|---|---|---|
+| Redroid images (`redroid/redroid:*`) | [remote-android/redroid-doc](https://github.com/remote-android/redroid-doc) | Apache-2.0 for redroid; its kernel modules are GPL-2.0; the Android system inside is AOSP (Apache-2.0 and others) |
+| Cuttlefish host tools and guest images | [google/android-cuttlefish](https://github.com/google/android-cuttlefish) and AOSP | Apache-2.0 |
+| Google Play (GApps) | your own zip | Google's terms; not distributed here |
+| nginx with the RTMP module, FFmpeg, Flask, ADB | distro packages and PyPI | their own (BSD-2, LGPL/GPL, BSD-3, Apache-2.0) |
+
+Check the upstream repositories for the current text of each license before
+you redistribute anything built from them.

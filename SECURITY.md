@@ -71,10 +71,9 @@ into every instance launched from the image. So is
 
 ## Reporting a vulnerability
 
-> **OWNER-TODO:** add a private contact for security reports (an email
-> address, or enable GitHub private vulnerability reporting for this
-> repository) and state how quickly you aim to respond.
+Report a vulnerability privately through GitHub: open the **Security** tab of
+this repository and use **Report a vulnerability** (GitHub private
+vulnerability reporting). Do not open a public issue for it. You should hear
+back within seven days; fixes for anything that exposes a phone or a token to
+the internet by default are released as soon as they are tested.
 
-Until then, please do not open a public issue with exploit details. Open an
-issue that says you have a security report and ask the maintainer for a
-private channel.
