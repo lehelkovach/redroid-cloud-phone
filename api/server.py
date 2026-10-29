@@ -18,6 +18,7 @@ import subprocess
 import shlex
 import time
 import base64
+import shutil
 import tempfile
 import threading
 import uuid
@@ -29,11 +30,13 @@ try:
     from cloudphone_logging import recent_logs, redact, truncate, verbose_enabled
     import ui_control
     import viewport
+    import app_install
 except ImportError:
     from api.cloudphone_logging import configure as _configure_logging
     from api.cloudphone_logging import recent_logs, redact, truncate, verbose_enabled
     from api import ui_control
     from api import viewport
+    from api import app_install
 
 app = Flask(__name__)
 
@@ -54,6 +57,19 @@ CONFIG_FILE = os.environ.get("CONFIG_FILE", "/etc/cloud-phone/config.json")
 PROXY_SCRIPT = "/opt/cloud-phone-scripts/proxy-control.sh"
 JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", "3600"))
 JOB_MAX = int(os.environ.get("JOB_MAX", "500"))
+# App install (docs/GAPPS-AND-APP-INSTALL.md). APP_INSTALL_DIRS is read per
+# request so tests and operators can change it without a restart.
+APP_INSTALL_MAX_BYTES = int(os.environ.get("APP_INSTALL_MAX_BYTES", str(app_install.DEFAULT_MAX_BYTES)))
+APP_INSTALL_TIMEOUT = int(os.environ.get("APP_INSTALL_TIMEOUT", "300"))
+APP_INSTALL_ALLOW_PRIVATE = os.environ.get("APP_INSTALL_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes")
+PLAY_INSTALL_TIMEOUT = int(os.environ.get("PLAY_INSTALL_TIMEOUT", "600"))
+PLAY_UNCERTIFIED_URL = "https://www.google.com/android/uncertified"
+PLAY_OWNER_ACTION = (
+    "The phone's owner must sign in to Google Play on the phone themselves: take over "
+    "the screen, open Play Store and sign in. If Play reports the device is not Play "
+    "Protect certified, register the phone's GSF Android ID (GET /apps/play/status) at "
+    + PLAY_UNCERTIFIED_URL + " first, then wait and retry. See docs/GAPPS-AND-APP-INSTALL.md."
+)
 
 # In-memory state
 _state = {
@@ -75,13 +91,18 @@ _jobs_lock = threading.Lock()
 _ADB_TARGET_RE = re.compile(r"^[A-Za-z0-9._:\[\]-]+$")
 
 
+# A job runs on its own thread, outside the request that queued it; this
+# carries that request's phone so the job does not drift to ADB_CONNECT.
+_job_target = threading.local()
+
+
 def current_adb_connect():
     """Per-request serial (orchestrator multi-phone) or process default."""
     hdr = ""
     try:
         hdr = (request.headers.get("X-Cloud-Phone-Adb") or "").strip()
     except RuntimeError:
-        hdr = ""
+        hdr = getattr(_job_target, "serial", "") or ""
     if hdr and _ADB_TARGET_RE.match(hdr) and len(hdr) < 128:
         return hdr
     return ADB_CONNECT
@@ -546,10 +567,13 @@ def _handle_job(job_type, payload):
             return {"success": False, "error": "package required"}
         success, out, err = run_adb_shell(f"pm uninstall {package}")
         return {"success": success, "message": out or err}
+    if job_type == "play_install":
+        return _play_install(payload or {})
     return {"success": False, "error": f"unsupported job type: {job_type}"}
 
 
-def _run_job(job_id, job_type, payload):
+def _run_job(job_id, job_type, payload, adb_target=None):
+    _job_target.serial = adb_target or ""
     _update_job(job_id, status="running")
     try:
         result = _handle_job(job_type, payload or {})
@@ -557,6 +581,8 @@ def _run_job(job_id, job_type, payload):
     except Exception as exc:
         logger.exception("Job failed: %s", job_id)
         _update_job(job_id, status="failed", error=str(exc))
+    finally:
+        _job_target.serial = ""
     _prune_jobs()
 
 # =============================================================================
@@ -1145,18 +1171,27 @@ def screenshot_base64():
 # App Management Endpoints
 # =============================================================================
 
+_PM_SCOPES = {"third_party": "-3", "system": "-s", "all": ""}
+
+
 @app.route("/apps", methods=["GET"])
 @require_auth
 def list_apps():
-    """List installed apps"""
-    success, out, _ = run_adb_shell("pm list packages -3")  # -3 for third-party only
-    packages = [line.replace("package:", "") for line in out.split("\n") if line]
-    
-    return jsonify({
-        "success": success,
-        "packages": packages,
-        "count": len(packages)
-    })
+    """List installed packages. `?scope=third_party` (default), `system` or `all`."""
+    scope = request.args.get("scope", "third_party")
+    if scope not in _PM_SCOPES:
+        return jsonify({
+            "success": False, "code": "invalid_scope",
+            "error": f"scope must be one of {sorted(_PM_SCOPES)}",
+        }), 400
+    flag = _PM_SCOPES[scope]
+    success, out, err = run_adb_shell(f"pm list packages {flag}".strip())
+    packages = app_install.parse_packages(out) if success else []
+    body = {"success": success, "scope": scope, "packages": packages, "count": len(packages)}
+    if not success:
+        body["error"] = err or out or "pm list packages failed"
+        return jsonify(body), 502
+    return jsonify(body)
 
 def _resolve_launch_activity(package):
     """Launcher component for `package`, or None when it has none.
@@ -1229,6 +1264,302 @@ def clear_app_data(package):
     """Clear app data"""
     success, out, err = run_adb_shell(f"pm clear {package}")
     return jsonify({"success": success, "message": out or err})
+
+
+# =============================================================================
+# App install: APK / split set / bundle by host path or URL+sha256, and Play
+# by package name once the owner has signed in. docs/GAPPS-AND-APP-INSTALL.md
+# =============================================================================
+
+app_logger = logger.bind("ADB")
+_FAILURE_RE = re.compile(r"Failure \[([A-Z0-9_]+)")
+# Patched by tests so polling loops run instantly.
+_sleep = time.sleep
+_now = time.time
+
+
+def _package_installed(package):
+    ok, out, _ = run_adb_shell(f"pm path {package}")
+    return bool(ok and "package:" in (out or ""))
+
+
+def _installed_packages():
+    ok, out, _ = run_adb_shell("pm list packages")
+    return set(app_install.parse_packages(out)) if ok else None
+
+
+def _install_apks(apks, options, expected_package=None):
+    """Run `adb install` / `install-multiple` and report what changed."""
+    before = _installed_packages()
+    args = app_install.adb_install_args(apks, options)
+    success, out, err = run_adb(*args, timeout=APP_INSTALL_TIMEOUT)
+    message = "\n".join(x for x in (out, err) if x).strip()
+    failure = _FAILURE_RE.search(message)
+    # Older adb exits 0 and prints "Failure [INSTALL_FAILED_...]".
+    success = bool(success and not failure and "Success" in message) or bool(
+        success and not failure and not message
+    )
+    result = {
+        "success": success,
+        "files": [os.path.basename(a) for a in apks],
+        "method": args[0],
+        "message": truncate(message),
+    }
+    if failure:
+        result["install_error"] = failure.group(1)
+    if success:
+        after = _installed_packages()
+        if before is not None and after is not None:
+            result["new_packages"] = sorted(after - before)
+        if expected_package:
+            result["package"] = expected_package
+            result["verified"] = _package_installed(expected_package)
+            if not result["verified"]:
+                result["success"] = False
+                result["code"] = "package_not_found_after_install"
+                result["error"] = f"install reported success but {expected_package} is not installed"
+    else:
+        result["code"] = "install_failed"
+        result["error"] = result.get("install_error") or "adb install failed"
+    return result
+
+
+def _describe_source(src):
+    if "url" in src:
+        return app_install.safe_url_for_log(src["url"])
+    return os.path.basename(str(src.get("path", "")))
+
+
+@app.route("/apps/install", methods=["POST"])
+@require_auth
+def install_app():
+    """Install an APK, a split set, or an .apks/.xapk bundle.
+
+    Body: exactly one of `path`, `paths`, `url` (+ `sha256`, required) or
+    `urls` (list of {url, sha256}); optional `replace` (default true),
+    `grant_permissions`, `downgrade`, `expected_package`.
+    """
+    try:
+        req = app_install.parse_install_request(request.get_json(silent=True))
+    except app_install.InstallError as exc:
+        app_logger.warning("install refused code=%s", exc.code)
+        return jsonify(exc.as_dict()), exc.status
+
+    described = [_describe_source(s) for s in req["sources"]]
+    app_logger.info("install requested kind=%s sources=%s", req["kind"], described)
+    workdir = app_install.new_temp_dir()
+    try:
+        files = []
+        for index, src in enumerate(req["sources"]):
+            if "path" in src:
+                real = app_install.resolve_host_path(src["path"], app_install.install_dirs())
+                if src.get("sha256") and app_install.sha256_file(real) != src["sha256"]:
+                    raise app_install.InstallError(
+                        "checksum_mismatch",
+                        "sha256 of the file does not match; nothing was installed",
+                        status=422, path=os.path.basename(real),
+                    )
+                files.append(real)
+            else:
+                dest = os.path.join(workdir, f"download-{index}.apk")
+                app_install.download(
+                    src["url"], dest, src["sha256"],
+                    max_bytes=APP_INSTALL_MAX_BYTES,
+                    allow_private=APP_INSTALL_ALLOW_PRIVATE,
+                )
+                files.append(dest)
+
+        apks, obb = [], []
+        for path in files:
+            if app_install.classify_archive(path) == "apk":
+                apks.append(path)
+                continue
+            if len(files) > 1:
+                raise app_install.InstallError(
+                    "invalid_body", "install a bundle (.apks/.xapk/.apkm) on its own, not with other files"
+                )
+            extracted, obb = app_install.extract_bundle(path, workdir)
+            apks.extend(extracted)
+
+        ensure_adb_connected()
+        result = _install_apks(apks, req["options"], req["expected_package"])
+        result["sources"] = described
+        if obb:
+            result["obb_not_installed"] = obb
+        app_logger.info(
+            "install %s method=%s files=%d new=%s",
+            "ok" if result["success"] else "failed",
+            result["method"], len(apks), result.get("new_packages"),
+        )
+        return jsonify(result), (200 if result["success"] else 502)
+    except app_install.InstallError as exc:
+        app_logger.warning("install refused code=%s sources=%s", exc.code, described)
+        return jsonify(exc.as_dict()), exc.status
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.route("/apps/<package>", methods=["GET"])
+@require_auth
+def app_info(package):
+    """Whether `package` is installed, with its version."""
+    if not app_install.is_valid_package(package):
+        return jsonify({"success": False, "code": "invalid_package",
+                        "error": "not a valid Android package name"}), 400
+    if not _package_installed(package):
+        return jsonify({"success": True, "package": package, "installed": False}), 404
+    ok, out, _ = run_adb_shell(f"dumpsys package {package}", timeout=30)
+    info = app_install.parse_package_info(out if ok else "", package)
+    info.update({"success": True, "installed": True})
+    return jsonify(info)
+
+
+def _google_account_present():
+    ok, out, _ = run_adb_shell("dumpsys account")
+    return bool(ok and app_install.has_google_account(out))
+
+
+def _gsf_android_id():
+    """GSF Android ID for Google's uncertified-device form, or None.
+
+    Read from gservices.db as root. Redroid's adbd runs as root; `su 0` is a
+    fallback for images where it does not. Needs sqlite3 in the image.
+    """
+    query = "select value from main where name='android_id';"
+    db = "/data/data/com.google.android.gsf/databases/gservices.db"
+    for prefix in ("", "su 0 "):
+        ok, out, _ = run_adb_shell(f'{prefix}sqlite3 {db} "{query}"')
+        value = (out or "").strip()
+        if ok and value.isdigit():
+            return value
+    return None
+
+
+@app.route("/apps/play/status", methods=["GET"])
+@require_auth
+def play_status():
+    """What stands between this phone and installing from Play.
+
+    Reports presence only: whether a Google account exists, never its name.
+    """
+    ensure_adb_connected()
+    gapps = _gapps_status()
+    signed_in = _google_account_present() if gapps.get("ready") else False
+    gsf_id = _gsf_android_id() if gapps.get("gsf") else None
+    ready = bool(gapps.get("ready") and signed_in)
+    body = {
+        "success": True,
+        "gapps": gapps,
+        "google_account": signed_in,
+        "gsf_android_id": gsf_id,
+        "uncertified_registration_url": PLAY_UNCERTIFIED_URL,
+        "ready": ready,
+    }
+    if not ready:
+        body["owner_action"] = PLAY_OWNER_ACTION
+    return jsonify(body)
+
+
+def _play_install(payload):
+    """Drive the Play Store details page to install `package`.
+
+    Never buys: a price on the button stops the run. Never signs in: a sign-in
+    prompt stops the run and names the owner action.
+    """
+    package = payload.get("package", "")
+    if not app_install.is_valid_package(package):
+        return {"success": False, "code": "invalid_package", "error": "invalid package"}
+    timeout = int(payload.get("timeout") or PLAY_INSTALL_TIMEOUT)
+    started = _now()
+    if _package_installed(package):
+        return {"success": True, "package": package, "already_installed": True, "via": "play_store"}
+
+    uri = f"market://details?id={package}"
+    ok, out, err = run_adb_shell(
+        f"am start -a android.intent.action.VIEW -d '{uri}' com.android.vending"
+    )
+    if not ok or "Error" in f"{out}{err}":
+        return {"success": False, "package": package, "code": "play_not_launchable",
+                "error": (err or out or "am start failed").strip()}
+
+    ui_deadline = started + min(90, timeout)
+    tapped = False
+    last_state = "unknown"
+    while _now() < ui_deadline:
+        tree = _read_ui_tree()
+        screen = app_install.play_screen_state(tree.get("elements") if tree.get("success") else [])
+        last_state = screen["state"]
+        if last_state == "install":
+            target = screen["target"]
+            run_adb_shell(f"input tap {target['x']} {target['y']}")
+            tapped = True
+            app_logger.info("play install tapped package=%s", package)
+            break
+        if last_state == "installed" and _package_installed(package):
+            return {"success": True, "package": package, "already_installed": True, "via": "play_store"}
+        if last_state == "paid":
+            return {"success": False, "package": package, "code": "paid_app",
+                    "error": "this app has a price; installing from Play here never buys anything"}
+        if last_state == "sign_in":
+            return {"success": False, "package": package, "code": "play_sign_in_required",
+                    "error": "Play is asking for a Google sign-in", "owner_action": PLAY_OWNER_ACTION}
+        if last_state == "unavailable":
+            return {"success": False, "package": package, "code": "not_available",
+                    "error": "Play says this app is not available for this device or account"}
+        _sleep(2)
+
+    if not tapped:
+        return {"success": False, "package": package, "code": "install_button_not_found",
+                "error": f"no Install button on the Play page (last screen: {last_state})"}
+
+    while _now() < started + timeout:
+        if _package_installed(package):
+            return {"success": True, "package": package, "via": "play_store",
+                    "elapsed_s": int(_now() - started)}
+        _sleep(3)
+    return {"success": False, "package": package, "code": "install_timeout",
+            "error": f"{package} was not installed within {timeout}s (still downloading?)"}
+
+
+@app.route("/apps/play/install", methods=["POST"])
+@require_auth
+def play_install():
+    """Install from Google Play by package name. Requires the owner's sign-in.
+
+    Body: {"package": "com.example.app", "wait"?: false, "timeout"?: seconds}.
+    Answers 409 with `owner_action` until GApps are present and a Google
+    account is signed in on the phone; otherwise queues a job (202) or, with
+    `wait: true`, runs it in the request.
+    """
+    data = request.get_json(silent=True) or {}
+    package = data.get("package")
+    if not app_install.is_valid_package(package):
+        return jsonify({"success": False, "code": "invalid_package",
+                        "error": f"{package!r} is not a valid Android package name"}), 400
+    timeout = data.get("timeout", PLAY_INSTALL_TIMEOUT)
+    if not isinstance(timeout, int) or not 10 <= timeout <= 3600:
+        return jsonify({"success": False, "code": "invalid_timeout",
+                        "error": "timeout must be an integer between 10 and 3600 seconds"}), 400
+
+    ensure_adb_connected()
+    gapps = _gapps_status()
+    if not gapps.get("ready"):
+        return jsonify({"success": False, "code": "gapps_missing", "gapps": gapps,
+                        "error": "Play Store / Play services are not installed on this phone",
+                        "owner_action": "Run a GApps image (scripts/build-gapps-image.sh) first."}), 409
+    if not _google_account_present():
+        return jsonify({"success": False, "code": "play_sign_in_required",
+                        "error": "no Google account is signed in on this phone",
+                        "owner_action": PLAY_OWNER_ACTION}), 409
+
+    payload = {"package": package, "timeout": timeout}
+    app_logger.info("play install requested package=%s wait=%s", package, bool(data.get("wait")))
+    if data.get("wait") is True:
+        result = _play_install(payload)
+        return jsonify(result), (200 if result.get("success") else 502)
+    job_id = _start_job("play_install", payload)
+    return jsonify({"job_id": job_id, "status": "queued", "type": "play_install",
+                    "package": package}), 202
 
 # =============================================================================
 # Settings Endpoints
@@ -1627,25 +1958,7 @@ def reset_antidetect():
 # Job Queue Endpoints
 # =============================================================================
 
-@app.route("/jobs", methods=["POST"])
-@require_auth
-def create_job():
-    """
-    Create an async job and poll for result.
-
-    Body:
-    {
-        "type": "adb_shell" | "device_input" | "screen" | "screenshot"
-                | "app_start" | "app_stop" | "app_clear" | "app_uninstall",
-        "payload": { ... }
-    }
-    """
-    data = request.get_json() or {}
-    job_type = data.get("type", "")
-    payload = data.get("payload", {})
-    if not job_type:
-        return jsonify({"error": "type required"}), 400
-
+def _start_job(job_type, payload):
     _prune_jobs()
     job_id = uuid.uuid4().hex
     now = time.time()
@@ -1661,9 +1974,34 @@ def create_job():
     with _jobs_lock:
         _jobs[job_id] = job
 
-    thread = threading.Thread(target=_run_job, args=(job_id, job_type, payload), daemon=True)
+    thread = threading.Thread(
+        target=_run_job, args=(job_id, job_type, payload, current_adb_connect()), daemon=True
+    )
     thread.start()
+    return job_id
 
+
+@app.route("/jobs", methods=["POST"])
+@require_auth
+def create_job():
+    """
+    Create an async job and poll for result.
+
+    Body:
+    {
+        "type": "adb_shell" | "device_input" | "screen" | "screenshot"
+                | "app_start" | "app_stop" | "app_clear" | "app_uninstall"
+                | "play_install",
+        "payload": { ... }
+    }
+    """
+    data = request.get_json() or {}
+    job_type = data.get("type", "")
+    payload = data.get("payload", {})
+    if not job_type:
+        return jsonify({"error": "type required"}), 400
+
+    job_id = _start_job(job_type, payload)
     return jsonify({
         "job_id": job_id,
         "status": "queued",
