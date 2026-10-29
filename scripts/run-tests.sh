@@ -27,6 +27,8 @@ OFFLINE_SUITES=(
     "sessions:tests.test_user_sessions"
     "gapps:tests.test_gapps_zip"
     "gapps-health:tests.test_gapps_health"
+    "gapps-image:tests.test_gapps_image"
+    "app-install:tests.test_app_install"
     "scripts-contract:tests.test_scripts_contract"
     "ui-control:tests.test_ui_control"
     "runtime-pool:tests.test_runtime_pool"
