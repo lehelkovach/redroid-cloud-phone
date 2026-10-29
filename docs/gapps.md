@@ -10,6 +10,12 @@ The device profiles in `config/device-profiles/` set properties such as
 `ro.com.google.gmsversion`. Setting those does **not** install Play; only the
 packages below count.
 
+> **Prefer baking.** `./cloud-phone gapps-image` builds a Redroid image with
+> GApps already in `/system`, which survives container recreation and
+> redeploys; the runtime push below does not. The options, the owner's Play
+> registration and sign-in steps, and installing apps by APK or from Play are
+> in [GAPPS-AND-APP-INSTALL.md](GAPPS-AND-APP-INSTALL.md).
+
 ## Supply your own zip
 
 This repo does not ship or download a GApps package. You provide one, for

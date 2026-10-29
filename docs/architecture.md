@@ -29,7 +29,7 @@ separate golden images and separate orchestrator pools.
 | | Redroid | Cuttlefish |
 |---|---|---|
 | Runs as | Privileged Docker container on the host kernel | KVM virtual machine (`/dev/kvm`) |
-| Google Play | Yes, operator-supplied GApps zip ([gapps.md](gapps.md)) | No |
+| Google Play | Yes, GApps baked into the image ([GAPPS-AND-APP-INSTALL.md](GAPPS-AND-APP-INSTALL.md)) or pushed from a zip ([gapps.md](gapps.md)) | No |
 | Virtual camera/mic | No | Yes, via the RTMP bridge |
 | Default size on OCI | 2 OCPU / 8 GB | 4 OCPU / 24 GB |
 | Orchestrator purpose | `automation` (the default) | `camera` |

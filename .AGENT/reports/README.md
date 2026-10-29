@@ -36,4 +36,5 @@ again. Convention source: `agent-repo-boilerplate`
 
 | Date | Report | Question | Verdict |
 |---|---|---|---|
+| 2026-10-29 | [gapps-and-app-install](2026-10-29-gapps-and-app-install.md) | Which way of getting Play onto the phone fits, and can it be proven here? | Redroid + MindTheGapps 13 arm64 baked at build time; image build verified, no Android booted (sandbox has no binder/KVM) |
 | 2026-10-21 | [docs-audit](2026-10-21-docs-audit.md) | Are the docs usable by a person who has never seen the project? | They were not: agent-session notes, duplicated and contradictory pages, lab addresses in examples. Rewritten in PR #19; three owner decisions remain |

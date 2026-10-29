@@ -177,7 +177,11 @@ Screenshot as base64 plus `width`, `height` and `backend`.
 
 | Method and path | Body | Response |
 |---|---|---|
-| `GET /apps` | | `{"success", "packages": [...], "count"}` (third-party packages only) |
+| `GET /apps` | `?scope=third_party` (default), `system` or `all` | `{"success", "scope", "packages": [...], "count"}`; `400 invalid_scope`, `502` when `pm` fails |
+| `GET /apps/<package>` | | `{"success", "installed": true, "version_name", "version_code", ...}`; `404 {"installed": false}`; `400` for an invalid name |
+| `POST /apps/install` | See [Install an app](#install-an-app) | Installs an APK, split set or bundle by host path or HTTPS URL + SHA-256 |
+| `GET /apps/play/status` | | What stands between this phone and Play: `{"gapps", "google_account", "gsf_android_id", "uncertified_registration_url", "ready", "owner_action"?}` |
+| `POST /apps/play/install` | `{"package", "wait"?, "timeout"?}` | Install from Play by package name; **requires the owner's sign-in**. See below |
 | `POST /apps/<package>/start` | | See below |
 | `POST /apps/<package>/stop` | | `am force-stop`; `{"success", "message"}` |
 | `POST /apps/<package>/clear` | | `pm clear`; `{"success", "message"}` |
@@ -191,6 +195,67 @@ Screenshot as base64 plus `width`, `height` and `backend`.
 - `502` when the activity was found but `am start` reported an error.
 - `404 {"code": "not_launchable"}` when the package has no launchable activity
   (usually: not installed).
+
+### Install an app
+
+`POST /apps/install` takes exactly one source:
+
+| Body | Meaning |
+|---|---|
+| `{"path": "/opt/cloud-phone/apks/app.apk", "sha256"?: "..."}` | A file on the Control API host. Must resolve (after symlinks) inside `APP_INSTALL_DIRS`, else `403 path_not_allowed`. `sha256`, when given, is checked |
+| `{"paths": ["base.apk", "split_config.arm64_v8a.apk"]}` | A split set, installed with `adb install-multiple` |
+| `{"url": "https://...", "sha256": "..."}` | Downloaded, then checked. `sha256` is **required** (`400 checksum_required`) |
+| `{"urls": [{"url", "sha256"}, ...]}` | A split set from URLs, each with its own `sha256` |
+
+A file that is a zip with top-level `.apk` entries and no `AndroidManifest.xml`
+(`.apks`, `.xapk`, `.apkm`) is unpacked and installed with `install-multiple`;
+OBB files in it are listed in `obb_not_installed`, not pushed.
+
+Optional booleans: `replace` (default `true`, `-r`), `grant_permissions`
+(`-g`), `downgrade` (`-d`). `expected_package` makes the call fail unless that
+package is installed afterwards. Raw `adb` flags are not accepted.
+
+URLs must be `https://` (also after redirects), must not resolve to a private,
+loopback or link-local address unless `APP_INSTALL_ALLOW_PRIVATE=1`, and may
+not exceed `APP_INSTALL_MAX_BYTES`. URLs are logged and echoed as
+scheme://host/path only, so a signed URL's query string never reaches the logs.
+
+| Status | `code` | When |
+|---|---|---|
+| `200` | | `{"success": true, "method": "install"\|"install-multiple", "files", "new_packages", "sources", "package"?, "verified"?}` |
+| `400` | `invalid_body`, `checksum_required`, `invalid_checksum`, `invalid_package`, `too_many_files`, `insecure_url`, `invalid_url` | Bad request; nothing downloaded |
+| `403` | `path_not_allowed`, `private_address` | |
+| `404` | `not_found` | No file at `path` |
+| `413` | `too_large` | |
+| `422` | `checksum_mismatch`, `not_an_apk` | The file was deleted; nothing was installed. The actual digest is not returned |
+| `502` | `install_failed` (with `install_error`, e.g. `INSTALL_FAILED_VERSION_DOWNGRADE`), `download_failed`, `package_not_found_after_install` | |
+
+```bash
+curl -s -X POST $API/apps/install -H "Authorization: Bearer $API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.org/app.apk","sha256":"<64 hex>","expected_package":"org.example.app"}'
+```
+
+### Install from Google Play
+
+`POST /apps/play/install {"package": "com.example.app"}` drives the Play
+Store app on the phone: it opens `market://details?id=<package>`, taps
+**Install** and waits until `pm path` finds the package. It only works after
+the phone's owner has registered the device and signed in to Play on it
+([GAPPS-AND-APP-INSTALL.md](../GAPPS-AND-APP-INSTALL.md#play-certification-and-sign-in-the-owners-steps)).
+
+- `409 gapps_missing` when Play services or the Play Store are not installed.
+- `409 play_sign_in_required` with `owner_action` when no Google account is
+  signed in on the phone.
+- Otherwise `202 {"job_id", "type": "play_install"}`; poll `GET /jobs/<id>`.
+  With `"wait": true` it runs in the request and answers `200` or `502`.
+- Job result codes: `already_installed` (success), `paid_app` (never buys),
+  `play_sign_in_required`, `not_available`, `install_button_not_found`,
+  `install_timeout`, `play_not_launchable`.
+- `timeout` is 10 to 3600 seconds (default `PLAY_INSTALL_TIMEOUT`, 600).
+
+It reads the English Play Store labels. It reports whether a Google account
+exists, never which.
 
 ## ADB passthrough
 
@@ -283,6 +348,7 @@ so check with `GET /device/identity` rather than trusting the response.
 | `screen` | `action` |
 | `screenshot` | none |
 | `app_start`, `app_stop`, `app_clear`, `app_uninstall` | `package` |
+| `play_install` | `package`, `timeout` (same as `POST /apps/play/install`) |
 
 Returns `202 {"job_id", "status": "queued", "type"}`.
 
