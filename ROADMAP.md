@@ -37,7 +37,8 @@ Play sign-in).
 - Reset (wipe `/data`) an instance between owners and record it, so released
   phones can return to the shared pool. The lease guard already waits for
   this.
-- A systemd unit and persistent state for the orchestrator.
+- Per-owner encryption keys for browser profiles (today: one LUKS or fscrypt key for the profile root, verified only; see docs/isolation.md).
+- A short-lived signed direct browser ticket, if relayed CDP ever proves too slow across hosts (measured overhead today: well under 1 ms per message on one host).
 - Run the pytest-only tests in CI.
 
 ## Known issues

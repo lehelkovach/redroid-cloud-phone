@@ -40,6 +40,7 @@ TYPES = {
     "DKR": "docker",
     "LCT": "android logcat",
     "TST": "test harness",
+    "AUD": "relay audit (owner, lease, verb, ms, ok; never payloads)",
 }
 
 DEFAULT_TYPE = "SYS"

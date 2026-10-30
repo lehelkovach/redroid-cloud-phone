@@ -66,3 +66,19 @@ def runtime_for_purpose(purpose=None, runtime=None):
     if resolved == PURPOSE_CAMERA:
         return RUNTIME_CUTTLEFISH
     return RUNTIME_REDROID
+
+
+# Browsers are a third pool, kept out of resolve_purpose on purpose: every
+# phone code path calls that and must never receive "browser".
+PURPOSE_BROWSER = "browser"
+RUNTIME_CHROME = "chrome"
+BROWSER_ALIASES = {"browser", "web", "chrome", "chromium"}
+
+
+def is_browser_request(purpose=None, runtime=None):
+    """True when a request asks for the chrome pool rather than a phone."""
+    if _norm(runtime) in {RUNTIME_CHROME, "chromium", "mock-chrome"}:
+        return True
+    if _norm(runtime):
+        return False
+    return _norm(purpose) in BROWSER_ALIASES

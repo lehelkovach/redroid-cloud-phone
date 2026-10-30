@@ -2,15 +2,19 @@
 
 The orchestrator (`orchestrator/server.py`) keeps a pool of phones, gives each
 user one phone at a time, relays calls to the phone's Control API and runs
-procedures. Start it with `./cloud-phone orchestrator-run`. There is no systemd
-unit for it.
+procedures. Start it with `./cloud-phone orchestrator-run`, or install
+`systemd/cloud-phone-orchestrator.service`. It also leases per-owner browsers
+(the `chrome` pool) and is the authenticated relay for every browser and phone
+command: see [isolation.md](../isolation.md).
 
 Base URL: `http://<host>:8090` (`ORCH_HOST`, `ORCH_PORT`; default
-`0.0.0.0:8090`).
+`127.0.0.1:8090`). A wildcard or public bind, or a missing `ORCH_API_TOKEN`,
+makes it refuse to start (see isolation.md for the overrides).
 
-**State is in memory.** Instances, leases, sessions, operations and procedure
-results are lost when the process stops. VMs it created in `oci` mode keep
-running.
+**State.** With `ORCH_STATE_DB` set, instances, leases, phone and browser
+sessions, tenancy and ticket digests persist across restarts. Without it they
+are in memory. Operations and procedure results are always in memory. VMs it
+created in `oci` mode keep running either way.
 
 ## Authentication and health
 
@@ -21,8 +25,9 @@ The orchestrator has two tokens, one for each direction:
 | `ORCH_API_TOKEN` | Inbound | What callers of the orchestrator must send |
 | `ORCH_CONTROL_API_TOKEN` | Outbound | What the orchestrator sends to phones. Must equal the phones' `API_TOKEN`. Falls back to `ORCH_API_TOKEN`. |
 
-When `ORCH_API_TOKEN` is set, every endpoint except `GET /health` needs
-`Authorization: Bearer <ORCH_API_TOKEN>`. A rejected call gets `401` with
+Every endpoint except `GET /health` and `/relay/*` needs
+`Authorization: Bearer <ORCH_API_TOKEN>`. `/relay/*` takes a session ticket
+instead (below). A rejected call gets `401` with
 `code: "auth_required"` or `"auth_invalid"`, in the same shape as the Control
 API.
 
@@ -215,3 +220,65 @@ A procedure record:
 `GET /logs?type=ORC,CMD&n=200` returns the orchestrator's own recent log
 lines, in the same format as the Control API's `/logs`. Unlike the Control
 API, this endpoint requires the token.
+
+## Browsers, tickets and the relay
+
+Full description in [isolation.md](../isolation.md).
+
+### `POST /sessions` with `purpose: "browser"`
+
+```json
+{"owner_user_id": "slack:U0EXAMPLE", "purpose": "browser", "ttl_seconds": 3600,
+ "proxy": {"id": "owner-resi", "upstream": "http://user:pass@proxy.example:8000"},
+ "lease_id": "bl-... (optional: renew this lease; another owner's is 403)"}
+```
+
+`201` (new) / `200` (renewed):
+
+```json
+{"success": true, "created": true,
+ "session": {"lease_id": "bl-…", "owner_user_id": "…", "owner_token": "slack-U0EXAMPLE-1a2b3c4d",
+             "purpose": "browser", "runtime": "chrome", "chrome_runtime": "docker",
+             "profile_dir": "/var/lib/cloud-phone-orchestrator/profiles/slack-U0EXAMPLE-1a2b3c4d",
+             "proxy_id": "owner-resi", "proxy_upstream": "http://proxy.example:8000", "egress": "owner",
+             "acquired_at": 0, "expires_at": 0, "ttl_seconds": 3600, "renewals": 0},
+ "ticket": "ort_…", "ticket_id": "…", "ticket_expires_at": 0,
+ "relay": {"cdp_ws_url": "ws://<orchestrator>/relay/cdp/bl-…"}}
+```
+
+Refusals: `400 owner_required`, `403 forbidden` (another owner's lease),
+`409 at_capacity`, `409 proxy_changed`, `503 profile_not_encrypted`.
+
+`GET /sessions/<owner>?purpose=browser` and `DELETE /sessions/<owner>?purpose=browser`
+read and release it (release keeps the profile: `"profile_kept": true`).
+`GET /sessions` lists `browser_sessions` next to the phone `sessions`.
+
+A phone `POST /sessions` now also returns `ticket`, `ticket_id`,
+`ticket_expires_at` and `relay: {phone_api_url, phone_stream_url}`, and the
+session carries a `lease_id` and `expires_at`.
+
+### Tickets
+
+| Endpoint | Body | Result |
+|---|---|---|
+| `POST /tickets` | `{owner_user_id, purpose?, lease_id?, ttl_seconds?}` | A fresh ticket for that owner's own current lease. `403` for another owner's `lease_id`, `404` if the owner holds none. |
+| `POST /tickets/revoke` | `{ticket}` or `{ticket_id}` | `{revoked: bool}` |
+| `POST /sessions/<owner>/kill` | `{purpose?}` | Kill switch: revokes every ticket for the lease and drops its open streams. `{tickets_revoked, streams_dropped}` |
+
+### Profiles
+
+| Endpoint | Notes |
+|---|---|
+| `GET /profiles/<owner>` | `{owner_token, profile_dir, exists, mode}` |
+| `DELETE /profiles/<owner>` | Body `{"confirm": "<owner>"}` (`400` otherwise). `409 lease_active` while leased. |
+
+### Relay (ticket auth, no orchestrator token)
+
+| Route | Notes |
+|---|---|
+| `WS /relay/cdp/<lease_id>` | DevTools of the ticket's browser. Close codes: 4401 ticket, 4410 killed, 4502 browser gone. Over the rate limit a command gets `{"id": n, "error": {"code": -32000, "message": "rate limited by orchestrator relay"}}`. |
+| `GET/POST/PUT/DELETE /relay/phone/<path>` | Control API of the ticket's phone; `429` over the limit; `config` and `..` refused. |
+| `WS /relay/phone/stream` | Screen frames `{"type": "frame", "seq": n, "frame": {...}}` out; input events in. |
+
+With `ORCH_REQUIRE_TICKETS=1` the older `/phones/<instance_id>/*` routes
+answer `403 tickets_required`.

@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 try:
     from orchestrator.runtimes import (
@@ -45,8 +45,25 @@ except ImportError:  # python orchestrator/server.py
 
 try:
     from orchestrator import procedures as proc
+    from orchestrator import browser_pool as bp
+    from orchestrator import relay as rly
+    from orchestrator.state_store import StateStore, redact_upstream
+    from orchestrator.proxy_relay import LeaseProxyRelay
+    from orchestrator.runtimes import is_browser_request
 except ImportError:  # running server.py directly
     import procedures as proc
+    import browser_pool as bp  # type: ignore
+    import relay as rly  # type: ignore
+    from state_store import StateStore, redact_upstream  # type: ignore
+    from proxy_relay import LeaseProxyRelay  # type: ignore
+    from runtimes import is_browser_request  # type: ignore
+
+try:  # WebSocket relay (CDP, phone screen). Optional so the phone API runs without it.
+    import simple_websocket
+    from simple_websocket import ConnectionClosed as _WsClosed
+except ImportError:  # pragma: no cover - exercised only where the dep is missing
+    simple_websocket = None
+    _WsClosed = Exception
 
 try:
     from api.cloudphone_logging import configure as _configure_logging
@@ -58,6 +75,28 @@ except ImportError:
     from api.cloudphone_logging import redact, recent_logs
 
 app = Flask(__name__)
+
+
+class _RedactTicketFilter:
+    """Keep `?ticket=` values out of the access log (werkzeug logs the request line)."""
+
+    import re as _re
+    _pattern = _re.compile(r"(ticket=)[^&\s\"']+")
+
+    def filter(self, record):
+        try:
+            if record.args:
+                record.args = tuple(self._pattern.sub(r"\1[redacted]", a) if isinstance(a, str) else a
+                                    for a in (record.args if isinstance(record.args, tuple) else (record.args,)))
+            if isinstance(record.msg, str):
+                record.msg = self._pattern.sub(r"\1[redacted]", record.msg)
+        except Exception:  # noqa: BLE001 - a log filter must never break a request
+            pass
+        return True
+
+
+import logging as _logging  # noqa: E402
+_logging.getLogger("werkzeug").addFilter(_RedactTicketFilter())
 
 LOG_LEVEL = os.environ.get("ORCH_LOG_LEVEL", os.environ.get("LOG_LEVEL", "INFO")).upper()
 logger = _configure_logging("orchestrator", log_type="ORC", level=LOG_LEVEL)
@@ -105,6 +144,25 @@ ORCH_OCI_PROFILE = os.environ.get("ORCH_OCI_PROFILE", "DEFAULT")
 ORCH_OCI_CONFIG = os.environ.get("ORCH_OCI_CONFIG", str(Path.home() / ".oci" / "config"))
 ORCH_OCI_AUTH = os.environ.get("ORCH_OCI_AUTH", "security_token")
 
+# Isolation: persisted state, the chrome pool, and the ticketed relay.
+# docs/isolation.md explains each one; docs/configuration.md lists them.
+ORCH_STATE_DB = os.environ.get("ORCH_STATE_DB", "")
+ORCH_PROFILE_ROOT = os.environ.get("ORCH_PROFILE_ROOT", "/var/lib/cloud-phone-orchestrator/profiles")
+ORCH_PROFILE_ENCRYPTION = os.environ.get("ORCH_PROFILE_ENCRYPTION", "none")
+ORCH_CHROME_RUNTIME = os.environ.get("ORCH_CHROME_RUNTIME", "")
+ORCH_CHROME_BIN = os.environ.get("ORCH_CHROME_BIN", "")
+ORCH_CHROME_IMAGE = os.environ.get("ORCH_CHROME_IMAGE", "")
+ORCH_CHROME_NETWORK = os.environ.get("ORCH_CHROME_NETWORK", "cloud-phone-browsers")
+ORCH_CHROME_CDP_PORT_BASE = int(os.environ.get("ORCH_CHROME_CDP_PORT_BASE", "19222"))
+ORCH_MAX_CHROME_INSTANCES = int(os.environ.get("ORCH_MAX_CHROME_INSTANCES", "4"))
+ORCH_CHROME_RELAY_BIND = os.environ.get("ORCH_CHROME_RELAY_BIND", "127.0.0.1")
+ORCH_TICKET_TTL_SECONDS = int(os.environ.get("ORCH_TICKET_TTL_SECONDS", "300"))
+ORCH_RELAY_RATE = float(os.environ.get("ORCH_RELAY_RATE", "50"))
+ORCH_RELAY_BURST = int(os.environ.get("ORCH_RELAY_BURST", "200"))
+ORCH_REQUIRE_TICKETS = os.environ.get("ORCH_REQUIRE_TICKETS", "").lower() in {"1", "true", "yes"}
+ORCH_PUBLIC_URL = os.environ.get("ORCH_PUBLIC_URL", "")
+ORCH_PHONE_FPS = float(os.environ.get("ORCH_PHONE_FPS", "4"))
+
 # In-memory state
 _instances = {}
 _instances_lock = threading.Lock()
@@ -123,6 +181,20 @@ _user_sessions = {}
 _user_sessions_lock = threading.Lock()
 _next_adb_port = ORCH_REDROID_ADB_PORT_BASE
 _adb_port_lock = threading.Lock()
+
+# Write-through persistence (state_store.py). In memory until init_state()
+# opens ORCH_STATE_DB; the __main__ block does that before serving.
+_store = StateStore(":memory:")
+
+
+def _persist(namespace, key, value):
+    try:
+        if value is None:
+            _store.delete(namespace, key)
+        else:
+            _store.put(namespace, key, value)
+    except Exception:  # noqa: BLE001 - a failed write must be loud, not fatal
+        logger.exception("state write failed namespace=%s", namespace)
 def _presented_token():
     header = request.headers.get("Authorization", "")
     if header.lower().startswith("bearer "):
@@ -160,6 +232,17 @@ def _require_auth():
 def _auth_middleware():
     if request.path == "/health":
         return None
+    if request.path.startswith("/relay/"):
+        # The relay authenticates by session ticket (checked in each route),
+        # not by the orchestrator token: a ticket is what OSLO hands a session
+        # or the Watch page, and it opens one lease only.
+        return None
+    if ORCH_REQUIRE_TICKETS and request.path.startswith("/phones/"):
+        return jsonify({
+            "success": False,
+            "error": "direct phone routes are off (ORCH_REQUIRE_TICKETS=1); use /relay/phone with a session ticket",
+            "code": "tickets_required",
+        }), 403
     return _require_auth()
 
 
@@ -188,6 +271,8 @@ def _set_lease(instance_id, owner, ttl_seconds):
             "owner": owner,
             "expires_at": time.time() + ttl_seconds
         }
+        snapshot = dict(_leases[instance_id])
+    _persist("leases", instance_id, snapshot)
     # The guard can only refuse what it knows about, so recording is part of
     # taking the lease rather than a separate step someone has to remember.
     record_tenancy(instance_id, owner)
@@ -199,6 +284,8 @@ def record_tenancy(instance_id, owner):
         entry = _instance_tenancy.setdefault(instance_id, {})
         entry["last_owner"] = owner
         entry["last_used_at"] = time.time()
+        snapshot = dict(entry)
+    _persist("tenancy", instance_id, snapshot)
 
 
 def record_reset(instance_id):
@@ -210,6 +297,8 @@ def record_reset(instance_id):
     with _instance_tenancy_lock:
         entry = _instance_tenancy.setdefault(instance_id, {})
         entry["reset_at"] = time.time()
+        snapshot = dict(entry)
+    _persist("tenancy", instance_id, snapshot)
 
 
 def lease_decision(instance_id, owner):
@@ -244,6 +333,8 @@ def can_lease_to(instance_id, owner):
 def _clear_lease(instance_id):
     with _leases_lock:
         _leases.pop(instance_id, None)
+    if instance_id:
+        _persist("leases", instance_id, None)
 
 
 def _is_lease_valid(instance_id, owner=None):
@@ -350,6 +441,7 @@ def _create_instance_record(api_url: str, name: str, runtime=None, purpose=None,
         record.update(extra)
     with _instances_lock:
         _instances[inst_id] = record
+    _persist("instances", inst_id, record)
     logger.info(
         "Instance registered id=%s name=%s api_url=%s mode=%s runtime=%s purpose=%s",
         inst_id, name, api_url, ORCH_DEPLOY_MODE, runtime, purpose,
@@ -468,6 +560,8 @@ def _provision_oci(runtime, purpose):
 
 
 def _provision_instance(purpose=None, runtime=None):
+    if is_browser_request(purpose, runtime):
+        raise ValueError("browser leases go through POST /sessions with purpose=browser")
     purpose = resolve_purpose(purpose, runtime)
     runtime = runtime_for_purpose(purpose)
 
@@ -491,7 +585,7 @@ def _provision_instance(purpose=None, runtime=None):
             name,
             runtime=runtime,
             purpose=purpose,
-            adb_connect="mock://phone",
+            adb_connect=f"mock://phone-{uuid.uuid4().hex[:8]}",
         )
 
     if runtime == RUNTIME_REDROID and ORCH_DEPLOY_MODE == "redroid":
@@ -720,12 +814,14 @@ def delete_instance(instance_id):
             logger.warning("redroid-down failed: %s", exc)
         with _instances_lock:
             _instances.pop(instance_id, None)
+        _persist("instances", instance_id, None)
         _clear_lease(instance_id)
         return jsonify({"success": True, "message": "redroid container removed"}), 200
 
     if inst.get("mode") != "oci":
         with _instances_lock:
             _instances.pop(instance_id, None)
+        _persist("instances", instance_id, None)
         return jsonify({"success": True, "message": "instance removed"}), 200
 
     try:
@@ -734,6 +830,7 @@ def delete_instance(instance_id):
         return jsonify({"error": str(exc)}), 500
     with _instances_lock:
         _instances.pop(instance_id, None)
+    _persist("instances", instance_id, None)
     return jsonify({"success": True, "message": "instance terminated"}), 200
 
 
@@ -1163,6 +1260,9 @@ def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpo
                 _set_lease(inst_id, owner_user_id, ttl_seconds)
                 existing["ttl_seconds"] = ttl_seconds
                 existing["purpose"] = purpose
+                existing["expires_at"] = time.time() + ttl_seconds
+                existing.setdefault("lease_id", "pl-" + uuid.uuid4().hex[:16])
+                _persist("user_sessions", owner_user_id, existing)
                 logger.info("Renewed session owner=%s instance=%s runtime=%s", owner_user_id, inst_id, runtime)
                 return existing, False
             if inst_id and not same_runtime:
@@ -1171,7 +1271,11 @@ def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpo
                     owner_user_id, existing.get("purpose"), purpose, inst_id,
                 )
                 _clear_lease(inst_id)
-                _user_sessions.pop(owner_user_id, None)
+                old = _user_sessions.pop(owner_user_id, None)
+                _persist("user_sessions", owner_user_id, None)
+                if old and old.get("lease_id"):
+                    _tickets.revoke_lease(old["lease_id"])
+                    _streams.kill(old["lease_id"], "killed")
 
     inst = _get_or_create_instance(purpose=purpose, runtime=runtime, provision=provision)
     if _is_lease_valid(inst["id"]) and not _is_lease_valid(inst["id"], owner=owner_user_id):
@@ -1184,8 +1288,11 @@ def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpo
         raise RuntimeError(f"phone not clean: {why}")
     _set_lease(inst["id"], owner_user_id, ttl_seconds)
     sess = _session_from_instance(owner_user_id, inst, ttl_seconds, purpose)
+    sess["lease_id"] = "pl-" + uuid.uuid4().hex[:16]
+    sess["expires_at"] = time.time() + ttl_seconds
     with _user_sessions_lock:
         _user_sessions[owner_user_id] = sess
+    _persist("user_sessions", owner_user_id, sess)
     logger.info(
         "Acquired session owner=%s instance=%s runtime=%s purpose=%s",
         owner_user_id, inst["id"], sess["runtime"], purpose,
@@ -1198,21 +1305,37 @@ def _release_user_session(owner_user_id):
         sess = _user_sessions.pop(owner_user_id, None)
     if not sess:
         return None
+    _persist("user_sessions", owner_user_id, None)
     _clear_lease(sess.get("instance_id"))
+    if sess.get("lease_id"):
+        # Releasing the phone ends every ticket and stream that routed to it.
+        _tickets.revoke_lease(sess["lease_id"])
+        _streams.kill(sess["lease_id"], "killed")
     logger.info("Released session owner=%s instance=%s", owner_user_id, sess.get("instance_id"))
     return sess
 
 
 @app.route("/pool", methods=["GET"])
 def get_pool():
-    return jsonify({"success": True, "pool": _pool_snapshot()})
+    return jsonify({"success": True, "pool": {**_pool_snapshot(), bp.PURPOSE_BROWSER: _browser_pool_snapshot()}})
+
+
+def _session_purpose_args(data=None):
+    data = data or {}
+    purpose = data.get("purpose") or request.args.get("purpose")
+    runtime = data.get("runtime") or request.args.get("runtime")
+    return purpose, runtime
 
 
 @app.route("/sessions", methods=["GET"])
 def list_sessions():
+    _reap_browser_sessions()
     with _user_sessions_lock:
         items = list(_user_sessions.values())
-    return jsonify({"count": len(items), "sessions": items})
+    with _browser_lock:
+        browsers = [bp.public_view(s) for s in _browser_sessions.values()]
+    return jsonify({"count": len(items), "sessions": items,
+                    "browser_count": len(browsers), "browser_sessions": browsers})
 
 
 @app.route("/sessions", methods=["POST"])
@@ -1220,14 +1343,17 @@ def create_session():
     data = request.get_json() or {}
     owner = data.get("owner_user_id") or data.get("owner") or data.get("user_id")
     ttl = int(data.get("ttl_seconds") or data.get("ttl") or 3600)
+    purpose, runtime = _session_purpose_args(data)
+    if is_browser_request(purpose, runtime):
+        return _create_browser_session(owner, ttl, data)
     provision = True if "provision" not in data else bool(data.get("provision"))
     try:
         sess, created = _acquire_user_session(
             owner,
             ttl,
             provision=provision,
-            purpose=data.get("purpose"),
-            runtime=data.get("runtime"),
+            purpose=purpose,
+            runtime=runtime,
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -1241,11 +1367,21 @@ def create_session():
         )
         status = 409 if conflict else 500
         return jsonify({"error": str(exc)}), status
-    return jsonify({"success": True, "session": sess, "created": created}), (201 if created else 200)
+    body = {"success": True, "session": sess, "created": created}
+    body.update(_phone_ticket_body(sess))
+    return jsonify(body), (201 if created else 200)
 
 
 @app.route("/sessions/<owner_user_id>", methods=["GET"])
 def get_session(owner_user_id):
+    purpose, runtime = _session_purpose_args()
+    if is_browser_request(purpose, runtime):
+        _reap_browser_sessions()
+        with _browser_lock:
+            sess = _browser_sessions.get(owner_user_id)
+        if not sess:
+            return jsonify({"error": "session not found"}), 404
+        return jsonify(bp.public_view(sess))
     with _user_sessions_lock:
         sess = _user_sessions.get(owner_user_id)
     if not sess:
@@ -1258,10 +1394,588 @@ def get_session(owner_user_id):
 
 @app.route("/sessions/<owner_user_id>", methods=["DELETE"])
 def delete_session(owner_user_id):
+    purpose, runtime = _session_purpose_args(request.get_json(silent=True) or {})
+    if is_browser_request(purpose, runtime):
+        sess = _release_browser_session(owner_user_id)
+        if not sess:
+            return jsonify({"error": "session not found"}), 404
+        # The profile stays: release is not deletion (DELETE /profiles/<owner>).
+        return jsonify({"success": True, "released": bp.public_view(sess), "profile_kept": True})
     sess = _release_user_session(owner_user_id)
     if not sess:
         return jsonify({"error": "session not found"}), 404
     return jsonify({"success": True, "session": sess, "released": sess})
+
+
+# ==========================================================================
+# Isolation: the chrome pool, tickets, and the relay (docs/isolation.md)
+# ==========================================================================
+
+_browser_sessions = {}          # owner_user_id -> session (persisted "browser_sessions")
+_browser_lock = threading.RLock()
+_proxy_relays = {}              # lease_id -> LeaseProxyRelay; memory only, holds a credential
+_chrome_runtime = None
+
+
+def _default_chrome_runtime():
+    mode = (ORCH_CHROME_RUNTIME or ("mock" if ORCH_DEPLOY_MODE == "mock" else "docker")).lower()
+    if mode == "mock":
+        return bp.MockChromeRuntime()
+    if mode == "local":
+        return bp.LocalChromeRuntime(ORCH_CHROME_BIN)
+    if mode == "docker":
+        return bp.DockerChromeRuntime(ORCH_CHROME_IMAGE, ORCH_CHROME_NETWORK)
+    raise RuntimeError(f"Unsupported ORCH_CHROME_RUNTIME: {mode}")
+
+
+def chrome_runtime():
+    global _chrome_runtime
+    if _chrome_runtime is None:
+        _chrome_runtime = _default_chrome_runtime()
+    return _chrome_runtime
+
+
+def set_chrome_runtime(runtime):
+    """Tests (and embedders) swap the runtime; None returns to the default."""
+    global _chrome_runtime
+    _chrome_runtime = runtime
+
+
+def _lease_check(record):
+    """Is the lease a ticket names still held by the ticket's owner?"""
+    owner = record.get("owner")
+    lease_id = record.get("lease_id")
+    if record.get("kind") == "browser":
+        with _browser_lock:
+            sess = _browser_sessions.get(owner)
+        if not sess or sess.get("lease_id") != lease_id:
+            return False, "browser lease released or reassigned"
+        if sess.get("expires_at", 0) <= time.time():
+            return False, "browser lease expired"
+        return True, None
+    if record.get("kind") == "phone":
+        with _user_sessions_lock:
+            sess = _user_sessions.get(owner)
+        if not sess or sess.get("lease_id") != lease_id:
+            return False, "phone lease released or reassigned"
+        if not _is_lease_valid(sess.get("instance_id"), owner=owner):
+            return False, "phone lease expired"
+        return True, None
+    return False, "unknown ticket kind"
+
+
+_tickets = rly.TicketBook(store=None, lease_check=_lease_check)
+_limiter = rly.RateLimiter(ORCH_RELAY_RATE, ORCH_RELAY_BURST)
+_audit = rly.Audit(logger.bind("AUD"))
+_streams = rly.StreamRegistry()
+
+
+def init_state(path=None):
+    """Open the state database and refill every in-memory table from it.
+
+    Called once at start. After it, a restarted orchestrator knows exactly the
+    owners, leases, profiles and (revoked) tickets it knew before.
+    """
+    global _store
+    path = path if path is not None else ORCH_STATE_DB
+    try:
+        _store.close()
+    except Exception:  # noqa: BLE001
+        pass
+    _store = StateStore(path or ":memory:")
+    _tickets.store = _store
+    with _instances_lock:
+        _instances.clear()
+        _instances.update(_store.load("instances"))
+    with _leases_lock:
+        _leases.clear()
+        _leases.update(_store.load("leases"))
+    with _instance_tenancy_lock:
+        _instance_tenancy.clear()
+        _instance_tenancy.update(_store.load("tenancy"))
+    with _user_sessions_lock:
+        _user_sessions.clear()
+        _user_sessions.update(_store.load("user_sessions"))
+    with _browser_lock:
+        _browser_sessions.clear()
+        _browser_sessions.update(_store.load("browser_sessions"))
+    _tickets.load()
+    logger.info(
+        "State %s: instances=%d leases=%d phone_sessions=%d browser_sessions=%d",
+        "loaded from " + path if path and path != ":memory:" else "in memory only",
+        len(_instances), len(_leases), len(_user_sessions), len(_browser_sessions),
+    )
+    return _store
+
+
+def _persist_browser(owner, sess):
+    _persist("browser_sessions", owner, sess)
+
+
+def _free_cdp_port():
+    with _browser_lock:
+        taken = {s.get("cdp_port") for s in _browser_sessions.values()}
+    for port in range(ORCH_CHROME_CDP_PORT_BASE, ORCH_CHROME_CDP_PORT_BASE + ORCH_MAX_CHROME_INSTANCES):
+        if port not in taken:
+            return port
+    return None
+
+
+def _stop_browser(sess):
+    """Stop the browser and its proxy relay. The profile is never touched here."""
+    try:
+        chrome_runtime().stop(sess)
+    except Exception:  # noqa: BLE001
+        logger.exception("chrome stop failed lease=%s", sess.get("lease_id"))
+    relay_srv = _proxy_relays.pop(sess.get("lease_id"), None)
+    if relay_srv is not None:
+        relay_srv.stop()
+    _tickets.revoke_lease(sess.get("lease_id"))
+    _streams.kill(sess.get("lease_id"), "killed")
+    _limiter.forget(sess.get("lease_id"))
+
+
+def _reap_browser_sessions(now=None):
+    now = now or time.time()
+    with _browser_lock:
+        expired = [(o, s) for o, s in _browser_sessions.items() if s.get("expires_at", 0) <= now]
+        for owner, _ in expired:
+            _browser_sessions.pop(owner, None)
+    for owner, sess in expired:
+        _persist_browser(owner, None)
+        _stop_browser(sess)
+        logger.info("Browser lease expired owner=%s lease=%s (profile kept)",
+                    sess.get("owner_token"), sess.get("lease_id"))
+    return [s for _, s in expired]
+
+
+def _proxy_from_request(data):
+    proxy = data.get("proxy") if isinstance(data.get("proxy"), dict) else {}
+    proxy_id = str(proxy.get("id") or data.get("proxy_id") or "").strip()
+    upstream = proxy.get("upstream") or data.get("proxy_upstream") or None
+    if upstream and not proxy_id:
+        proxy_id = (redact_upstream(upstream) or "proxy").split("://")[-1]
+    return (proxy_id or "direct"), (str(upstream) if upstream else None)
+
+
+def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_upstream=None, lease_id=None):
+    owner = str(owner or "").strip()
+    if not owner:
+        raise bp.LeaseError("owner_required", "owner_user_id required", 400)
+    _reap_browser_sessions()
+    ttl = bp.clamp_ttl(ttl_seconds)
+    with _browser_lock:
+        if lease_id:
+            holder = next((s for s in _browser_sessions.values() if s.get("lease_id") == lease_id), None)
+            if holder is not None and holder.get("owner_user_id") != owner:
+                # Never reassigned. The refusal does not say whose it is.
+                raise bp.LeaseError("forbidden", "that lease belongs to another account", 403)
+        mine = _browser_sessions.get(owner)
+        if mine:
+            if proxy_upstream is not None and proxy_id != mine.get("proxy_id"):
+                raise bp.LeaseError(
+                    "proxy_changed",
+                    "this lease runs behind another exit; release it before changing the proxy "
+                    "(cookies travel with the exit that earned them)",
+                )
+            mine["expires_at"] = time.time() + ttl
+            mine["ttl_seconds"] = ttl
+            mine["renewals"] = int(mine.get("renewals", 0)) + 1
+            _persist_browser(owner, mine)
+            return mine, False
+        if len(_browser_sessions) >= ORCH_MAX_CHROME_INSTANCES:
+            raise bp.LeaseError("at_capacity", f"all {ORCH_MAX_CHROME_INSTANCES} browser slots are leased")
+        port = _free_cdp_port()
+        if port is None:
+            raise bp.LeaseError("at_capacity", "no free DevTools port")
+        bp.ensure_profile_root(ORCH_PROFILE_ROOT)
+        ok, detail = bp.check_profile_encryption(ORCH_PROFILE_ROOT, ORCH_PROFILE_ENCRYPTION)
+        if not ok:
+            raise bp.LeaseError("profile_not_encrypted", f"refusing to create a profile: {detail}", 503)
+        profile = bp.ensure_profile_dir(ORCH_PROFILE_ROOT, owner)
+        t = time.time()
+        sess = {
+            "lease_id": "bl-" + uuid.uuid4().hex[:16],
+            "owner_user_id": owner,
+            "owner_token": bp.owner_token(owner),
+            "purpose": bp.PURPOSE_BROWSER,
+            "runtime": bp.RUNTIME_CHROME,
+            "chrome_runtime": chrome_runtime().name,
+            "profile_dir": profile,
+            "cdp_port": port,
+            "proxy_id": proxy_id or "direct",
+            "proxy_upstream": redact_upstream(proxy_upstream),
+            "egress": "owner" if proxy_upstream else "direct",
+            "acquired_at": t,
+            "expires_at": t + ttl,
+            "ttl_seconds": ttl,
+            "renewals": 0,
+        }
+        proxy_server = None
+        if proxy_upstream:
+            if "@" in proxy_upstream and chrome_runtime().name != "mock":
+                relay_srv = LeaseProxyRelay(proxy_upstream, bind=ORCH_CHROME_RELAY_BIND).start()
+                _proxy_relays[sess["lease_id"]] = relay_srv
+                proxy_server = relay_srv.server
+            else:
+                proxy_server = proxy_upstream if "@" not in proxy_upstream else "per-lease-relay"
+        started = chrome_runtime().start(sess, proxy_server=proxy_server)
+        sess.update({k: v for k, v in (started or {}).items() if v is not None})
+        _browser_sessions[owner] = sess
+        _persist_browser(owner, sess)
+    logger.info("Browser lease owner=%s lease=%s runtime=%s egress=%s",
+                sess["owner_token"], sess["lease_id"], sess["chrome_runtime"], sess["egress"])
+    return sess, True
+
+
+def _release_browser_session(owner):
+    with _browser_lock:
+        sess = _browser_sessions.pop(owner, None)
+    if not sess:
+        return None
+    _persist_browser(owner, None)
+    _stop_browser(sess)
+    logger.info("Browser released owner=%s lease=%s (profile kept)", sess.get("owner_token"), sess.get("lease_id"))
+    return sess
+
+
+def _relay_base():
+    base = (ORCH_PUBLIC_URL or request.host_url).rstrip("/")
+    return base
+
+
+def _ws_base():
+    base = _relay_base()
+    return "wss://" + base[len("https://"):] if base.startswith("https://") else "ws://" + base.split("://", 1)[-1]
+
+
+def _browser_ticket_body(sess, ttl=None):
+    token, rec = _tickets.mint(owner=sess["owner_user_id"], owner_token=sess["owner_token"],
+                               lease_id=sess["lease_id"], kind="browser",
+                               ttl=ttl or ORCH_TICKET_TTL_SECONDS, not_after=sess["expires_at"])
+    return {
+        "ticket": token,
+        "ticket_id": rec["id"],
+        "ticket_expires_at": rec["expires_at"],
+        "relay": {"cdp_ws_url": f"{_ws_base()}/relay/cdp/{sess['lease_id']}"},
+    }
+
+
+def _phone_ticket_body(sess, ttl=None):
+    if not sess.get("lease_id"):
+        return {}
+    expires = sess.get("expires_at") or (time.time() + int(sess.get("ttl_seconds") or 60))
+    token, rec = _tickets.mint(owner=sess["owner_user_id"], owner_token=bp.owner_token(sess["owner_user_id"]),
+                               lease_id=sess["lease_id"], kind="phone",
+                               ttl=ttl or ORCH_TICKET_TTL_SECONDS, not_after=expires)
+    return {
+        "ticket": token,
+        "ticket_id": rec["id"],
+        "ticket_expires_at": rec["expires_at"],
+        "relay": {
+            "phone_api_url": f"{_relay_base()}/relay/phone",
+            "phone_stream_url": f"{_ws_base()}/relay/phone/stream",
+        },
+    }
+
+
+def _create_browser_session(owner, ttl, data):
+    proxy_id, upstream = _proxy_from_request(data)
+    try:
+        sess, created = _acquire_browser_session(owner, ttl, proxy_id=proxy_id, proxy_upstream=upstream,
+                                                 lease_id=data.get("lease_id"))
+    except bp.LeaseError as exc:
+        return jsonify({"error": str(exc), "code": exc.code}), exc.status
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc), "code": "runtime_failed"}), 500
+    body = {"success": True, "session": bp.public_view(sess), "created": created}
+    body.update(_browser_ticket_body(sess))
+    return jsonify(body), (201 if created else 200)
+
+
+@app.route("/tickets", methods=["POST"])
+def mint_ticket():
+    """A fresh ticket for the caller's OWN current lease. Never for someone else's."""
+    data = request.get_json() or {}
+    owner = str(data.get("owner_user_id") or data.get("owner") or "").strip()
+    if not owner:
+        return jsonify({"error": "owner_user_id required"}), 400
+    ttl = data.get("ttl_seconds") or ORCH_TICKET_TTL_SECONDS
+    if is_browser_request(data.get("purpose"), data.get("runtime")):
+        _reap_browser_sessions()
+        with _browser_lock:
+            sess = _browser_sessions.get(owner)
+            foreign = any(s.get("lease_id") == data.get("lease_id") and o != owner
+                          for o, s in _browser_sessions.items())
+        if foreign:
+            return jsonify({"error": "that lease belongs to another account", "code": "forbidden"}), 403
+        if not sess or (data.get("lease_id") and data["lease_id"] != sess["lease_id"]):
+            return jsonify({"error": "no browser lease for this owner", "code": "no_such_lease"}), 404
+        return jsonify({"success": True, **_browser_ticket_body(sess, ttl)}), 201
+    with _user_sessions_lock:
+        sess = _user_sessions.get(owner)
+        foreign = any(s.get("lease_id") == data.get("lease_id") and o != owner
+                      for o, s in _user_sessions.items())
+    if foreign:
+        return jsonify({"error": "that lease belongs to another account", "code": "forbidden"}), 403
+    if not sess or not _is_lease_valid(sess.get("instance_id"), owner=owner):
+        return jsonify({"error": "no phone lease for this owner", "code": "no_such_lease"}), 404
+    if data.get("lease_id") and data["lease_id"] != sess.get("lease_id"):
+        return jsonify({"error": "no such lease for this owner", "code": "no_such_lease"}), 404
+    return jsonify({"success": True, **_phone_ticket_body(sess, ttl)}), 201
+
+
+@app.route("/tickets/revoke", methods=["POST"])
+def revoke_ticket():
+    data = request.get_json() or {}
+    if data.get("ticket"):
+        revoked = _tickets.revoke(data["ticket"])
+    elif data.get("ticket_id"):
+        key, _ = _tickets.find_by_id(str(data["ticket_id"]))
+        revoked = _tickets.revoke_digest(key) if key else False
+    else:
+        return jsonify({"error": "ticket or ticket_id required"}), 400
+    return jsonify({"success": True, "revoked": revoked})
+
+
+@app.route("/sessions/<owner_user_id>/kill", methods=["POST"])
+def kill_session_streams(owner_user_id):
+    """Kill switch: revoke every ticket for the owner's lease and drop its streams now."""
+    data = request.get_json(silent=True) or {}
+    purpose, runtime = _session_purpose_args(data)
+    if is_browser_request(purpose, runtime):
+        with _browser_lock:
+            sess = _browser_sessions.get(owner_user_id)
+    else:
+        with _user_sessions_lock:
+            sess = _user_sessions.get(owner_user_id)
+    if not sess or not sess.get("lease_id"):
+        return jsonify({"error": "session not found"}), 404
+    revoked = _tickets.revoke_lease(sess["lease_id"])
+    dropped = _streams.kill(sess["lease_id"], "killed")
+    logger.warning("Kill switch owner=%s lease=%s revoked=%d dropped=%d",
+                   bp.owner_token(owner_user_id), sess["lease_id"], revoked, dropped)
+    return jsonify({"success": True, "lease_id": sess["lease_id"], "tickets_revoked": revoked,
+                    "streams_dropped": dropped})
+
+
+@app.route("/profiles/<owner_user_id>", methods=["GET"])
+def get_profile(owner_user_id):
+    try:
+        path = bp.profile_dir_for(ORCH_PROFILE_ROOT, owner_user_id)
+    except bp.LeaseError as exc:
+        return jsonify({"error": str(exc)}), exc.status
+    exists = os.path.isdir(path) and not os.path.islink(path)
+    mode = oct(os.stat(path).st_mode & 0o777) if exists else None
+    return jsonify({"owner_token": bp.owner_token(owner_user_id), "profile_dir": path,
+                    "exists": exists, "mode": mode})
+
+
+@app.route("/profiles/<owner_user_id>", methods=["DELETE"])
+def delete_profile(owner_user_id):
+    """Delete an owner's browser profile. Separate, explicit, and confirmed."""
+    data = request.get_json(silent=True) or {}
+    if data.get("confirm") != owner_user_id:
+        return jsonify({"error": "confirm must repeat the owner_user_id", "code": "confirm_required"}), 400
+    _reap_browser_sessions()
+    with _browser_lock:
+        if owner_user_id in _browser_sessions:
+            return jsonify({"error": "release the browser lease first", "code": "lease_active"}), 409
+    try:
+        deleted = bp.delete_profile_dir(ORCH_PROFILE_ROOT, owner_user_id)
+    except bp.LeaseError as exc:
+        return jsonify({"error": str(exc)}), exc.status
+    logger.warning("Profile deleted owner=%s deleted=%s", bp.owner_token(owner_user_id), deleted)
+    return jsonify({"success": True, "deleted": deleted})
+
+
+# ---- relay ---------------------------------------------------------------
+
+_PHONE_DENY = ("config",)
+
+
+def _ticket_or_error(kind, lease_id=None):
+    token = rly.ticket_from_request(request.headers, request.args)
+    try:
+        return token, _tickets.check(token, kind=kind, lease_id=lease_id), None
+    except rly.TicketError as exc:
+        return token, None, (jsonify({"error": str(exc), "code": exc.code}), exc.status)
+
+
+def _phone_instance_for(record):
+    with _user_sessions_lock:
+        sess = _user_sessions.get(record["owner"])
+    inst_id = (sess or {}).get("instance_id")
+    with _instances_lock:
+        inst = _instances.get(inst_id)
+    return inst
+
+
+@app.route("/relay/phone/<path:sub>", methods=["GET", "POST", "PUT", "DELETE"])
+def relay_phone(sub):
+    """Forward one Control API call to the ticket's phone, and only that phone.
+
+    The instance comes from the ticket's lease. A body or query that names an
+    instance, API URL or ADB serial is not read for routing, and the caller's
+    headers are not forwarded (the orchestrator sets its own).
+    """
+    token, record, err = _ticket_or_error("phone")
+    if err:
+        return err
+    sub = sub.strip("/")
+    if ".." in sub.split("/") or "://" in sub or sub.split("/")[0] in _PHONE_DENY:
+        return jsonify({"error": "path not relayed", "code": "path_denied"}), 403
+    verb = f"{request.method} {'/'.join(sub.split('/')[:2])}"
+    if not _limiter.allow(record["lease_id"]):
+        _audit.record(owner=record["owner_token"], lease=record["lease_id"], kind="phone", verb=verb, ms=0, ok=False)
+        return jsonify({"error": "rate limited", "code": "rate_limited"}), 429
+    inst = _phone_instance_for(record)
+    if not inst:
+        return jsonify({"error": "phone not found for this lease", "code": "lease_gone"}), 404
+    params = [(k, v) for k, v in request.args.items(multi=True) if k != "ticket"]
+    body = request.get_json(silent=True) if request.method in ("POST", "PUT") else None
+    t0 = time.perf_counter()
+    ok = False
+    try:
+        resp = requests.request(request.method, f"{inst['api_url']}/{sub}", params=params, json=body,
+                                headers=_control_headers(inst), timeout=ORCH_API_TIMEOUT)
+        ok = resp.status_code < 400
+        out = Response(resp.content, status=resp.status_code,
+                       content_type=resp.headers.get("Content-Type", "application/json"))
+    except requests.RequestException:
+        out = (jsonify({"error": "phone unreachable", "code": "upstream_unreachable"}), 502)
+    _audit.record(owner=record["owner_token"], lease=record["lease_id"], kind="phone", verb=verb,
+                  ms=(time.perf_counter() - t0) * 1000.0, ok=ok)
+    return out
+
+
+def _ws_response(handler):
+    """Run `handler(ws)` on an upgraded connection (werkzeug or gunicorn threads)."""
+    ws = simple_websocket.Server(request.environ)
+    try:
+        handler(ws)
+    except _WsClosed:
+        pass
+    try:
+        ws.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+    class _WsResponse(Response):
+        def __call__(self, *args, **kwargs):
+            if ws.mode == "gunicorn":
+                raise StopIteration()
+            if ws.mode == "werkzeug":
+                return super().__call__(*args, **kwargs)
+            return []
+
+    return _WsResponse()
+
+
+@app.route("/relay/cdp/<lease_id>", websocket=True)
+def relay_cdp(lease_id):
+    """DevTools for the ticket's browser. The Watch screencast rides on this too."""
+    if simple_websocket is None:
+        return jsonify({"error": "simple-websocket is not installed", "code": "ws_unavailable"}), 501
+    token, record, err = _ticket_or_error("browser", lease_id=lease_id)
+    if err:
+        return err
+    with _browser_lock:
+        sess = _browser_sessions.get(record["owner"])
+    upstream_url = (sess or {}).get("cdp_ws_internal")
+    if not upstream_url:
+        return jsonify({"error": "no browser is running for this lease", "code": "no_browser"}), 503
+
+    def run(ws):
+        try:
+            up = simple_websocket.Client.connect(upstream_url)
+        except Exception:  # noqa: BLE001
+            ws.close(reason=rly.CLOSE_UPSTREAM, message="browser unreachable")
+            return
+        stream = rly.CdpStream(client=ws, upstream=up, token=token, record=record, book=_tickets,
+                               limiter=_limiter, audit=_audit, registry=_streams)
+        reason = stream.run()
+        _audit.record(owner=record["owner_token"], lease=record["lease_id"], kind="cdp",
+                      verb=f"stream.close:{reason or 'client'}", ms=0, ok=True)
+
+    return _ws_response(run)
+
+
+@app.route("/relay/phone/stream", websocket=True)
+def relay_phone_stream():
+    """The phone's screen and input for the Watch / take-over page."""
+    if simple_websocket is None:
+        return jsonify({"error": "simple-websocket is not installed", "code": "ws_unavailable"}), 501
+    token, record, err = _ticket_or_error("phone")
+    if err:
+        return err
+    inst = _phone_instance_for(record)
+    if not inst:
+        return jsonify({"error": "phone not found for this lease", "code": "lease_gone"}), 404
+
+    def grab():
+        return _control_get(inst["api_url"], "/device/screenshot/base64", instance=inst)
+
+    def send_input(event):
+        allowed = {k: event[k] for k in ("type", "x", "y", "x2", "y2", "text", "keycode", "duration") if k in event}
+        return _control_post(inst["api_url"], "/device/input", allowed, instance=inst)
+
+    def run(ws):
+        stream = rly.PhoneFrameStream(client=ws, token=token, record=record, book=_tickets, limiter=_limiter,
+                                      audit=_audit, registry=_streams, grab_frame=grab, send_input=send_input,
+                                      fps=ORCH_PHONE_FPS)
+        reason = stream.run()
+        _audit.record(owner=record["owner_token"], lease=record["lease_id"], kind="phone",
+                      verb=f"stream.close:{reason or 'client'}", ms=0, ok=True)
+
+    return _ws_response(run)
+
+
+def _browser_pool_snapshot():
+    with _browser_lock:
+        leased = len(_browser_sessions)
+    return {"runtime": bp.RUNTIME_CHROME, "chrome_runtime": chrome_runtime().name,
+            "total": leased, "leased": leased, "idle": 0, "max": ORCH_MAX_CHROME_INSTANCES}
+
+
+# ---- start-up policy -------------------------------------------------------
+
+def _host_class(host):
+    """'loopback', 'private' or 'public' for a bind address."""
+    import ipaddress
+    h = (host or "").strip().strip("[]")
+    if h in ("localhost",):
+        return "loopback"
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return "public"  # a hostname we cannot classify is treated as open
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_unspecified:
+        return "public"  # 0.0.0.0 / :: is every interface, including public ones
+    private_nets = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+                    "169.254.0.0/16", "fc00::/7", "fe80::/10")
+    if any(ip.version == ipaddress.ip_network(n).version and ip in ipaddress.ip_network(n) for n in private_nets):
+        return "private"
+    return "public"
+
+
+def startup_refusal(host, token, env=None):
+    """Why the orchestrator must not start with this bind and token, or None."""
+    env = env if env is not None else os.environ
+    klass = _host_class(host)
+    if not token:
+        if klass == "loopback" and env.get("ORCH_ALLOW_NO_TOKEN", "").lower() in {"1", "true", "yes"}:
+            return None
+        return ("refusing to start without ORCH_API_TOKEN: anyone who reaches this port could lease, "
+                "drive and release every owner's phone and browser. Set ORCH_API_TOKEN (or, for local "
+                "development on loopback only, ORCH_ALLOW_NO_TOKEN=1).")
+    if klass == "public" and env.get("ORCH_ALLOW_PUBLIC_BIND", "").lower() not in {"1", "true", "yes"}:
+        return (f"refusing to bind {host}: not loopback or a private interface. Set ORCH_HOST to "
+                "127.0.0.1 or the host's private address, or ORCH_ALLOW_PUBLIC_BIND=1 if a firewall "
+                "really does stand in front of it.")
+    return None
 
 
 @app.route("/health", methods=["GET"])
@@ -1283,15 +1997,33 @@ def health():
         "instances": len(items),
         "sessions": sessions,
         "max_instances": ORCH_MAX_INSTANCES,
-        "pool": pool,
+        "pool": {**pool, bp.PURPOSE_BROWSER: _browser_pool_snapshot()},
+        "isolation": {
+            "state": "persistent" if getattr(_store, "persistent", False) else "memory",
+            "profile_encryption": ORCH_PROFILE_ENCRYPTION or "none",
+            "tickets_required_for_phones": ORCH_REQUIRE_TICKETS,
+            "relay_ws": simple_websocket is not None,
+            "open_streams": _streams.count(),
+        },
     })
 
 
-if __name__ == "__main__":
-    host = os.environ.get("ORCH_HOST", "0.0.0.0")
+def main():
+    host = os.environ.get("ORCH_HOST", "127.0.0.1")
     port = int(os.environ.get("ORCH_PORT", "8090"))
+    why = startup_refusal(host, ORCH_API_TOKEN)
+    if why:
+        logger.error(why)
+        raise SystemExit(2)
+    init_state(ORCH_STATE_DB or ":memory:")
+    if not ORCH_STATE_DB:
+        logger.warning("ORCH_STATE_DB unset: leases live in memory and a restart forgets every owner")
     logger.info(
         "Starting orchestrator on %s:%s (mode=%s default_runtime=%s)",
         host, port, ORCH_DEPLOY_MODE, RUNTIME_REDROID,
     )
     app.run(host=host, port=port, threaded=True)
+
+
+if __name__ == "__main__":
+    main()

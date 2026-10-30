@@ -34,6 +34,8 @@ OFFLINE_SUITES=(
     "runtime-pool:tests.test_runtime_pool"
     "mobile-e2e:tests.test_mobile_e2e_scenario"
     "procedure-api:tests.test_procedure_api"
+    "isolation:tests.test_isolation"
+    "isolation-gate:tests.test_isolation_gate"
     "real-app-smoke:tests.test_real_app_smoke"
 )
 

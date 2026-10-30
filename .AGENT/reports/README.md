@@ -36,6 +36,7 @@ again. Convention source: `agent-repo-boilerplate`
 
 | Date | Report | Question | Verdict |
 |---|---|---|---|
+| 2026-10-30 | [multi-user-isolation](2026-10-30-multi-user-isolation.md) | Can the orchestrator lease browsers per owner, persist leases, and route every browser/phone command through a ticketed relay? | Yes, behind flags, in mock/local mode: 56 new tests incl. a two-owner gate, restart, real Chromium and a negative control; relay adds <1 ms per CDP message on one host. Per-owner encryption keys and a real Docker run not done |
 | 2026-10-30 | [gapps-phone-first-boot](2026-10-30-gapps-phone-first-boot.md) | Does the GApps image boot on OCI A1, install apps, and drive real apps through the Control API and OSLO's tools? | Yes: boots in ~60 s, APK by URL + SHA-256 works, 31/31 real-app steps (3 runs + after reboot), OSLO tools 24/24; five bugs fixed; Play sign-in left to the owner |
 | 2026-10-29 | [gapps-and-app-install](2026-10-29-gapps-and-app-install.md) | Which way of getting Play onto the phone fits, and can it be proven here? | Redroid + MindTheGapps 13 arm64 baked at build time; image build verified, no Android booted (sandbox has no binder/KVM) |
 | 2026-10-21 | [docs-audit](2026-10-21-docs-audit.md) | Are the docs usable by a person who has never seen the project? | They were not: agent-session notes, duplicated and contradictory pages, lab addresses in examples. Rewritten in PR #19; three owner decisions remain |

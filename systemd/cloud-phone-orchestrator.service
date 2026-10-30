@@ -1,0 +1,44 @@
+[Unit]
+Description=Cloud Phone Orchestrator (per-owner phone and browser leases, ticketed relay)
+Documentation=https://github.com/lehelkovach/redroid-cloud-phone/blob/master/docs/isolation.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Installed by hand, deliberately: nothing enables or starts this unit for you.
+#   sudo install -m 0644 systemd/cloud-phone-orchestrator.service /etc/systemd/system/
+#   sudo install -m 0600 -o root -g root /dev/null /etc/cloud-phone/orchestrator.env   # then fill it
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cloud-phone-orchestrator
+WorkingDirectory=/opt/redroid-cloud-phone
+ExecStart=/opt/redroid-cloud-phone/venv/bin/python orchestrator/server.py
+Restart=on-failure
+RestartSec=5
+
+User=cloudphone
+Group=cloudphone
+# Profiles, state and ticket digests live here, 0700, owned by the service user.
+StateDirectory=cloud-phone-orchestrator
+StateDirectoryMode=0700
+UMask=0077
+
+# The token, and anything else secret, lives in the EnvironmentFile (0600),
+# never in this unit. The orchestrator refuses to start without ORCH_API_TOKEN.
+EnvironmentFile=/etc/cloud-phone/orchestrator.env
+Environment=PYTHONUNBUFFERED=1
+# Loopback by default. To serve OSLO on another host, set ORCH_HOST to this
+# host's PRIVATE address in the EnvironmentFile; a public or wildcard bind is
+# refused unless ORCH_ALLOW_PUBLIC_BIND=1.
+Environment=ORCH_HOST=127.0.0.1
+Environment=ORCH_PORT=8090
+Environment=ORCH_STATE_DB=/var/lib/cloud-phone-orchestrator/state.sqlite3
+Environment=ORCH_PROFILE_ROOT=/var/lib/cloud-phone-orchestrator/profiles
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cloud-phone-orchestrator
+
+[Install]
+WantedBy=multi-user.target
