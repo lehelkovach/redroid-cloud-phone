@@ -178,6 +178,8 @@ variable in `.env.example` is not read by the deploy scripts.
 | `CLOUD_PHONE_API_URL` | `http://127.0.0.1:8080` | Control API for live suites | `scripts/run-tests.sh:47`, `tests/test_live.py:10` |
 | `CLOUD_PHONE_LIVE` | unset | `1` enables `tests/test_live.py` | `tests/test_live.py:9` |
 | `REQUIRE_GAPPS` | unset | `1` makes the live suite require Play packages | `tests/test_live.py:22` |
+| `CLOUD_PHONE_REAL_DEVICE` | unset | `1` enables the live class in `tests/test_real_app_smoke.py` (drives three real apps) | `tests/test_real_app_smoke.py` |
+| `CLOUD_PHONE_API_TOKEN` | unset | Bearer token for `scripts/real-app-smoke.py` (falls back to `API_TOKEN`; `--token-file` wins) | `scripts/real-app-smoke.py` |
 | `PUBLIC_IP`, `SSH_USER`, `SSH_KEY` | empty, `ubuntu`, empty | Target for `tests/test_connectivity.py` | `tests/test_connectivity.py:19-21` |
 
 ## Deployed hosts
