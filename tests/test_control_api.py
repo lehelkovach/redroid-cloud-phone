@@ -166,6 +166,17 @@ class UiTreeTests(unittest.TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(body["count"], 4)
 
+    def test_ui_dump_goes_through_a_file(self):
+        # Android 13 prints no XML for `uiautomator dump /dev/tty`.
+        calls = []
+        table = {"uiautomator dump": (True, HIERARCHY, "")}
+        with patch.object(control_api, "run_adb", fake_adb(table, record=calls)):
+            self.client.get("/device/ui")
+        dumps = [c[1] for c in calls if "uiautomator dump" in c[1]]
+        self.assertTrue(dumps)
+        self.assertNotIn("/dev/tty", dumps[0])
+        self.assertIn("&& cat " + control_api.UI_DUMP_PATH, dumps[0])
+
     def test_ui_endpoint_reports_dump_failure(self):
         with patch.object(control_api, "run_adb", fake_adb({"uiautomator": (False, "", "no dump")})):
             resp = self.client.get("/device/ui")

@@ -321,9 +321,17 @@ def _parse_ui_elements(xml_text):
     return elements
 
 
+UI_DUMP_PATH = "/data/local/tmp/cloudphone_ui.xml"
+
+
 def _read_ui_tree():
     ensure_adb_connected()
-    ok, stdout, stderr = run_adb_shell("uiautomator dump /dev/tty")
+    # Dump to a file and cat it in the same shell. `uiautomator dump /dev/tty`
+    # prints only "UI hierchary dumped to: /dev/tty" on Android 13 Redroid
+    # (adb shell without a pty), so /device/ui failed on every GApps phone.
+    ok, stdout, stderr = run_adb_shell(
+        f"uiautomator dump {UI_DUMP_PATH} >/dev/null 2>&1 && cat {UI_DUMP_PATH}"
+    )
     if not ok:
         return {"success": False, "error": stderr or stdout or "uiautomator dump failed"}
     start = stdout.find("<?xml")
