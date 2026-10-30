@@ -1,8 +1,11 @@
 [Unit]
 Description=Redroid cloud phone (GApps automation containers)
 Documentation=docs/RUNTIME-SPLIT.md
-Wants=redroid-container.service control-api.service
-After=redroid-container.service
+# The phone unit (plain or GApps) joins through its own WantedBy= when it is
+# enabled. Wanting redroid-container.service here started the plain phone on
+# a GApps host at every boot, and its Conflicts= stopped the GApps phone.
+Wants=control-api.service
+After=redroid-container.service redroid-gapps-container.service
 
 [Install]
 WantedBy=multi-user.target
