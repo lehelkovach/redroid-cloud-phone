@@ -143,7 +143,7 @@ Control API from step 4.
 ```bash
 export ORCH_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 export ORCH_CONTROL_API_TOKEN="$API_TOKEN"
-ORCH_DEPLOY_MODE=mock ./cloud-phone orchestrator-run     # listens on 0.0.0.0:8090
+ORCH_DEPLOY_MODE=mock ./cloud-phone orchestrator-run     # listens on 127.0.0.1:8090
 ```
 
 In another terminal:
@@ -177,8 +177,11 @@ curl -s -X DELETE $ORCH/sessions/alice -H "$OAUTH"
 
 Two things to know:
 
-- The orchestrator keeps everything in memory. Restarting it forgets all
-  instances, sessions and procedure results.
+- Without `ORCH_STATE_DB` the orchestrator keeps everything in memory, and
+  restarting it forgets all instances and sessions. Set `ORCH_STATE_DB` to a
+  file to keep leases across restarts (procedure results are never kept). It
+  refuses to start without `ORCH_API_TOKEN`; see [isolation.md](isolation.md)
+  for browsers, tickets and the relay.
 - Once a user has held an instance, it is not given to a different user until
   a reset is recorded, and no endpoint records one yet. In practice a second
   user gets `409 phone not clean` from the same instance. Restart the

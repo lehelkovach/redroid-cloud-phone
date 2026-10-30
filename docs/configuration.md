@@ -34,9 +34,9 @@ The systemd units also set `CLOUD_PHONE_CONFIG`, but the code reads
 
 | Variable | Default | What it does | Read at |
 |---|---|---|---|
-| `ORCH_HOST` | `0.0.0.0` | Listen address | `orchestrator/server.py:1291` |
-| `ORCH_PORT` | `8090` | Listen port | `orchestrator/server.py:1292` |
-| `ORCH_API_TOKEN` | empty | Bearer token required on every endpoint except `/health`. **Empty means no authentication.** | `orchestrator/server.py:76` |
+| `ORCH_HOST` | `127.0.0.1` | Listen address. Wildcard or public addresses are refused unless `ORCH_ALLOW_PUBLIC_BIND=1` | `orchestrator/server.py` `main()` |
+| `ORCH_PORT` | `8090` | Listen port | `orchestrator/server.py` `main()` |
+| `ORCH_API_TOKEN` | empty | Bearer token required on every endpoint except `/health` and `/relay/*`. **Empty means the process refuses to start** (unless loopback and `ORCH_ALLOW_NO_TOKEN=1`). | `orchestrator/server.py:76` |
 | `ORCH_CONTROL_API_TOKEN` | `ORCH_API_TOKEN` | Token the orchestrator sends to phones' Control APIs. Must equal their `API_TOKEN`. | `orchestrator/server.py:81` |
 | `ORCH_DEPLOY_MODE` | `mock` | `mock`: no machines, every instance uses `ORCH_MOCK_API_URL`. `redroid`: local containers via `redroid-up.sh`. `oci`: VMs from golden images. | `orchestrator/server.py:73` |
 | `ORCH_MOCK_API_URL` | `http://127.0.0.1:8080` | Control API used by mock instances, and the default for `ORCH_REDROID_API_URL` | `orchestrator/server.py:74` |
@@ -57,6 +57,23 @@ The systemd units also set `CLOUD_PHONE_CONFIG`, but the code reads
 | `ORCH_OCI_PROFILE` | `DEFAULT` | `oci` CLI profile used to terminate VMs | `orchestrator/server.py:104` |
 | `ORCH_OCI_CONFIG` | `~/.oci/config` | `oci` CLI config file used to terminate VMs | `orchestrator/server.py:105` |
 | `ORCH_OCI_AUTH` | `security_token` | `oci` CLI `--auth` value used to terminate VMs | `orchestrator/server.py:106` |
+| `ORCH_ALLOW_NO_TOKEN` | unset | `1` lets a loopback-only orchestrator start without `ORCH_API_TOKEN` (development) | `startup_refusal()` |
+| `ORCH_ALLOW_PUBLIC_BIND` | unset | `1` allows a wildcard or public `ORCH_HOST` | `startup_refusal()` |
+| `ORCH_STATE_DB` | empty (memory) | SQLite file for leases, sessions, tenancy and ticket digests; survives restarts | `init_state()` |
+| `ORCH_PUBLIC_URL` | request host | Base used to build relay URLs returned to callers | `_relay_base()` |
+| `ORCH_PROFILE_ROOT` | `/var/lib/cloud-phone-orchestrator/profiles` | Per-owner browser profiles, 0700 | `orchestrator/browser_pool.py` |
+| `ORCH_PROFILE_ENCRYPTION` | `none` | `none`, `luks` or `fscrypt`: verify the profile root is encrypted before using it | `check_profile_encryption()` |
+| `ORCH_CHROME_RUNTIME` | `mock` in mock mode, else `docker` | `mock`, `local` or `docker` | `_default_chrome_runtime()` |
+| `ORCH_CHROME_BIN` | empty | Chromium binary for the `local` runtime | `LocalChromeRuntime` |
+| `ORCH_CHROME_IMAGE` | empty | Container image for the `docker` runtime | `DockerChromeRuntime` |
+| `ORCH_CHROME_NETWORK` | `cloud-phone-browsers` | Docker network for browser containers | `DockerChromeRuntime` |
+| `ORCH_CHROME_CDP_PORT_BASE` | `19222` | First internal DevTools port (loopback only) | `_free_cdp_port()` |
+| `ORCH_MAX_CHROME_INSTANCES` | `4` | Browser pool limit | `_acquire_browser_session()` |
+| `ORCH_CHROME_RELAY_BIND` | `127.0.0.1` | Bind address of per-lease authenticating proxy relays | `LeaseProxyRelay` |
+| `ORCH_TICKET_TTL_SECONDS` | `300` | Session ticket lifetime (max 3600, never past the lease) | `orchestrator/relay.py` |
+| `ORCH_RELAY_RATE` / `ORCH_RELAY_BURST` | `50` / `200` | Per-lease relay rate limit (commands per second, bucket size) | `RateLimiter` |
+| `ORCH_REQUIRE_TICKETS` | unset | `1` turns off the unticketed `/phones/<id>/*` routes | `_auth_middleware()` |
+| `ORCH_PHONE_FPS` | `4` | Frame rate of `/relay/phone/stream` | `relay_phone_stream()` |
 | `ORCH_WEB_DRIVER_URL` | empty | Enables the `web` procedure surface; steps are POSTed to `<url>/web/step` | `orchestrator/server.py:915` |
 | `ORCH_CHROME_BRIDGE_URL` | empty | Enables the `chrome` surface; steps are POSTed to `<url>/chrome/step` | `orchestrator/server.py:919` |
 | `ORCH_ENABLE_CONSOLE` | unset | `1`/`true`/`yes` enables the `console` surface, which runs shell commands **on the orchestrator host** | `orchestrator/server.py:923` |

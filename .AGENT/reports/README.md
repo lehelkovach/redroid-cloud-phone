@@ -36,4 +36,5 @@ again. Convention source: `agent-repo-boilerplate`
 
 | Date | Report | Question | Verdict |
 |---|---|---|---|
+| 2026-10-30 | [multi-user-isolation](2026-10-30-multi-user-isolation.md) | Can the orchestrator lease browsers per owner, persist leases, and route every browser/phone command through a ticketed relay? | Yes, behind flags, in mock/local mode: 56 new tests incl. a two-owner gate, restart, real Chromium and a negative control; relay adds <1 ms per CDP message on one host. Per-owner encryption keys and a real Docker run not done |
 | 2026-10-21 | [docs-audit](2026-10-21-docs-audit.md) | Are the docs usable by a person who has never seen the project? | They were not: agent-session notes, duplicated and contradictory pages, lab addresses in examples. Rewritten in PR #19; three owner decisions remain |
