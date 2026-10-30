@@ -8,7 +8,9 @@
   URL + SHA-256) through the Control API, or from Play by package name once
   the owner has signed in on the phone. Cuttlefish stays the camera runtime,
   without Play.
-- **Status:** built and tested offline. No phone was booted (see
+- **Status:** booted on an OCI A1 host on 2026-10-30: Android 13 with Play
+  services, APK install by URL + SHA-256, and three real apps driven through
+  the Control API. Play sign-in is the owner's step and has not been done (see
   [What was verified](#what-was-verified-and-what-was-not)).
 
 This page is the research behind that decision and the operator guide for
@@ -47,6 +49,12 @@ The OSLO lab notes record that Redroid ran on one of these hosts with binder
 working, and that its `/opt/gapps/gapps.zip` was 0 bytes, which is why Play
 was never there. This repo does not set binder up;
 `./cloud-phone host-check` now says whether a host has it (read-only).
+
+On the 2026-10-30 host (Ubuntu 24.04.5, kernel `6.17.0-1020-oracle`),
+`apt install linux-modules-extra-$(uname -r)` then
+`modprobe binder_linux devices="binder,hwbinder,vndbinder"` was enough:
+binderfs registers and Redroid mounts it itself. Persist it with
+`/etc/modules-load.d/` and `/etc/modprobe.d/` entries.
 
 ## Options compared
 
@@ -239,17 +247,24 @@ layer is a plain copy, so no qemu is needed):
   --sha256 <sha256> --android 13.0.0 --arch arm64 --save /tmp/redroid-gapps.tar
 ```
 
-On the phone host (copy the tarball over first):
+On the phone host (copy the tarball over first, or build there: an arm64
+host builds natively in about two minutes):
 
 ```bash
 ./cloud-phone host-check                        # binder, Docker, RAM
 docker load -i /tmp/redroid-gapps.tar
 echo 'REDROID_GAPPS_IMAGE=cloud-phone/redroid-gapps:13.0.0-arm64' | sudo tee -a /etc/default/redroid-cloud-phone
 sudo systemctl disable --now redroid-container.service
-sudo systemctl enable --now redroid-gapps-container.service
+sudo systemctl enable redroid-gapps-container.service control-api-redroid.service redroid-cloud-phone.target
+sudo systemctl start redroid-cloud-phone.target   # also what brings it back after a reboot
 adb connect 127.0.0.1:5555 && ./cloud-phone gapps-check --adb 127.0.0.1:5555
 curl -s http://127.0.0.1:8080/apps/play/status -H "Authorization: Bearer $API_TOKEN"
+./cloud-phone real-app-smoke --api-url http://127.0.0.1:8080   # token from $CLOUD_PHONE_API_TOKEN
 ```
+
+Ubuntu's `docker.io` has no buildx; the build script then uses Docker's
+legacy builder (the layer is a plain `COPY`). Install `docker-buildx` to use
+BuildKit instead.
 
 Then the owner's steps above. The GApps compose file binds ADB to
 `127.0.0.1` by default (`ADB_BIND`), because the phone now holds a
@@ -257,6 +272,35 @@ signed-in Google account; the plain phone's compose file binds all
 interfaces.
 
 ## What was verified and what was not
+
+### On a real OCI A1 host, 2026-10-30
+
+Host: a new `VM.Standard.A1.Flex`, 2 OCPU / 12 GB, Ubuntu 24.04.5, kernel
+`6.17.0-1020-oracle`, Docker 29.1.3 (Ubuntu `docker.io`). Full record:
+[.AGENT/reports/2026-10-30-gapps-phone-first-boot.md](../.AGENT/reports/2026-10-30-gapps-phone-first-boot.md).
+
+| Check | Result |
+|---|---|
+| `host-check` | `binder=binderfs` (after `modprobe binder_linux`), `ashmem=missing` (memfd used), `redroid_ok=true`, no `/dev/kvm` |
+| GApps zip | `MindTheGapps-13.0.0-arm64-20231025_200931.zip` from the MindTheGapps GitHub release, SHA-256 `3ff2edaa75406eb4214402fca6906d4b413ab50afdb1af033d9e396992338d0b`; its JAR signature checks against the release's `release.x509.pem` (39/39 entries) |
+| `gapps-image` | Built `cloud-phone/redroid-gapps:13.0.0-arm64` on the host after one fix (legacy builder when buildx is missing) |
+| Boot | `sys.boot_completed=1` 60 s after the first start, 52 s after a host reboot; ABIs `arm64-v8a,armeabi-v7a,armeabi` |
+| `GET /apps/play/status` | `gapps.ready=true`, a GSF Android ID present (stable across two reboots; `null` for a few seconds right after boot), `google_account=false`, `ready=false` with the owner action, after one fix (below) |
+| `POST /apps/install` by URL | F-Droid 2.0.2 from `f-droid.org` with its index SHA-256: installed in 7 s, listed in `GET /apps`. A wrong SHA-256 answered `checksum_mismatch` and installed nothing |
+| Real apps (`real-app-smoke`) | Calculator (7 × 6 shows 42), Notes (typed text survives force-stop and relaunch), Contacts (a filled form is saved and listed, then deleted): 31/31 steps on three runs in a row and again after a reboot |
+| Same flow through OSLO's `mobile.*` tools | 24/24 (health, play_status, install_app, apps, launch, dump, tap_label, tap, key, type, back, home, close, focus, screenshot), OSLO's tool registry run on the phone host against `127.0.0.1:8080` |
+| Reboot | Phone, Control API and installed apps come back by themselves, after one fix to the target unit |
+| Isolation | From inside Android: the host's `:8080`, instance metadata and the VCN are blocked; the internet is reachable |
+| Play sign-in, Play install | **Not done**: owner-only |
+
+Bugs the first boot found, all fixed on this branch: the build fallback asked
+for BuildKit without buildx; `/apps/play/status` reported every GApps phone as
+signed in (it matched the authenticator listing); `/device/ui` returned no
+elements on Android 13 (`uiautomator dump /dev/tty`); and both
+`control-api-redroid.service` and `redroid-cloud-phone.target` pulled in the
+plain phone, whose `Conflicts=` stops the GApps phone.
+
+### Offline, 2026-10-29
 
 Done on 2026-10-29 in a cloud sandbox (x86_64, 4 vCPU, 15 GB, Docker 29):
 
@@ -268,7 +312,5 @@ Done on 2026-10-29 in a cloud sandbox (x86_64, 4 vCPU, 15 GB, Docker 29):
 | Control API endpoints | Offline tests with a fake `adb` and fake downloads (`tests/test_app_install.py`, 56 tests) |
 | Script argument handling, zip checks, compose/unit shape | `tests/test_gapps_image.py`, 29 tests |
 
-The first live run should check, in order: the phone boots
-(`sys.boot_completed`), `gapps-check` passes, `GET /apps/play/status`
-returns a GSF ID, Play opens after registration and sign-in, and
-`POST /apps/play/install` installs a small free app.
+Still to check, after the owner's steps: Play opens after registration and
+sign-in, and `POST /apps/play/install` installs a small free app.
