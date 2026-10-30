@@ -169,15 +169,141 @@ the check fails:
 
 Not done, said plainly:
 
-- **No per-owner keys.** Both options use one key for the whole profile root.
-  Per-owner fscrypt protectors (one directory policy per owner, unlocked only
-  while that owner holds a lease) would mean the orchestrator holding or
-  receiving each owner's key at lease time; that key management is not built.
+- **No per-owner keys** with these two modes: both use one key for the whole
+  profile root. Per-owner keys are what `ORCH_BROWSER_PROFILE=volume` adds;
+  see [Per-owner volumes](#per-owner-volumes-phone-data-and-browser-profiles).
 - **Nothing is encrypted by the orchestrator itself**, and nothing is set up
   automatically. The tests exercise the checks with fake `mountinfo`, sysfs and
   `fscrypt` output; no real LUKS volume or fscrypt policy was created here.
 - A compromised orchestrator host can read every open profile. Isolation here
   is between tenants of one trusted host, not against its operator.
+
+## Per-owner volumes: phone /data and browser profiles
+
+Off by default. Two flags move each owner's storage onto volumes that belong
+to the **owner**, not to a container or an instance:
+
+| Flag | Default | On |
+|---|---|---|
+| `ORCH_PHONE_DATA` | `instance` (one Docker volume per container, shared over time by whoever leases it, guarded by the tenancy check) | `per_user`: the owner's `phone-data` volume is bind-mounted as the Redroid container's `/data` for the lease |
+| `ORCH_BROWSER_PROFILE` | `dir` (`ORCH_PROFILE_ROOT/<owner token>`) | `volume`: the owner's `browser-profile` volume is the Chrome profile |
+
+Each volume (`orchestrator/user_volumes.py`) is:
+
+- **The owner's.** `ORCH_VOLUME_ROOT/<owner token>/<kind>.img`, mounted at
+  `<kind>.mnt` while leased (root, owner directory and mount point 0700, image
+  0600). The owner token is the one used everywhere else; owners that would
+  map outside the root, symlinked or hard-linked paths are refused.
+- **Size-limited.** A sparse image of the owner's quota with ext4 inside: when
+  the quota is full the owner gets `ENOSPC`, and the host file never grows past
+  the quota. Defaults `ORCH_QUOTA_PHONE_GB=8`, `ORCH_QUOTA_BROWSER_GB=1`;
+  per-owner overrides in `ORCH_VOLUME_QUOTA_FILE` (JSON, keyed by owner id or
+  owner token, values in GiB: `{"avery-example": {"phone-data": 16}}`). An
+  override applies when the image is created; growing an existing image is not
+  built.
+- **Encrypted with a key per owner.** LUKS2 (aes-xts, cryptsetup defaults).
+  The key is HKDF-SHA256(master, info=`orch-volume:<owner token>:<kind>`), so
+  every owner and every kind has its own key and owner B's key cannot open
+  owner A's image. It reaches cryptsetup on stdin (`--key-file=-`), never in
+  argv, the environment, the state database, a log line or `/health`. An
+  already-open volume is handed out only after the requesting owner's key is
+  checked against its header again.
+- **Never handed to another owner.** A new owner's first lease creates a new
+  image. On a phone, switching an instance's `/data` from one owner's volume to
+  another's (or away from its per-instance volume) is recorded as a reset, and
+  the tenancy guard still runs as a second check; if the switch did not happen,
+  the lease is refused (`409 phone not clean`).
+- **Opened only while leased.** Release and expiry stop the container, unmount
+  the volume and close it (`umount`, `cryptsetup close`, `losetup -d`). The
+  image stays. Deleting it is its own call (`DELETE /volumes/<owner>/<kind>`,
+  or `DELETE /profiles/<owner>` for the browser volume), needs
+  `{"confirm": "<owner>"}`, is refused while leased, and wipes the LUKS
+  keyslots (`luksErase`) before removing the file.
+
+The PBKDF is PBKDF2 at its minimum on purpose: the passphrase is a 512-bit
+derived key, not something a person typed, and the argon2id default would cost
+about 1 GiB of memory and a second or two on every lease.
+
+### Host guard and usage alerts
+
+- A new image is refused with **`507 host_disk_low`** when the free space on
+  `ORCH_VOLUME_ROOT`'s filesystem, minus what every existing image may still
+  claim (images count as fully allocated though they are sparse), minus the new
+  image, would drop below `ORCH_HOST_MIN_FREE_GB` (default 10). Reopening an
+  existing volume is not refused: its size is already counted.
+- `GET /health` gains `volumes: {enabled, phone_data, browser_profile, root,
+  host_free_gb, host_uncommitted_gb, min_free_gb}`, with no owner in it.
+- `GET /volumes/<owner>` (orchestrator token) returns that owner's
+  `used_bytes`, `used_pct` and `limit_bytes` per kind; closed volumes report the
+  reading taken when they were closed.
+- A warning is logged once when a volume crosses 80 % and once at 95 %
+  (`volume usage crossed 80% token=<owner token> kind=…`); falling back under a
+  level re-arms it. A sampler thread (`ORCH_VOLUME_SAMPLE_SECONDS`, default
+  300) measures open volumes and reaps lapsed phone and browser leases.
+
+### Enabling
+
+The orchestrator must be able to run `losetup`, `cryptsetup`, `mkfs.ext4`,
+`mount` and `umount`, **as root, in the host's mount namespace**. The shipped
+systemd unit runs as `cloudphone` with `NoNewPrivileges`, `ProtectSystem`,
+`ProtectHome` and `PrivateTmp`, and so cannot: a volume mounted in a private
+namespace is invisible to dockerd, which would bind the empty directory beneath
+it and let Android write `/data` unencrypted onto the host disk. The
+orchestrator refuses to start with the flags on when its mount namespace is
+not PID 1's (or it cannot tell) and a container runtime is in use. A narrow
+privileged helper is the intended fix and is not built; until then this is for
+a host where the orchestrator runs as root without those sandbox options.
+
+1. Install `cryptsetup` (`cryptsetup-bin` is enough) and check `dm_crypt` and
+   loop devices are available (`grep device-mapper /proc/misc`, `ls /dev/loop-control`).
+2. Create the master key, readable by the service user only, and back it up
+   offline. Losing it loses every owner's data:
+   `sudo install -m 0600 /dev/null /etc/cloud-phone/volume-master.key && sudo sh -c 'head -c 64 /dev/urandom > /etc/cloud-phone/volume-master.key'`.
+   The orchestrator refuses a key file that is a link, readable by group or
+   others, or shorter than 32 bytes. Never print it or put it in the
+   environment file.
+3. Set `ORCH_VOLUME_ROOT` (default `/var/lib/cloud-phone-orchestrator/volumes`),
+   `ORCH_VOLUME_MASTER_KEY_FILE`, and optionally the quota variables.
+4. Turn on `ORCH_BROWSER_PROFILE=volume` first (browsers restart cleanly; old
+   profiles under `ORCH_PROFILE_ROOT` are not migrated, so owners sign in
+   again). Then `ORCH_PHONE_DATA=per_user`, which needs
+   `ORCH_DEPLOY_MODE=redroid` (an `oci` phone keeps `/data` on its own VM; the
+   orchestrator refuses to start with that combination). Existing phone
+   instances are switched to the leasing owner's volume on their next lease;
+   their per-instance volume is removed by `redroid-up.sh --down`.
+5. Unknown flag values, a missing or loose key file, or a relative root stop
+   the process at start with exit status 2.
+
+With `ORCH_PHONE_DATA=per_user` the raw `POST /instances/<id>/lease` answers
+`409 use_sessions`: phones are leased through `POST /sessions`, which mounts
+the volume. Camera (Cuttlefish) leases are unchanged.
+
+### Rolling back
+
+1. Release every lease (or wait for expiry) so every volume is closed.
+2. Phones: `DELETE /instances/<id>` every Redroid instance that ran with
+   per-user volumes, then set `ORCH_PHONE_DATA=instance`. With the flag off,
+   an instance that last ran on a per-user volume is refused (`409 phone not
+   clean`, "delete and reprovision"), because its tenancy record no longer
+   describes its per-instance `/data`.
+3. Browsers: set `ORCH_BROWSER_PROFILE=dir`; owners get (or reuse) a
+   directory under `ORCH_PROFILE_ROOT`.
+4. The images stay under `ORCH_VOLUME_ROOT` until deleted with
+   `DELETE /volumes/<owner>/<kind>` (works with the flags off). Keep the master
+   key until they are gone.
+
+### What it does not protect against
+
+- **Anyone with root on the running host** while a volume is open: an open
+  volume is a decrypted block device (`/dev/mapper/orchv-…`).
+- **A privileged container.** The Redroid containers run `privileged: true`,
+  which exposes the host's device nodes, including every open owner's
+  decrypted `/dev/dm-*`. Per-owner keys protect volumes at rest and closed
+  volumes; between open volumes on one host, isolation still rests on the
+  container boundary. Dropping `privileged` (a separate experiment) matters
+  more once several owners' volumes are open at once.
+- The master key is one secret on the host: whoever reads it can derive every
+  owner's key. It is not a per-owner secret held by the owner.
 
 ## Tests
 
@@ -185,3 +311,11 @@ Not done, said plainly:
 two-owner gate through a live orchestrator in mock mode, a real-process
 restart, an optional real-Chromium check, and a negative control that proves
 the detector fires on a shared browser). Both run in `./cloud-phone test`.
+
+Per-owner volumes: `tests/test_user_volumes.py` (command sequences, keys,
+paths, quotas, host guard, alerts and the server wiring, against a fake host
+in `tests/fixtures/fake_volumes.py`), `PerUserVolumeGate` and its negative
+control in `tests/test_isolation_gate.py`, and
+`tests/test_user_volumes_real.py`, which runs only with
+`ORCH_REAL_VOLUME_TEST=1` as root and skips each part the host cannot do (the
+full LUKS open needs device-mapper).

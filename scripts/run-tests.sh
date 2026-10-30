@@ -37,6 +37,8 @@ OFFLINE_SUITES=(
     "isolation:tests.test_isolation"
     "isolation-gate:tests.test_isolation_gate"
     "real-app-smoke:tests.test_real_app_smoke"
+    "user-volumes:tests.test_user_volumes"
+    "user-volumes-real:tests.test_user_volumes_real"
 )
 
 SCRIPT_SUITES=(

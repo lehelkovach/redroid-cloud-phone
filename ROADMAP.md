@@ -36,8 +36,15 @@ Play sign-in).
 
 - Reset (wipe `/data`) an instance between owners and record it, so released
   phones can return to the shared pool. The lease guard already waits for
-  this.
-- Per-owner encryption keys for browser profiles (today: one LUKS or fscrypt key for the profile root, verified only; see docs/isolation.md).
+  this. (With `ORCH_PHONE_DATA=per_user` it is not needed: each owner brings
+  their own `/data` volume and the switch is recorded as the reset.)
+- Per-owner volumes (`ORCH_PHONE_DATA=per_user`, `ORCH_BROWSER_PROFILE=volume`,
+  built behind flags, see docs/isolation.md and
+  `.AGENT/reports/2026-10-30-user-volumes.md`) still need: a narrow privileged
+  helper so the orchestrator itself can stay unprivileged and sandboxed (today
+  enabling them needs root in the host mount namespace); a run on a host with
+  device-mapper and a real Redroid container; growing an existing image when an
+  owner's quota is raised; migrating existing profile directories.
 - A short-lived signed direct browser ticket, if relayed CDP ever proves too slow across hosts (measured overhead today: well under 1 ms per message on one host).
 - Run the pytest-only tests in CI.
 

@@ -50,6 +50,7 @@ try:
     from orchestrator.state_store import StateStore, redact_upstream
     from orchestrator.proxy_relay import LeaseProxyRelay
     from orchestrator.runtimes import is_browser_request
+    from orchestrator import user_volumes as uv
 except ImportError:  # running server.py directly
     import procedures as proc
     import browser_pool as bp  # type: ignore
@@ -57,6 +58,7 @@ except ImportError:  # running server.py directly
     from state_store import StateStore, redact_upstream  # type: ignore
     from proxy_relay import LeaseProxyRelay  # type: ignore
     from runtimes import is_browser_request  # type: ignore
+    import user_volumes as uv  # type: ignore
 
 try:  # WebSocket relay (CDP, phone screen). Optional so the phone API runs without it.
     import simple_websocket
@@ -149,6 +151,17 @@ ORCH_OCI_AUTH = os.environ.get("ORCH_OCI_AUTH", "security_token")
 ORCH_STATE_DB = os.environ.get("ORCH_STATE_DB", "")
 ORCH_PROFILE_ROOT = os.environ.get("ORCH_PROFILE_ROOT", "/var/lib/cloud-phone-orchestrator/profiles")
 ORCH_PROFILE_ENCRYPTION = os.environ.get("ORCH_PROFILE_ENCRYPTION", "none")
+# Per-owner encrypted, size-limited volumes (user_volumes.py, docs/isolation.md).
+# Both flags default to the old behaviour.
+ORCH_PHONE_DATA = os.environ.get("ORCH_PHONE_DATA", "instance")          # instance | per_user
+ORCH_BROWSER_PROFILE = os.environ.get("ORCH_BROWSER_PROFILE", "dir")     # dir | volume
+ORCH_VOLUME_ROOT = os.environ.get("ORCH_VOLUME_ROOT", "/var/lib/cloud-phone-orchestrator/volumes")
+ORCH_VOLUME_MASTER_KEY_FILE = os.environ.get("ORCH_VOLUME_MASTER_KEY_FILE", "")
+ORCH_VOLUME_QUOTA_FILE = os.environ.get("ORCH_VOLUME_QUOTA_FILE", "")
+ORCH_QUOTA_PHONE_GB = float(os.environ.get("ORCH_QUOTA_PHONE_GB", "8"))
+ORCH_QUOTA_BROWSER_GB = float(os.environ.get("ORCH_QUOTA_BROWSER_GB", "1"))
+ORCH_HOST_MIN_FREE_GB = float(os.environ.get("ORCH_HOST_MIN_FREE_GB", "10"))
+ORCH_VOLUME_SAMPLE_SECONDS = int(os.environ.get("ORCH_VOLUME_SAMPLE_SECONDS", "300"))
 ORCH_CHROME_RUNTIME = os.environ.get("ORCH_CHROME_RUNTIME", "")
 ORCH_CHROME_BIN = os.environ.get("ORCH_CHROME_BIN", "")
 ORCH_CHROME_IMAGE = os.environ.get("ORCH_CHROME_IMAGE", "")
@@ -493,19 +506,31 @@ def _find_idle_instance(runtime):
     return None
 
 
-def _provision_redroid_local():
+def _phone_container_cmd(argv):
+    """Run redroid-up.sh. One seam so tests can read the argv without Docker."""
+    return subprocess.check_output(argv, text=True)
+
+
+def _redroid_dry_run():
+    return os.environ.get("ORCH_REDROID_DRY_RUN", "").lower() in {"1", "true", "yes"}
+
+
+def _provision_redroid_local(data_dir=None, data_source=None):
     port = _allocate_adb_port()
     name = f"{ORCH_INSTANCE_NAME_PREFIX}-{port}"
     cmd = [
         ORCH_REDROID_UP_SCRIPT,
         "--name", name,
         "--adb-port", str(port),
-        "--json",
     ]
-    if os.environ.get("ORCH_REDROID_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+    if data_dir:
+        # ORCH_PHONE_DATA=per_user: the owner's mounted volume is /data from the start.
+        cmd += ["--data-dir", data_dir]
+    cmd.append("--json")
+    if _redroid_dry_run():
         cmd.append("--dry-run")
     redroid_logger.info("Provisioning local Redroid container: %s", " ".join(cmd))
-    out = subprocess.check_output(cmd, text=True)
+    out = _phone_container_cmd(cmd)
     line = out.strip().splitlines()[-1] if out.strip() else "{}"
     data = json.loads(line)
     adb = data.get("adb_connect") or f"127.0.0.1:{port}"
@@ -516,7 +541,8 @@ def _provision_redroid_local():
         runtime=RUNTIME_REDROID,
         purpose=PURPOSE_AUTOMATION,
         adb_connect=adb,
-        extra={"container": data.get("name"), "image": data.get("image")},
+        extra={"container": data.get("name"), "image": data.get("image"),
+               **({"data_source": data_source} if data_source else {})},
     )
 
 
@@ -559,12 +585,8 @@ def _provision_oci(runtime, purpose):
     return record
 
 
-def _provision_instance(purpose=None, runtime=None):
-    if is_browser_request(purpose, runtime):
-        raise ValueError("browser leases go through POST /sessions with purpose=browser")
-    purpose = resolve_purpose(purpose, runtime)
-    runtime = runtime_for_purpose(purpose)
-
+def _check_capacity(runtime):
+    """Raise the pool-full RuntimeError if one more `runtime` instance would not fit."""
     with _instances_lock:
         if len(_instances) >= ORCH_MAX_INSTANCES:
             raise RuntimeError(f"Instance limit reached (ORCH_MAX_INSTANCES={ORCH_MAX_INSTANCES})")
@@ -576,6 +598,15 @@ def _provision_instance(purpose=None, runtime=None):
                 f"Camera streams use Cuttlefish; automation uses Redroid."
             )
 
+
+def _provision_instance(purpose=None, runtime=None, data_dir=None, data_source=None):
+    if is_browser_request(purpose, runtime):
+        raise ValueError("browser leases go through POST /sessions with purpose=browser")
+    purpose = resolve_purpose(purpose, runtime)
+    runtime = runtime_for_purpose(purpose)
+
+    _check_capacity(runtime)
+
     if ORCH_DEPLOY_MODE == "mock":
         api_url = _mock_api_url(runtime)
         name = f"{ORCH_INSTANCE_NAME_PREFIX}-{runtime}-mock-{_count_runtime(runtime) + 1}"
@@ -586,10 +617,11 @@ def _provision_instance(purpose=None, runtime=None):
             runtime=runtime,
             purpose=purpose,
             adb_connect=f"mock://phone-{uuid.uuid4().hex[:8]}",
+            extra={"data_source": data_source} if data_source else None,
         )
 
     if runtime == RUNTIME_REDROID and ORCH_DEPLOY_MODE == "redroid":
-        return _provision_redroid_local()
+        return _provision_redroid_local(data_dir=data_dir, data_source=data_source)
 
     if runtime == RUNTIME_CUTTLEFISH and ORCH_DEPLOY_MODE == "redroid":
         if not _golden_image_for(RUNTIME_CUTTLEFISH):
@@ -841,6 +873,11 @@ def lease_instance(instance_id):
     ttl = int(data.get("ttl_seconds", 300))
     if ttl < 10:
         return jsonify({"error": "ttl_seconds must be >= 10"}), 400
+    if _phone_per_user():
+        # A raw lease would skip mounting the owner's /data volume (and the
+        # tenancy guard); per-user phones are leased through POST /sessions only.
+        return jsonify({"error": "ORCH_PHONE_DATA=per_user: lease phones with POST /sessions",
+                        "code": "use_sessions"}), 409
     if _is_lease_valid(instance_id):
         return jsonify({"error": "instance already leased"}), 409
     _set_lease(instance_id, owner, ttl)
@@ -1244,13 +1281,259 @@ def _session_from_instance(owner_user_id, inst, ttl_seconds, purpose=None):
     }
 
 
+# ==========================================================================
+# Per-owner volumes (user_volumes.py): phone /data and browser profiles that
+# belong to the owner, are size-limited and encrypted with the owner's key.
+# Every path below is gated on ORCH_PHONE_DATA / ORCH_BROWSER_PROFILE; with
+# both at their defaults nothing here runs.
+# ==========================================================================
+
+_volume_manager = None
+_volume_manager_lock = threading.Lock()
+
+
+def _phone_per_user():
+    return (ORCH_PHONE_DATA or "instance").strip().lower() == "per_user"
+
+
+def _browser_volume():
+    return (ORCH_BROWSER_PROFILE or "dir").strip().lower() == "volume"
+
+
+def _volumes_enabled():
+    return _phone_per_user() or _browser_volume()
+
+
+def _wire_volume_manager(mgr):
+    """The orchestrator owns the registry (state DB) and the answer to "is it leased?"."""
+    mgr.store_get = lambda key: _store.get("volumes", key)
+    mgr.store_put = lambda key, value: _persist("volumes", key, value)
+    mgr.store_delete = lambda key: _persist("volumes", key, None)
+    mgr.lease_check = _volume_in_use
+    return mgr
+
+
+def volume_manager():
+    global _volume_manager
+    with _volume_manager_lock:
+        if _volume_manager is None:
+            _volume_manager = _wire_volume_manager(uv.VolumeManager(
+                ORCH_VOLUME_ROOT, ORCH_VOLUME_MASTER_KEY_FILE,
+                phone_quota_gb=ORCH_QUOTA_PHONE_GB, browser_quota_gb=ORCH_QUOTA_BROWSER_GB,
+                quota_file=ORCH_VOLUME_QUOTA_FILE, host_min_free_gb=ORCH_HOST_MIN_FREE_GB,
+                logger=logger,
+            ))
+        return _volume_manager
+
+
+def set_volume_manager(mgr):
+    """Tests (and embedders) swap the manager; None returns to the default."""
+    global _volume_manager
+    with _volume_manager_lock:
+        _volume_manager = _wire_volume_manager(mgr) if mgr is not None else None
+
+
+def volume_config_refusal():
+    """Why the orchestrator must not start with this volume configuration, or None."""
+    phone = (ORCH_PHONE_DATA or "instance").strip().lower()
+    browser = (ORCH_BROWSER_PROFILE or "dir").strip().lower()
+    if phone not in ("instance", "per_user"):
+        return f"ORCH_PHONE_DATA must be 'instance' or 'per_user' (got {phone!r})"
+    if browser not in ("dir", "volume"):
+        return f"ORCH_BROWSER_PROFILE must be 'dir' or 'volume' (got {browser!r})"
+    if phone == "instance" and browser == "dir":
+        return None
+    if phone == "per_user" and ORCH_DEPLOY_MODE not in ("mock", "redroid"):
+        return (f"ORCH_PHONE_DATA=per_user needs ORCH_DEPLOY_MODE=redroid (got {ORCH_DEPLOY_MODE}): "
+                "oci phones keep /data on their own VM, where this host cannot mount it")
+    if not ORCH_VOLUME_ROOT or not os.path.isabs(ORCH_VOLUME_ROOT):
+        return "ORCH_VOLUME_ROOT must be an absolute path"
+    try:
+        uv.load_master_key(ORCH_VOLUME_MASTER_KEY_FILE)
+    except uv.VolumeError as exc:
+        return f"per-owner volumes are on but {exc}"
+    chrome_mode = (ORCH_CHROME_RUNTIME or ("mock" if ORCH_DEPLOY_MODE == "mock" else "docker")).lower()
+    containers = (phone == "per_user" and ORCH_DEPLOY_MODE == "redroid") or \
+                 (browser == "volume" and chrome_mode == "docker")
+    if containers:
+        problem = _mount_namespace_check()
+        if problem:
+            return f"per-owner volumes are on but {problem}"
+    return None
+
+
+def _mount_namespace_check():
+    return uv.mount_namespace_problem()
+
+
+def _volume_in_use(token, kind):
+    """Is this owner's volume of this kind held by a live lease (or still attached)?"""
+    if kind == uv.KIND_PHONE:
+        with _user_sessions_lock:
+            sessions = list(_user_sessions.items())
+        for owner, sess in sessions:
+            if bp.owner_token(owner) == token and _is_lease_valid(sess.get("instance_id"), owner=owner):
+                return True
+        with _instances_lock:
+            sources = [inst.get("data_source") or {} for inst in _instances.values()]
+        return any(src.get("owner_token") == token and src.get("attached") for src in sources)
+    if kind == uv.KIND_BROWSER:
+        with _browser_lock:
+            return any(s.get("owner_token") == token for s in _browser_sessions.values())
+    return True  # unknown kind: refuse to delete
+
+
+def _adb_port_of(inst):
+    try:
+        return int(str(inst.get("adb_connect") or "").rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _start_phone_container(inst, mount):
+    """(Re)start a Redroid container with `mount` as /data. Mock instances have no container."""
+    if inst.get("mode") != "redroid":
+        return
+    cmd = [ORCH_REDROID_UP_SCRIPT, "--name", inst["name"], "--adb-port", str(_adb_port_of(inst) or 5555),
+           "--data-dir", mount, "--json"]
+    if inst.get("image"):
+        cmd += ["--image", inst["image"]]
+    if _redroid_dry_run():
+        cmd.append("--dry-run")
+    redroid_logger.info("Starting %s with a per-owner /data volume", inst["name"])
+    _phone_container_cmd(cmd)
+
+
+def _stop_phone_container(inst):
+    if inst.get("mode") != "redroid":
+        return
+    cmd = [ORCH_REDROID_UP_SCRIPT, "--name", inst["name"], "--down"]
+    if _redroid_dry_run():
+        cmd.append("--dry-run")
+    _phone_container_cmd(cmd)
+
+
+def _save_instance(inst):
+    with _instances_lock:
+        snapshot = dict(inst)
+    _persist("instances", inst["id"], snapshot)
+
+
+def _attach_phone_data(inst, token, mount):
+    """Make the owner's mounted volume this instance's /data.
+
+    Switching /data to a different owner's volume is recorded as a reset: the
+    previous tenant's data is no longer reachable from the instance (their
+    volume is closed; a per-instance volume is removed by `--down`). The
+    tenancy guard then checks that evidence like any other reset.
+    """
+    src = dict(inst.get("data_source") or {"type": "instance"})
+    same_owner = src.get("type") == "user_volume" and src.get("owner_token") == token
+    if same_owner and src.get("attached"):
+        return
+    if src.get("attached"):
+        _detach_phone_data(inst)  # another owner's volume, left by a lapsed lease
+    if src.get("type") != "user_volume":
+        _stop_phone_container(inst)  # running on its per-instance volume; `down -v` drops it
+    _start_phone_container(inst, mount)
+    inst["data_source"] = {"type": "user_volume", "owner_token": token, "kind": uv.KIND_PHONE,
+                           "attached": True, "attached_at": time.time()}
+    _save_instance(inst)
+    if not same_owner:
+        record_reset(inst["id"])
+        logger.info("Instance %s /data switched to owner token %s's volume (recorded as a reset)",
+                    inst["id"], token)
+
+
+def _detach_phone_data(inst):
+    """Stop the container and close the owner's volume. Keeps the volume."""
+    src = dict(inst.get("data_source") or {})
+    if src.get("type") != "user_volume" or not src.get("attached"):
+        return False
+    try:
+        _stop_phone_container(inst)
+    except Exception:  # noqa: BLE001 - still try to close; umount fails loudly if it is busy
+        logger.exception("stopping %s before closing its /data volume failed", inst.get("name"))
+    try:
+        volume_manager().close_token(src["owner_token"], uv.KIND_PHONE)
+    except Exception:  # noqa: BLE001 - stays attached, so the next tick retries
+        logger.exception("closing the /data volume of instance %s failed", inst.get("id"))
+        return False
+    src.update({"attached": False, "detached_at": time.time()})
+    inst["data_source"] = src
+    _save_instance(inst)
+    return True
+
+
+def _detach_instance_id(instance_id):
+    with _instances_lock:
+        inst = _instances.get(instance_id) if instance_id else None
+    if inst and (inst.get("data_source") or {}).get("attached"):
+        _detach_phone_data(inst)
+
+
+def _reap_phone_volumes():
+    """Release lapsed phone leases whose instance still has an owner's volume attached."""
+    with _instances_lock:
+        attached = [i for i in _instances.values() if (i.get("data_source") or {}).get("attached")]
+    for inst in attached:
+        if _is_lease_valid(inst["id"]):
+            continue
+        with _user_sessions_lock:
+            stale = [o for o, s in _user_sessions.items() if s.get("instance_id") == inst["id"]]
+        for owner in stale:
+            _release_user_session(owner)
+        _detach_phone_data(inst)
+
+
+def _volume_tick():
+    """One pass of the background sampler: reap lapsed leases, measure open volumes."""
+    if not _volumes_enabled():
+        return
+    if _phone_per_user():
+        _reap_phone_volumes()
+    _reap_browser_sessions()
+    try:
+        volume_manager().sample_open()
+    except Exception:  # noqa: BLE001
+        logger.exception("volume usage sample failed")
+
+
+def _volume_sampler(stop=None):
+    while not (stop and stop.is_set()):
+        time.sleep(max(10, ORCH_VOLUME_SAMPLE_SECONDS))
+        try:
+            _volume_tick()
+        except Exception:  # noqa: BLE001 - the sampler must outlive one bad pass
+            logger.exception("volume tick failed")
+
+
+def _volumes_health():
+    out = {"enabled": _volumes_enabled(), "phone_data": (ORCH_PHONE_DATA or "instance"),
+           "browser_profile": (ORCH_BROWSER_PROFILE or "dir"), "root": ORCH_VOLUME_ROOT,
+           "host_free_gb": None}
+    if out["enabled"]:
+        try:
+            out.update(volume_manager().host_status())
+        except Exception:  # noqa: BLE001 - health must answer
+            out["error"] = "host status unavailable"
+    return out
+
+
 def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpose=None, runtime=None):
     if not owner_user_id:
         raise ValueError("owner_user_id required")
     ttl_seconds = max(int(ttl_seconds), 10)
     purpose = resolve_purpose(purpose, runtime)
     runtime = runtime_for_purpose(purpose)
+    per_user = _phone_per_user() and runtime == RUNTIME_REDROID
+    if per_user:
+        if ORCH_DEPLOY_MODE not in ("mock", "redroid"):
+            raise uv.VolumeError("per_user_unsupported",
+                                 "ORCH_PHONE_DATA=per_user needs ORCH_DEPLOY_MODE=redroid", 501)
+        _reap_phone_volumes()
 
+    detach_after = None
     with _user_sessions_lock:
         existing = _user_sessions.get(owner_user_id)
         if existing:
@@ -1276,18 +1559,35 @@ def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpo
                 if old and old.get("lease_id"):
                     _tickets.revoke_lease(old["lease_id"])
                     _streams.kill(old["lease_id"], "killed")
+                if old:
+                    detach_after = inst_id  # stop + close outside the lock
+    if detach_after:
+        _detach_instance_id(detach_after)
 
-    inst = _get_or_create_instance(purpose=purpose, runtime=runtime, provision=provision)
-    if _is_lease_valid(inst["id"]) and not _is_lease_valid(inst["id"], owner=owner_user_id):
-        raise RuntimeError("phone in use")
-    allowed, why = lease_decision(inst["id"], owner_user_id)
-    if not allowed:
-        logger.warning(
-            "Refused instance=%s to owner=%s: %s", inst["id"], owner_user_id, why
-        )
-        raise RuntimeError(f"phone not clean: {why}")
+    if per_user:
+        inst = _acquire_per_user_instance(owner_user_id, purpose, runtime, provision)
+    else:
+        inst = _get_or_create_instance(purpose=purpose, runtime=runtime, provision=provision)
+        if _is_lease_valid(inst["id"]) and not _is_lease_valid(inst["id"], owner=owner_user_id):
+            raise RuntimeError("phone in use")
+        if (inst.get("data_source") or {}).get("type") == "user_volume":
+            # Flag turned off after this instance ran on per-user volumes: whatever
+            # its per-instance /data holds is not covered by the tenancy record.
+            raise RuntimeError(
+                "phone not clean: instance last ran with ORCH_PHONE_DATA=per_user; "
+                "delete and reprovision it before using per-instance /data"
+            )
+        allowed, why = lease_decision(inst["id"], owner_user_id)
+        if not allowed:
+            logger.warning(
+                "Refused instance=%s to owner=%s: %s", inst["id"], owner_user_id, why
+            )
+            raise RuntimeError(f"phone not clean: {why}")
     _set_lease(inst["id"], owner_user_id, ttl_seconds)
     sess = _session_from_instance(owner_user_id, inst, ttl_seconds, purpose)
+    if per_user:
+        sess["data"] = {"source": "user_volume", "kind": uv.KIND_PHONE,
+                        "owner_token": bp.owner_token(owner_user_id)}
     sess["lease_id"] = "pl-" + uuid.uuid4().hex[:16]
     sess["expires_at"] = time.time() + ttl_seconds
     with _user_sessions_lock:
@@ -1298,6 +1598,57 @@ def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpo
         owner_user_id, inst["id"], sess["runtime"], purpose,
     )
     return sess, True
+
+
+def _acquire_per_user_instance(owner_user_id, purpose, runtime, provision):
+    """Pick or provision an instance and give it this owner's /data volume.
+
+    The volume is opened only once a slot is known to exist, so a request
+    refused for capacity allocates nothing. Any refusal afterwards closes the
+    volume again (and stops the container if it was already started on it).
+    """
+    token = bp.owner_token(owner_user_id)
+    try:
+        inst = _get_or_create_instance(purpose=purpose, runtime=runtime, provision=False)
+    except RuntimeError:
+        inst = None
+    if inst is None:
+        if not provision:
+            raise RuntimeError("phone in use")
+        _check_capacity(runtime)
+    vol = volume_manager().open_token(token, uv.KIND_PHONE)
+    try:
+        if inst is None:
+            source = {"type": "user_volume", "owner_token": token, "kind": uv.KIND_PHONE,
+                      "attached": True, "attached_at": time.time()}
+            inst = _provision_instance(purpose=purpose, runtime=runtime, data_dir=vol["mount"],
+                                       data_source=source)
+        if _is_lease_valid(inst["id"]) and not _is_lease_valid(inst["id"], owner=owner_user_id):
+            raise RuntimeError("phone in use")
+        _attach_phone_data(inst, token, vol["mount"])
+        # Second check, independent of the switch above: /data must now be this
+        # owner's volume, and the tenancy guard must agree.
+        src = inst.get("data_source") or {}
+        if not (src.get("type") == "user_volume" and src.get("owner_token") == token and src.get("attached")):
+            logger.warning("Refused instance=%s to owner token=%s: /data is not that owner's volume",
+                           inst["id"], token)
+            raise RuntimeError("phone not clean: /data was not switched to this owner's volume; "
+                               "refusing to hand over the instance's existing /data")
+        allowed, why = lease_decision(inst["id"], owner_user_id)
+        if not allowed:
+            logger.warning("Refused instance=%s to owner token=%s: %s", inst["id"], token, why)
+            raise RuntimeError(f"phone not clean: {why}")
+        return inst
+    except Exception:
+        src = (inst or {}).get("data_source") or {}
+        if inst is not None and src.get("owner_token") == token and src.get("attached"):
+            _detach_phone_data(inst)
+        else:
+            try:
+                volume_manager().close_token(token, uv.KIND_PHONE)
+            except Exception:  # noqa: BLE001 - report the refusal, not the cleanup
+                logger.exception("closing an unused /data volume failed")
+        raise
 
 
 def _release_user_session(owner_user_id):
@@ -1311,6 +1662,9 @@ def _release_user_session(owner_user_id):
         # Releasing the phone ends every ticket and stream that routed to it.
         _tickets.revoke_lease(sess["lease_id"])
         _streams.kill(sess["lease_id"], "killed")
+    # Per-owner /data: stop the container and lock the owner's volume. A
+    # per-instance instance has no data_source, so this is a no-op for it.
+    _detach_instance_id(sess.get("instance_id"))
     logger.info("Released session owner=%s instance=%s", owner_user_id, sess.get("instance_id"))
     return sess
 
@@ -1355,6 +1709,8 @@ def create_session():
             purpose=purpose,
             runtime=runtime,
         )
+    except bp.LeaseError as exc:  # includes user_volumes.VolumeError (507 host_disk_low, ...)
+        return jsonify({"error": str(exc), "code": exc.code}), exc.status
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
@@ -1533,6 +1889,12 @@ def _stop_browser(sess):
     _tickets.revoke_lease(sess.get("lease_id"))
     _streams.kill(sess.get("lease_id"), "killed")
     _limiter.forget(sess.get("lease_id"))
+    if sess.get("profile_volume"):
+        # ORCH_BROWSER_PROFILE=volume: lock the owner's profile volume. It is kept.
+        try:
+            volume_manager().close_token(sess["owner_token"], uv.KIND_BROWSER)
+        except Exception:  # noqa: BLE001
+            logger.exception("closing the profile volume failed lease=%s", sess.get("lease_id"))
 
 
 def _reap_browser_sessions(now=None):
@@ -1588,11 +1950,17 @@ def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_u
         port = _free_cdp_port()
         if port is None:
             raise bp.LeaseError("at_capacity", "no free DevTools port")
-        bp.ensure_profile_root(ORCH_PROFILE_ROOT)
-        ok, detail = bp.check_profile_encryption(ORCH_PROFILE_ROOT, ORCH_PROFILE_ENCRYPTION)
-        if not ok:
-            raise bp.LeaseError("profile_not_encrypted", f"refusing to create a profile: {detail}", 503)
-        profile = bp.ensure_profile_dir(ORCH_PROFILE_ROOT, owner)
+        volume = None
+        if _browser_volume():
+            # The owner's own LUKS volume, sized to their quota, is the profile.
+            volume = volume_manager().open_token(bp.owner_token(owner), uv.KIND_BROWSER)
+            profile = volume["mount"]
+        else:
+            bp.ensure_profile_root(ORCH_PROFILE_ROOT)
+            ok, detail = bp.check_profile_encryption(ORCH_PROFILE_ROOT, ORCH_PROFILE_ENCRYPTION)
+            if not ok:
+                raise bp.LeaseError("profile_not_encrypted", f"refusing to create a profile: {detail}", 503)
+            profile = bp.ensure_profile_dir(ORCH_PROFILE_ROOT, owner)
         t = time.time()
         sess = {
             "lease_id": "bl-" + uuid.uuid4().hex[:16],
@@ -1611,6 +1979,8 @@ def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_u
             "ttl_seconds": ttl,
             "renewals": 0,
         }
+        if volume:
+            sess["profile_volume"] = True
         proxy_server = None
         if proxy_upstream:
             if "@" in proxy_upstream and chrome_runtime().name != "mock":
@@ -1619,7 +1989,15 @@ def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_u
                 proxy_server = relay_srv.server
             else:
                 proxy_server = proxy_upstream if "@" not in proxy_upstream else "per-lease-relay"
-        started = chrome_runtime().start(sess, proxy_server=proxy_server)
+        try:
+            started = chrome_runtime().start(sess, proxy_server=proxy_server)
+        except Exception:
+            if volume:
+                try:
+                    volume_manager().close_token(sess["owner_token"], uv.KIND_BROWSER)
+                except Exception:  # noqa: BLE001 - report the start failure
+                    logger.exception("closing the profile volume after a failed start failed")
+            raise
         sess.update({k: v for k, v in (started or {}).items() if v is not None})
         _browser_sessions[owner] = sess
         _persist_browser(owner, sess)
@@ -1761,6 +2139,13 @@ def kill_session_streams(owner_user_id):
 
 @app.route("/profiles/<owner_user_id>", methods=["GET"])
 def get_profile(owner_user_id):
+    if _browser_volume():
+        try:
+            p = volume_manager().paths(owner_user_id, uv.KIND_BROWSER)
+        except bp.LeaseError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status
+        return jsonify({"owner_token": p["token"], "profile_dir": p["mount"], "volume": True,
+                        "exists": os.path.isfile(p["image"]) and not os.path.islink(p["image"])})
     try:
         path = bp.profile_dir_for(ORCH_PROFILE_ROOT, owner_user_id)
     except bp.LeaseError as exc:
@@ -1782,11 +2167,50 @@ def delete_profile(owner_user_id):
         if owner_user_id in _browser_sessions:
             return jsonify({"error": "release the browser lease first", "code": "lease_active"}), 409
     try:
-        deleted = bp.delete_profile_dir(ORCH_PROFILE_ROOT, owner_user_id)
+        if _browser_volume():
+            deleted = volume_manager().delete_volume(owner_user_id, uv.KIND_BROWSER)
+        else:
+            deleted = bp.delete_profile_dir(ORCH_PROFILE_ROOT, owner_user_id)
     except bp.LeaseError as exc:
-        return jsonify({"error": str(exc)}), exc.status
+        return jsonify({"error": str(exc), "code": exc.code}), exc.status
     logger.warning("Profile deleted owner=%s deleted=%s", bp.owner_token(owner_user_id), deleted)
     return jsonify({"success": True, "deleted": deleted})
+
+
+# ---- per-owner volumes ---------------------------------------------------
+
+@app.route("/volumes/<owner_user_id>", methods=["GET"])
+def get_volumes(owner_user_id):
+    """One owner's volumes: used and limit per kind. Never anybody else's."""
+    if not _volumes_enabled():
+        return jsonify({"error": "per-owner volumes are off", "code": "volumes_disabled"}), 404
+    token = bp.owner_token(owner_user_id)
+    if not token:
+        return jsonify({"error": "owner required", "code": "owner_required"}), 400
+    kinds = ([uv.KIND_PHONE] if _phone_per_user() else []) + ([uv.KIND_BROWSER] if _browser_volume() else [])
+    try:
+        vols = {kind: volume_manager().usage_token(token, kind) for kind in kinds}
+    except bp.LeaseError as exc:
+        return jsonify({"error": str(exc), "code": exc.code}), exc.status
+    return jsonify({"owner_token": token, "volumes": vols})
+
+
+@app.route("/volumes/<owner_user_id>/<kind>", methods=["DELETE"])
+def delete_volume(owner_user_id, kind):
+    """Destroy one of an owner's volumes. Explicit, confirmed, refused while leased."""
+    if kind not in uv.KINDS:
+        return jsonify({"error": "unknown volume kind", "code": "bad_kind"}), 404
+    data = request.get_json(silent=True) or {}
+    if data.get("confirm") != owner_user_id:
+        return jsonify({"error": "confirm must repeat the owner_user_id", "code": "confirm_required"}), 400
+    _reap_browser_sessions()
+    if _phone_per_user():
+        _reap_phone_volumes()
+    try:
+        deleted = volume_manager().delete_volume(owner_user_id, kind)
+    except bp.LeaseError as exc:
+        return jsonify({"error": str(exc), "code": exc.code}), exc.status
+    return jsonify({"success": True, "deleted": deleted, "kind": kind})
 
 
 # ---- relay ---------------------------------------------------------------
@@ -2000,22 +2424,28 @@ def health():
         "pool": {**pool, bp.PURPOSE_BROWSER: _browser_pool_snapshot()},
         "isolation": {
             "state": "persistent" if getattr(_store, "persistent", False) else "memory",
-            "profile_encryption": ORCH_PROFILE_ENCRYPTION or "none",
+            "profile_encryption": ("per-owner-luks-volume" if _browser_volume()
+                                   else ORCH_PROFILE_ENCRYPTION or "none"),
             "tickets_required_for_phones": ORCH_REQUIRE_TICKETS,
             "relay_ws": simple_websocket is not None,
             "open_streams": _streams.count(),
         },
+        "volumes": _volumes_health(),
     })
 
 
 def main():
     host = os.environ.get("ORCH_HOST", "127.0.0.1")
     port = int(os.environ.get("ORCH_PORT", "8090"))
-    why = startup_refusal(host, ORCH_API_TOKEN)
+    why = startup_refusal(host, ORCH_API_TOKEN) or volume_config_refusal()
     if why:
         logger.error(why)
         raise SystemExit(2)
     init_state(ORCH_STATE_DB or ":memory:")
+    if _volumes_enabled():
+        threading.Thread(target=_volume_sampler, name="volume-sampler", daemon=True).start()
+        logger.info("Per-owner volumes on: phone_data=%s browser_profile=%s root=%s",
+                    ORCH_PHONE_DATA, ORCH_BROWSER_PROFILE, ORCH_VOLUME_ROOT)
     if not ORCH_STATE_DB:
         logger.warning("ORCH_STATE_DB unset: leases live in memory and a restart forgets every owner")
     logger.info(

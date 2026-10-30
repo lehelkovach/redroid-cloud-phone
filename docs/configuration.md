@@ -69,6 +69,14 @@ The systemd units also set `CLOUD_PHONE_CONFIG`, but the code reads
 | `ORCH_PUBLIC_URL` | request host | Base used to build relay URLs returned to callers | `_relay_base()` |
 | `ORCH_PROFILE_ROOT` | `/var/lib/cloud-phone-orchestrator/profiles` | Per-owner browser profiles, 0700 | `orchestrator/browser_pool.py` |
 | `ORCH_PROFILE_ENCRYPTION` | `none` | `none`, `luks` or `fscrypt`: verify the profile root is encrypted before using it | `check_profile_encryption()` |
+| `ORCH_PHONE_DATA` | `instance` | `per_user`: each owner's encrypted, size-limited volume is the phone's `/data` (needs `ORCH_DEPLOY_MODE=redroid`). See [isolation.md](isolation.md#per-owner-volumes-phone-data-and-browser-profiles) | `volume_config_refusal()`, `_acquire_user_session()` |
+| `ORCH_BROWSER_PROFILE` | `dir` | `volume`: each owner's encrypted, size-limited volume is the Chrome profile | `_acquire_browser_session()` |
+| `ORCH_VOLUME_ROOT` | `/var/lib/cloud-phone-orchestrator/volumes` | Where per-owner images live (`<owner token>/<kind>.img`, mounted at `<kind>.mnt`), 0700 | `orchestrator/user_volumes.py` |
+| `ORCH_VOLUME_MASTER_KEY_FILE` | empty | File (0600, at least 32 bytes) holding the master from which each owner's LUKS key is derived. Required when either flag is on. Never put the key itself in the environment. | `load_master_key()` |
+| `ORCH_QUOTA_PHONE_GB` / `ORCH_QUOTA_BROWSER_GB` | `8` / `1` | Default size (GiB) of a new phone-data / browser-profile volume | `VolumeManager.quota_bytes()` |
+| `ORCH_VOLUME_QUOTA_FILE` | empty | JSON of per-owner overrides in GiB, keyed by owner id or owner token: `{"avery-example": {"phone-data": 16}}` | `VolumeManager.quota_bytes()` |
+| `ORCH_HOST_MIN_FREE_GB` | `10` | New volumes are refused (`507 host_disk_low`) if they would leave less free space than this, counting every image as fully allocated | `check_host_capacity()` |
+| `ORCH_VOLUME_SAMPLE_SECONDS` | `300` | How often open volumes are measured (80 %/95 % warnings) and lapsed leases reaped | `_volume_sampler()` |
 | `ORCH_CHROME_RUNTIME` | `mock` in mock mode, else `docker` | `mock`, `local` or `docker` | `_default_chrome_runtime()` |
 | `ORCH_CHROME_BIN` | empty | Chromium binary for the `local` runtime | `LocalChromeRuntime` |
 | `ORCH_CHROME_IMAGE` | empty | Container image for the `docker` runtime | `DockerChromeRuntime` |

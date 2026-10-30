@@ -6,9 +6,14 @@ the other's is tried, through the real relay over real sockets: a ticket used
 on the wrong lease, a forged container address, a revoked or expired ticket
 mid-stream, a restart. Any crossover fails the suite.
 
-The last class shows the gate is not vacuous: point both owners at one shared
+The last classes show the gate is not vacuous: point both owners at one shared
 browser (what OSLO's single `oslo-chrome.service` is today) and the same
 detector that passes above fires.
+
+`PerUserVolumeGate` runs the two owners again with per-owner volumes on
+(ORCH_PHONE_DATA=per_user, ORCH_BROWSER_PROFILE=volume) over a fake host:
+different volumes, the same mapping after a restart, and a fresh volume for a
+new owner. `GateCatchesASharedVolume` is its negative control.
 """
 
 import json
@@ -27,6 +32,8 @@ import simple_websocket
 from api.cloudphone_logging import recent_logs
 from orchestrator import browser_pool as bp
 from orchestrator import server as orch
+from orchestrator import user_volumes as uv
+from tests.fixtures.fake_volumes import FakeVolumeHost
 from tests.fixtures.isolation_harness import (
     FAKE_ORCH_TOKEN,
     OWNER_A,
@@ -323,6 +330,203 @@ class GateCatchesASharedBrowser(unittest.TestCase):
             self.assertTrue(logged_in(wb), "detector failed to see a shared browser: the gate is vacuous")
             wa.close()
             wb.close()
+        finally:
+            h.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-owner volumes (ORCH_PHONE_DATA=per_user, ORCH_BROWSER_PROFILE=volume)
+# ---------------------------------------------------------------------------
+
+OWNER_C = "slack:U0FAKEC"
+
+
+def volume_crossover(host, master_key_file, mounts_by_owner):
+    """The detector: every problem with who-mounts-what, as a list of strings.
+
+    For each owner and the mount path its lease uses: the mount must hold an
+    image in THAT owner's directory, and every `cryptsetup open` of an image
+    must have used the key derived for the owner and kind the image belongs
+    to. Empty list = no crossover.
+    """
+    with open(master_key_file, "rb") as fh:
+        master = fh.read()
+    problems = []
+    for owner, mnt in mounts_by_owner.items():
+        img = host.mounted_image(mnt)
+        tok = bp.owner_token(owner)
+        if img is None:
+            problems.append(f"{tok}: nothing mounted at its volume path")
+        elif os.path.basename(os.path.dirname(img)) != tok:
+            problems.append(f"{tok}: mounted an image from {os.path.basename(os.path.dirname(img))}")
+    seen = {}
+    for owner, mnt in mounts_by_owner.items():
+        img = host.mounted_image(mnt)
+        if img and img in seen and seen[img] != owner:
+            problems.append("two owners mount the same image")
+        seen[img] = owner
+    loops = {}
+    for argv, stdin in host.calls:
+        if argv[:3] == ("losetup", "--find", "--show"):
+            loops[f"/dev/loop{len(loops)}"] = argv[3]
+        if argv[:2] == ("cryptsetup", "open"):
+            img = loops.get(argv[-2], argv[-2])
+            tok, kind = os.path.basename(os.path.dirname(img)), os.path.basename(img)[:-len(".img")]
+            if stdin != uv.derive_key(master, tok, kind):
+                problems.append(f"{img} opened with a key that is not its owner's")
+    return problems
+
+
+class PerUserVolumeGate(unittest.TestCase):
+    """The gate again with both volume flags on: each owner's phone and browser on their own volume."""
+
+    def setUp(self):
+        self.h = Harness()
+        self.host = FakeVolumeHost()
+        self.vm = self.h.enable_volumes(self.host)
+        self.a = self.h.browser(OWNER_A).json()
+        self.b = self.h.browser(OWNER_B).json()
+        self.pa = self.h.phone_lease(OWNER_A).json()
+        self.pb = self.h.phone_lease(OWNER_B).json()
+        self._open = []
+
+    def tearDown(self):
+        for ws in self._open:
+            try:
+                ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self.h.close()
+
+    def mounts(self, *owners):
+        out = {}
+        for owner in owners:
+            out[f"{owner}#phone"] = self.vm.paths(owner, uv.KIND_PHONE)["mount"]
+            out[f"{owner}#browser"] = self.vm.paths(owner, uv.KIND_BROWSER)["mount"]
+        return out
+
+    def check(self, *owners):
+        by_owner = {}
+        for owner in owners:
+            by_owner[owner] = self.vm.paths(owner, uv.KIND_PHONE)["mount"]
+        problems = volume_crossover(self.host, self.h.master_key_file, by_owner)
+        by_owner = {owner: self.vm.paths(owner, uv.KIND_BROWSER)["mount"] for owner in owners}
+        problems += volume_crossover(self.host, self.h.master_key_file, by_owner)
+        self.assertEqual(problems, [])
+
+    def browser_token(self, lease):
+        ws = self.h.cdp_connect(lease["relay"]["cdp_ws_url"], lease["ticket"])
+        self._open.append(ws)
+        return cdp_call(ws, 1, "Browser.getVersion")["result"]["browser"]
+
+    def test_a_and_b_leases_mount_different_volumes(self):
+        for body in (self.a, self.b, self.pa, self.pb):
+            self.assertIn(body.get("session", {}).get("lease_id", "x")[:3], ("bl-", "pl-"), body)
+        pa_dir, pb_dir = self.a["session"]["profile_dir"], self.b["session"]["profile_dir"]
+        self.assertEqual(pa_dir, self.vm.paths(OWNER_A, uv.KIND_BROWSER)["mount"])
+        self.assertEqual(pb_dir, self.vm.paths(OWNER_B, uv.KIND_BROWSER)["mount"])
+        self.assertEqual(self.pa["session"]["data"]["owner_token"], bp.owner_token(OWNER_A))
+        self.assertEqual(self.pb["session"]["data"]["owner_token"], bp.owner_token(OWNER_B))
+        self.assertEqual(len(set(self.host.mounts.values())), 4, "four leases, four volumes")
+        self.check(OWNER_A, OWNER_B)
+        self.assertEqual(self.browser_token(self.a), bp.owner_token(OWNER_A))
+        r = requests.get(f"{self.h.base}/relay/phone/health", headers={"X-Orch-Ticket": self.pb["ticket"]}, timeout=5)
+        self.assertEqual(r.json()["phone"], self.pb["session"]["adb_connect"])
+
+    def test_restart_keeps_each_lease_on_its_own_volume(self):
+        self.h.restart()
+        sessions = requests.get(f"{self.h.base}/sessions", headers=self.h.headers(), timeout=5).json()
+        browsers = {s["owner_user_id"]: s["profile_dir"] for s in sessions["browser_sessions"]}
+        self.assertEqual(browsers, {OWNER_A: self.vm.paths(OWNER_A, uv.KIND_BROWSER)["mount"],
+                                    OWNER_B: self.vm.paths(OWNER_B, uv.KIND_BROWSER)["mount"]})
+        for s in sessions["sessions"]:
+            tok = bp.owner_token(s["owner_user_id"])
+            self.assertEqual(s["data"]["owner_token"], tok)
+            self.assertEqual(orch._instances[s["instance_id"]]["data_source"]["owner_token"], tok)
+            self.assertTrue(orch._instances[s["instance_id"]]["data_source"]["attached"])
+        n = len(self.host.calls)
+        for owner, phone in ((OWNER_A, self.pa), (OWNER_B, self.pb)):
+            again = self.h.phone_lease(owner)
+            self.assertEqual(again.status_code, 200)
+            self.assertEqual(again.json()["session"]["instance_id"], phone["session"]["instance_id"])
+            self.assertEqual(self.h.browser(owner).status_code, 200)
+        self.assertEqual(len(self.host.calls), n, "renewing after a restart re-opens nothing")
+        self.check(OWNER_A, OWNER_B)
+        self.assertEqual(self.browser_token(self.a), bp.owner_token(OWNER_A))
+
+    def test_new_owner_c_gets_freshly_created_volumes(self):
+        for purpose in ("browser", None):
+            q = "?purpose=browser" if purpose else ""
+            self.assertEqual(requests.delete(f"{self.h.base}/sessions/{OWNER_A}{q}", headers=self.h.headers(),
+                                             timeout=5).status_code, 200)
+        a_images = {self.vm.paths(OWNER_A, k)["image"] for k in uv.KINDS}
+        mark = len(self.host.calls)
+        pc = self.h.phone_lease(OWNER_C)
+        bc = self.h.browser(OWNER_C)
+        self.assertEqual((pc.status_code, bc.status_code), (201, 201), (pc.text, bc.text))
+        after = self.host.calls[mark:]
+        formatted = {argv[-1] for argv, _ in after if argv[:2] == ("cryptsetup", "luksFormat")}
+        self.assertEqual(formatted, {self.vm.paths(OWNER_C, k)["image"] for k in uv.KINDS},
+                         "C's volumes are new images, formatted for C")
+        touched = {argv[-1] for argv, _ in after if argv[:2] in (("losetup", "--find"), ("cryptsetup", "luksFormat"))}
+        self.assertFalse(touched & a_images, "nothing of A's was opened for C")
+        for img in a_images:
+            self.assertNotIn(img, self.host.mappers.values(), "A's volumes are locked after release")
+        # C most likely took A's released phone: /data was switched, and the switch recorded.
+        inst = orch._instances[pc.json()["session"]["instance_id"]]
+        self.assertEqual(inst["data_source"]["owner_token"], bp.owner_token(OWNER_C))
+        if inst["id"] == self.pa["session"]["instance_id"]:
+            self.assertGreater(orch._instance_tenancy[inst["id"]]["reset_at"], 0)
+        self.check(OWNER_B, OWNER_C)
+
+
+class GateCatchesASharedVolume(unittest.TestCase):
+    """Negative control: a manager that maps every owner to one volume must trip the detector."""
+
+    def test_shared_volume_is_detected(self):
+        class OneVolumeForEveryone(uv.VolumeManager):
+            """Loses the owner entirely (paths AND key): what the detector must catch."""
+
+            def paths_for_token(self, tok, kind):
+                return super().paths_for_token("everyone", kind)
+
+            def open_token(self, tok, kind):
+                return super().open_token("everyone", kind)
+
+            def close_token(self, tok, kind):
+                return super().close_token("everyone", kind)
+
+        h = Harness()
+        host = FakeVolumeHost()
+        try:
+            vm = h.enable_volumes(host, manager_cls=OneVolumeForEveryone)
+            self.assertEqual(h.phone_lease(OWNER_A).status_code, 201)
+            requests.delete(f"{h.base}/sessions/{OWNER_A}", headers=h.headers(), timeout=5)
+            self.assertEqual(h.phone_lease(OWNER_B).status_code, 201)
+            mnt = vm.paths(OWNER_B, uv.KIND_PHONE)["mount"]
+            problems = volume_crossover(host, h.master_key_file, {OWNER_B: mnt})
+            self.assertTrue(problems, "detector failed to see a shared volume: the gate is vacuous")
+        finally:
+            h.close()
+
+    def test_misrouted_paths_alone_are_refused_by_the_key(self):
+        """A bug that only mis-routes paths cannot cross owners: B's key does not open A's image."""
+        class PathsOnly(uv.VolumeManager):
+            def paths_for_token(self, tok, kind):
+                return super().paths_for_token("everyone", kind)
+
+        h = Harness()
+        host = FakeVolumeHost()
+        try:
+            h.enable_volumes(host, manager_cls=PathsOnly)
+            self.assertEqual(h.phone_lease(OWNER_A).status_code, 201)
+            held = h.phone_lease(OWNER_B)   # A still holds the (shared-path) volume open
+            self.assertEqual((held.status_code, held.json()["code"]), (403, "volume_key_mismatch"))
+            requests.delete(f"{h.base}/sessions/{OWNER_A}", headers=h.headers(), timeout=5)
+            closed = h.phone_lease(OWNER_B)  # A's volume is locked
+            self.assertEqual(closed.status_code, 500)
+            self.assertEqual(host.mounts, {}, "nothing is mounted for B")
+            self.assertNotIn(OWNER_B, orch._user_sessions)
         finally:
             h.close()
 

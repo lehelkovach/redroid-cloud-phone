@@ -73,6 +73,21 @@ class DeployScriptContractTests(unittest.TestCase):
         data = json.loads(r.stdout.strip().splitlines()[-1])
         self.assertEqual(data["status"], "removed")
 
+    def test_redroid_data_dir_binds_the_owner_volume(self):
+        """ORCH_PHONE_DATA=per_user: redroid-up.sh --data-dir makes /data a bind of the owner's volume."""
+        script = str(ROOT / "scripts" / "redroid-up.sh")
+        r = run(["bash", script, "--dry-run", "--json", "--name", "pool-ci",
+                 "--data-dir", "/var/lib/cloud-phone-orchestrator/volumes/x/phone-data.mnt"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["data"], "bind")
+        plain = run(["bash", script, "--dry-run", "--json", "--name", "pool-ci"])
+        self.assertEqual(json.loads(plain.stdout.strip().splitlines()[-1])["data"], "volume")
+        for bad in ("relative/dir", "/a/../b", "/a:/etc"):
+            r = run(["bash", script, "--dry-run", "--json", "--name", "pool-ci", "--data-dir", bad])
+            self.assertNotEqual(r.returncode, 0, bad)
+        for compose in ("redroid-compose.yml", "redroid-gapps-compose.yml"):
+            self.assertIn("${REDROID_DATA_SOURCE:-", (ROOT / "docker" / compose).read_text(), compose)
+
 
 class GappsInstallerContractTests(unittest.TestCase):
     def test_validate_only_without_adb_fails_cleanly(self):

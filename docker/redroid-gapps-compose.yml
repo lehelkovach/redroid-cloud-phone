@@ -21,7 +21,8 @@ services:
     ports:
       - "${ADB_BIND:-127.0.0.1}:${ADB_PORT:-5555}:5555"
     volumes:
-      - redroid-gapps-data:/data
+      # An absolute REDROID_DATA_SOURCE binds a per-owner volume instead (see redroid-up.sh --data-dir).
+      - ${REDROID_DATA_SOURCE:-redroid-gapps-data}:/data
     command:
       - androidboot.redroid_gpu_mode=${GPU_MODE:-guest}
       - androidboot.redroid_width=${REDROID_WIDTH:-1280}

@@ -272,6 +272,31 @@ session carries a `lease_id` and `expires_at`.
 | `GET /profiles/<owner>` | `{owner_token, profile_dir, exists, mode}` |
 | `DELETE /profiles/<owner>` | Body `{"confirm": "<owner>"}` (`400` otherwise). `409 lease_active` while leased. |
 
+With `ORCH_BROWSER_PROFILE=volume`, `GET /profiles/<owner>` returns
+`{owner_token, profile_dir (the mount point), exists, volume: true}` and
+`DELETE /profiles/<owner>` deletes the owner's browser-profile volume.
+
+### Per-owner volumes
+
+On when `ORCH_PHONE_DATA=per_user` or `ORCH_BROWSER_PROFILE=volume`
+([isolation.md](../isolation.md#per-owner-volumes-phone-data-and-browser-profiles)).
+
+| Endpoint | Notes |
+|---|---|
+| `GET /volumes/<owner>` | That owner only: `{owner_token, volumes: {"phone-data": {exists, open, limit_bytes, size_bytes, used_bytes, used_pct}, "browser-profile": {…}}}` (the kinds whose flag is on). `404 volumes_disabled` with both flags off. |
+| `DELETE /volumes/<owner>/<kind>` | `kind` is `phone-data` or `browser-profile` (`404` otherwise). Body `{"confirm": "<owner>"}` (`400` otherwise). `409 lease_active` while leased. Wipes the LUKS keyslots, then removes the image. `{deleted, kind}` |
+
+A phone session leased with `ORCH_PHONE_DATA=per_user` carries
+`"data": {"source": "user_volume", "kind": "phone-data", "owner_token": "…"}`.
+New refusals on `POST /sessions` (phone or browser): `507 host_disk_low`,
+`503 volume_key_missing` / `volume_key_insecure`, `403 volume_key_mismatch`,
+`501 per_user_unsupported` (phones outside `redroid` mode), `500
+volume_command_failed`. `POST /instances/<id>/lease` answers `409
+use_sessions` while `ORCH_PHONE_DATA=per_user`.
+
+`GET /health` has `volumes: {enabled, phone_data, browser_profile, root,
+host_free_gb, host_uncommitted_gb, min_free_gb}` (no owners, no key material).
+
 ### Relay (ticket auth, no orchestrator token)
 
 | Route | Notes |
