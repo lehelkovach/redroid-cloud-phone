@@ -16,7 +16,10 @@ services:
     ports:
       - "${ADB_PORT:-5555}:5555"
     volumes:
-      - redroid-data:/data
+      # REDROID_DATA_SOURCE: an absolute path binds the owner's per-user volume
+      # (redroid-up.sh --data-dir, ORCH_PHONE_DATA=per_user); unset keeps the
+      # per-container named volume.
+      - ${REDROID_DATA_SOURCE:-redroid-data}:/data
     command:
       - androidboot.redroid_gpu_mode=${GPU_MODE:-guest}
       - androidboot.redroid_width=${REDROID_WIDTH:-1280}

@@ -6,6 +6,7 @@
 #
 # Usage:
 #   ./scripts/redroid-up.sh --name phone-1 --adb-port 5555
+#   ./scripts/redroid-up.sh --name phone-1 --adb-port 5555 --data-dir /var/lib/.../phone-data.mnt
 #   ./scripts/redroid-up.sh --name phone-1 --down
 #   ./scripts/redroid-up.sh --dry-run --json --name phone-1
 
@@ -22,6 +23,7 @@ LOG_TYPE=RDR
 NAME="${REDROID_NAME:-redroid}"
 ADB_PORT="${ADB_PORT:-5555}"
 IMAGE="${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}"
+DATA_DIR=""
 DRY_RUN="false"
 JSON="false"
 ACTION="up"
@@ -35,6 +37,10 @@ Options:
   --name NAME         Container / compose project name (default: redroid)
   --adb-port PORT     Host ADB port (default: 5555)
   --image IMAGE       Redroid image (default: redroid/redroid:11.0.0-latest)
+  --data-dir PATH     Bind-mount PATH (absolute, an existing directory) as /data
+                      instead of the per-container named volume. The orchestrator
+                      passes the owner's mounted volume here (ORCH_PHONE_DATA=per_user).
+                      `--down` never deletes a bind-mounted directory.
   --down              Stop and remove the container
   --dry-run           Print actions; do not call docker
   --json              Print a JSON record on stdout (logs on stderr)
@@ -49,6 +55,7 @@ while [[ $# -gt 0 ]]; do
         --name) NAME="${2:-}"; shift 2 ;;
         --adb-port) ADB_PORT="${2:-}"; shift 2 ;;
         --image) IMAGE="${2:-}"; shift 2 ;;
+        --data-dir) DATA_DIR="${2:-}"; shift 2 ;;
         --down) ACTION="down"; shift ;;
         --dry-run) DRY_RUN="true"; shift ;;
         --json) JSON="true"; shift ;;
@@ -66,12 +73,24 @@ if [[ ! "$ADB_PORT" =~ ^[0-9]+$ ]] || [[ "$ADB_PORT" -lt 1 ]] || [[ "$ADB_PORT" 
     exit 1
 fi
 
+if [[ -n "$DATA_DIR" ]]; then
+    if [[ "$DATA_DIR" != /* || "$DATA_DIR" == *".."* || "$DATA_DIR" == *":"* ]]; then
+        echo "Invalid --data-dir (must be an absolute path without '..' or ':'): $DATA_DIR" >&2
+        exit 1
+    fi
+    if [[ "$DRY_RUN" != "true" && ( ! -d "$DATA_DIR" || -L "$DATA_DIR" ) ]]; then
+        echo "--data-dir is not a directory (or is a symlink): $DATA_DIR" >&2
+        exit 1
+    fi
+fi
+
 log() { log_info "$*"; }
 
 emit_json() {
-    local status="$1"
-    printf '{"runtime":"redroid","name":"%s","adb_connect":"127.0.0.1:%s","image":"%s","status":"%s","compose":"%s"}\n' \
-        "$NAME" "$ADB_PORT" "$IMAGE" "$status" "$COMPOSE_FILE"
+    local status="$1" data="volume"
+    [[ -n "$DATA_DIR" ]] && data="bind"
+    printf '{"runtime":"redroid","name":"%s","adb_connect":"127.0.0.1:%s","image":"%s","status":"%s","compose":"%s","data":"%s"}\n' \
+        "$NAME" "$ADB_PORT" "$IMAGE" "$status" "$COMPOSE_FILE" "$data"
 }
 
 compose_cmd() {
@@ -81,6 +100,10 @@ compose_cmd() {
 export REDROID_NAME="$NAME"
 export ADB_PORT
 export REDROID_IMAGE="$IMAGE"
+if [[ -n "$DATA_DIR" ]]; then
+    # Compose reads an absolute path here as a bind mount, a bare name as a volume.
+    export REDROID_DATA_SOURCE="$DATA_DIR"
+fi
 
 if [[ "$ACTION" == "down" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
@@ -99,7 +122,7 @@ if [[ "$ACTION" == "down" ]]; then
 fi
 
 if [[ "$DRY_RUN" == "true" ]]; then
-    log "dry-run: $(compose_cmd) up -d  (image=$IMAGE adb=127.0.0.1:$ADB_PORT)"
+    log "dry-run: $(compose_cmd) up -d  (image=$IMAGE adb=127.0.0.1:$ADB_PORT data=${DATA_DIR:-named volume})"
     log "no camera devices will be mounted (Cuttlefish owns virtual cam)"
     [[ "$JSON" == "true" ]] && emit_json "started"
     exit 0

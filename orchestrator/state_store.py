@@ -14,7 +14,8 @@ start. SQLite (stdlib) rather than a server, because the orchestrator is one
 process on one host and the state is a few hundred rows at most.
 
 What is never written here: proxy credentials, bearer tokens, raw ticket
-values. Tickets are stored as SHA-256 digests; a proxy upstream is stored with
+values, volume keys or the volume master key (the "volumes" namespace holds
+only sizes, open state and last usage, keyed by owner token). Tickets are stored as SHA-256 digests; a proxy upstream is stored with
 its userinfo stripped (`redact_upstream`). A restart therefore keeps every
 booking and loses only secrets, which the owner's client supplies again on its
 next acquire.
@@ -37,6 +38,7 @@ NAMESPACES = (
     "user_sessions",
     "browser_sessions",
     "tickets",
+    "volumes",
 )
 
 _SCHEMA = """

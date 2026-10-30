@@ -190,6 +190,28 @@ class Harness:
         body = {"owner_user_id": owner, "ttl_seconds": 600, **extra}
         return requests.post(f"{self.base}/sessions", json=body, headers=self.headers(), timeout=10)
 
+    def enable_volumes(self, host, manager_cls=None):
+        """Turn on per-owner volumes (both flags) over a fake host (tests/fixtures/fake_volumes.py).
+
+        The fake host is the kernel: it is not reset by `restart()`, exactly as
+        real mounts outlive the orchestrator process.
+        """
+        from orchestrator import user_volumes as uv
+        self.volume_root = os.path.join(self.tmp, "volumes")
+        self.master_key_file = os.path.join(self.tmp, "volume-master.key")
+        with open(self.master_key_file, "wb") as fh:
+            fh.write(os.urandom(32))  # generated per run; fake, never stored
+        os.chmod(self.master_key_file, 0o600)
+        orch.ORCH_PHONE_DATA = "per_user"
+        orch.ORCH_BROWSER_PROFILE = "volume"
+        orch.ORCH_VOLUME_ROOT = self.volume_root
+        orch.ORCH_VOLUME_MASTER_KEY_FILE = self.master_key_file
+        self.volumes = (manager_cls or uv.VolumeManager)(
+            self.volume_root, self.master_key_file, phone_quota_gb=8, browser_quota_gb=1, host_min_free_gb=10,
+            **host.hooks())
+        orch.set_volume_manager(self.volumes)
+        return self.volumes
+
     def cdp_connect(self, url, ticket):
         return simple_websocket.Client.connect(url, headers={"X-Orch-Ticket": ticket})
 
@@ -210,6 +232,9 @@ class Harness:
             except Exception:  # noqa: BLE001
                 pass
         orch.set_chrome_runtime(None)
+        orch.set_volume_manager(None)
+        orch.ORCH_PHONE_DATA = "instance"
+        orch.ORCH_BROWSER_PROFILE = "dir"
         orch.init_state(":memory:")
         orch._instances.clear()
         orch._leases.clear()
