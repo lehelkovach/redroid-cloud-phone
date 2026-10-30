@@ -27,11 +27,14 @@ OFFLINE_SUITES=(
     "sessions:tests.test_user_sessions"
     "gapps:tests.test_gapps_zip"
     "gapps-health:tests.test_gapps_health"
+    "gapps-image:tests.test_gapps_image"
+    "app-install:tests.test_app_install"
     "scripts-contract:tests.test_scripts_contract"
     "ui-control:tests.test_ui_control"
     "runtime-pool:tests.test_runtime_pool"
     "mobile-e2e:tests.test_mobile_e2e_scenario"
     "procedure-api:tests.test_procedure_api"
+    "real-app-smoke:tests.test_real_app_smoke"
 )
 
 SCRIPT_SUITES=(
@@ -91,6 +94,7 @@ while [[ $# -gt 0 ]]; do
             echo "  agent-api (live)"
             echo "  connectivity (live)"
             echo "  live (CLOUD_PHONE_LIVE=1, tests.test_live)"
+            echo "  real-apps (live, scripts/real-app-smoke.py; token from CLOUD_PHONE_API_TOKEN)"
             exit 0
             ;;
         --help|-h) usage; exit 0 ;;
@@ -201,6 +205,21 @@ if [[ "$LIVE" == "true" ]]; then
         else
             log_error "  FAIL live — see $REPORT_DIR/live.log"
             FAIL=$((FAIL + 1)); FAILED_SUITES+=("live")
+        fi
+    fi
+    if matches "real-apps"; then
+        log_info "suite real-apps (scripts/real-app-smoke.py -> $API_URL)"
+        if "$PYTHON" scripts/real-app-smoke.py --api-url "$API_URL" \
+                --out "$REPORT_DIR/real-app-smoke" >"$REPORT_DIR/real-apps.log" 2>&1; then
+            log_info "  PASS real-apps"; PASS=$((PASS + 1))
+        else
+            rc=$?
+            if [[ $rc -eq 77 ]]; then
+                log_warn "  SKIP real-apps (no usable phone at $API_URL)"
+            else
+                log_error "  FAIL real-apps — see $REPORT_DIR/real-apps.log"
+                FAIL=$((FAIL + 1)); FAILED_SUITES+=("real-apps")
+            fi
         fi
     fi
 else

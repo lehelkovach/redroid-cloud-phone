@@ -102,6 +102,9 @@ if [[ -d "$PROJECT_ROOT/scripts/lib" ]]; then
     cp "$PROJECT_ROOT/scripts/lib/"*.sh /opt/cloud-phone-scripts/lib/
 fi
 cp "$PROJECT_ROOT/docker/redroid-compose.yml" /opt/cloud-phone/docker/redroid-compose.yml
+# GApps phone: installed, not enabled. See docs/GAPPS-AND-APP-INSTALL.md.
+cp "$PROJECT_ROOT/docker/redroid-gapps-compose.yml" /opt/cloud-phone/docker/redroid-gapps-compose.yml
+mkdir -p /opt/cloud-phone/apks
 chmod +x /opt/cloud-phone-scripts/*.sh
 
 log_info "[3/8] Installing Control API..."
@@ -110,6 +113,7 @@ cp "$PROJECT_ROOT/api/server.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/cloudphone_logging.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/ui_control.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/viewport.py" /opt/cloud-phone-api/
+cp "$PROJECT_ROOT/api/app_install.py" /opt/cloud-phone-api/
 cp "$PROJECT_ROOT/api/requirements.txt" /opt/cloud-phone-api/
 mkdir -p /opt/cloud-phone/config/device-profiles
 if [[ -d "$PROJECT_ROOT/config/device-profiles" ]]; then
@@ -123,6 +127,7 @@ log_info "[4/8] Installing Redroid systemd units..."
 cp "$PROJECT_ROOT/systemd/redroid-container.service" /etc/systemd/system/
 cp "$PROJECT_ROOT/systemd/redroid-cloud-phone.target" /etc/systemd/system/
 cp "$PROJECT_ROOT/systemd/control-api-redroid.service" /etc/systemd/system/
+cp "$PROJECT_ROOT/systemd/redroid-gapps-container.service" /etc/systemd/system/  # not enabled
 
 mkdir -p /etc/default
 cat > /etc/default/redroid-cloud-phone <<EOF

@@ -26,6 +26,12 @@ Line references point at the code that reads each variable.
 | `VNC_WIDTH` | `REDROID_WIDTH` or `1280` | Screen width used when the real size cannot be read | `api/viewport.py:23` |
 | `VNC_HEIGHT` | `REDROID_HEIGHT` or `720` | Screen height, same fallback | `api/viewport.py:24` |
 | `VNC_FPS` | `REDROID_FPS` or `30` | Frame rate reported by `/vnc/status` | `api/viewport.py:33` |
+| `APP_INSTALL_DIRS` | `/opt/cloud-phone/apks` | Colon-separated directories `POST /apps/install` may install from by `path` | `api/app_install.py` (`install_dirs`) |
+| `APP_INSTALL_MAX_BYTES` | `1073741824` (1 GiB) | Largest download `POST /apps/install` accepts per URL | `api/server.py` |
+| `APP_INSTALL_MAX_FILES` | `32` | Most files in one install (split set) | `api/app_install.py` |
+| `APP_INSTALL_TIMEOUT` | `300` | Seconds `adb install` may take | `api/server.py` |
+| `APP_INSTALL_ALLOW_PRIVATE` | unset | `1`/`true`/`yes` lets install URLs resolve to private, loopback or link-local addresses (e.g. an internal mirror) | `api/server.py` |
+| `PLAY_INSTALL_TIMEOUT` | `600` | Default seconds `POST /apps/play/install` waits for Play to finish | `api/server.py` |
 
 The systemd units also set `CLOUD_PHONE_CONFIG`, but the code reads
 `CONFIG_FILE`, so that setting has no effect.
@@ -93,6 +99,33 @@ Read by `scripts/redroid-up.sh` and `docker/redroid-compose.yml`.
 | `REDROID_DPI` | `240` | Screen density | `docker/redroid-compose.yml:25` |
 | `GPU_MODE` | `guest` | Passed as `androidboot.redroid_gpu_mode` | `docker/redroid-compose.yml:21` |
 
+## GApps phone (`docker/redroid-gapps-compose.yml`, `systemd/redroid-gapps-container.service`)
+
+Off by default (compose profile `gapps`; the unit is installed, not enabled).
+The screen and GPU variables above apply too.
+
+| Variable | Default | What it does | Read at |
+|---|---|---|---|
+| `REDROID_GAPPS_IMAGE` | none (required) | Image built by `build-gapps-image.sh` | `docker/redroid-gapps-compose.yml` |
+| `REDROID_NAME` | `redroid-gapps` | Container name | `docker/redroid-gapps-compose.yml` |
+| `ADB_BIND` | `127.0.0.1` | Host address the ADB port binds to. The phone holds a signed-in Google account; keep it on loopback | `docker/redroid-gapps-compose.yml` |
+| `ADB_PORT` | `5555` | Host ADB port (the same as the plain phone's, so run one or the other) | `docker/redroid-gapps-compose.yml` |
+| `REDROID_USE_MEMFD` | `true` | `androidboot.use_memfd`; lets Redroid run on kernels without ashmem (5.18+) | `docker/redroid-gapps-compose.yml` |
+
+## GApps image build (`scripts/build-gapps-image.sh`)
+
+Flags win over these. Details: [GAPPS-AND-APP-INSTALL.md](GAPPS-AND-APP-INSTALL.md).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `GAPPS_ZIP` | empty | Zip path (`--zip`) |
+| `GAPPS_ZIP_URL` | empty | HTTPS URL (`--zip-url`); needs a SHA-256 |
+| `GAPPS_ZIP_SHA256` | empty | Expected SHA-256 (`--sha256`) |
+| `REDROID_GAPPS_ANDROID` | `13.0.0` | Android version (`--android`) |
+| `REDROID_GAPPS_ARCH` | this machine's | `arm64` or `amd64` (`--arch`) |
+| `REDROID_GAPPS_BASE` | `redroid/redroid:<android>-latest` | Base image (`--base`) |
+| `REDROID_GAPPS_TAG` | `cloud-phone/redroid-gapps:<android>-<arch>` | Output tag (`--tag`) |
+
 ## GApps installer (`scripts/install-gapps-redroid.sh`)
 
 | Variable | Default | What it does | Read at |
@@ -145,6 +178,8 @@ variable in `.env.example` is not read by the deploy scripts.
 | `CLOUD_PHONE_API_URL` | `http://127.0.0.1:8080` | Control API for live suites | `scripts/run-tests.sh:47`, `tests/test_live.py:10` |
 | `CLOUD_PHONE_LIVE` | unset | `1` enables `tests/test_live.py` | `tests/test_live.py:9` |
 | `REQUIRE_GAPPS` | unset | `1` makes the live suite require Play packages | `tests/test_live.py:22` |
+| `CLOUD_PHONE_REAL_DEVICE` | unset | `1` enables the live class in `tests/test_real_app_smoke.py` (drives three real apps) | `tests/test_real_app_smoke.py` |
+| `CLOUD_PHONE_API_TOKEN` | unset | Bearer token for `scripts/real-app-smoke.py` (falls back to `API_TOKEN`; `--token-file` wins) | `scripts/real-app-smoke.py` |
 | `PUBLIC_IP`, `SSH_USER`, `SSH_KEY` | empty, `ubuntu`, empty | Target for `tests/test_connectivity.py` | `tests/test_connectivity.py:19-21` |
 
 ## Deployed hosts

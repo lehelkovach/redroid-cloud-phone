@@ -1,0 +1,32 @@
+[Unit]
+Description=Redroid phone with Google Play (baked GApps image)
+Documentation=https://github.com/lehelkovach/redroid-cloud-phone/blob/master/docs/GAPPS-AND-APP-INSTALL.md
+After=docker.service network-online.target
+Requires=docker.service
+# Same host ADB port as the plain phone; never run both.
+Conflicts=redroid-container.service
+PartOf=redroid-cloud-phone.target
+
+# Installed but NOT enabled by install-redroid-cloud-phone.sh. To switch a
+# host to the GApps phone, set REDROID_GAPPS_IMAGE in
+# /etc/default/redroid-cloud-phone, then:
+#   systemctl disable --now redroid-container.service
+#   systemctl enable --now redroid-gapps-container.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/redroid-cloud-phone
+Environment=REDROID_NAME=redroid-gapps
+Environment=ADB_PORT=5555
+# Refuse to start without binder: the container would boot-loop otherwise.
+ExecStartPre=/bin/sh -c 'grep -qw binder /proc/filesystems || test -e /dev/binder || { echo "no binder in this kernel; see docs/GAPPS-AND-APP-INSTALL.md" >&2; exit 1; }'
+ExecStartPre=/bin/sh -c 'test -n "$REDROID_GAPPS_IMAGE" || { echo "REDROID_GAPPS_IMAGE is not set in /etc/default/redroid-cloud-phone" >&2; exit 1; }'
+ExecStart=/usr/bin/docker compose -f /opt/cloud-phone/docker/redroid-gapps-compose.yml -p redroid-gapps --profile gapps up -d
+# `down` without -v: the data volume holds the owner's Google sign-in.
+ExecStop=/usr/bin/docker compose -f /opt/cloud-phone/docker/redroid-gapps-compose.yml -p redroid-gapps --profile gapps down
+TimeoutStartSec=300
+TimeoutStopSec=60
+
+[Install]
+WantedBy=redroid-cloud-phone.target

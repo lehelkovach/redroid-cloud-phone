@@ -1,0 +1,40 @@
+# Redroid phone with Google Play baked in (scripts/build-gapps-image.sh).
+#
+# Off by default: the service sits behind the "gapps" profile, so a plain
+# `docker compose up` with this file starts nothing. It binds the same host
+# ADB port as docker/redroid-compose.yml, so run one or the other.
+#
+#   REDROID_GAPPS_IMAGE=cloud-phone/redroid-gapps:13.0.0-arm64 \
+#     docker compose -f docker/redroid-gapps-compose.yml -p redroid-gapps --profile gapps up -d
+#
+# The data volume holds the owner's Google sign-in. `down` keeps it; only
+# `down -v` deletes it (and with it the sign-in and the device's GSF ID, which
+# then has to be registered again). No camera devices: Cuttlefish owns those.
+
+services:
+  redroid-gapps:
+    profiles: ["gapps"]
+    image: ${REDROID_GAPPS_IMAGE:?set REDROID_GAPPS_IMAGE to the tag build-gapps-image.sh printed}
+    container_name: ${REDROID_NAME:-redroid-gapps}
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "${ADB_BIND:-127.0.0.1}:${ADB_PORT:-5555}:5555"
+    volumes:
+      - redroid-gapps-data:/data
+    command:
+      - androidboot.redroid_gpu_mode=${GPU_MODE:-guest}
+      - androidboot.redroid_width=${REDROID_WIDTH:-1280}
+      - androidboot.redroid_height=${REDROID_HEIGHT:-720}
+      - androidboot.redroid_fps=${REDROID_FPS:-30}
+      - androidboot.redroid_dpi=${REDROID_DPI:-240}
+      - androidboot.use_memfd=${REDROID_USE_MEMFD:-true}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "getprop sys.boot_completed 2>/dev/null | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
+volumes:
+  redroid-gapps-data:
