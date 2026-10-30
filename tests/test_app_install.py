@@ -220,6 +220,14 @@ class HelperTests(unittest.TestCase):
     def test_google_account_presence_only(self):
         self.assertTrue(app_install.has_google_account(SIGNED_IN))
         self.assertFalse(app_install.has_google_account("Accounts: 0\n"))
+        # A GApps phone with nobody signed in still lists the authenticator.
+        signed_out = (
+            "User UserInfo{0:Owner:c13}:\n  Accounts: 0\n\n  RegisteredServicesCache: 1 services\n"
+            "    ServiceInfo: AuthenticatorDescription {type=com.google}, ComponentInfo{"
+            "com.google.android.gms/com.google.android.gms.auth.account.authenticator."
+            "GoogleAccountAuthenticatorService}, uid 10054\n"
+        )
+        self.assertFalse(app_install.has_google_account(signed_out))
 
     def test_parse_package_info(self):
         info = app_install.parse_package_info("versionCode=12 minSdk=21\nversionName=1.2\n", "com.x.y")

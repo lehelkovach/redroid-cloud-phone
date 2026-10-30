@@ -364,9 +364,19 @@ def parse_package_info(dumpsys_output, package):
     return info
 
 
+_ACCOUNT_LINE = re.compile(r"^\s*Account \{.*\btype=com\.google\}", re.MULTILINE)
+
+
 def has_google_account(dumpsys_account_output):
-    """Whether `dumpsys account` lists a com.google account (names not kept)."""
-    return "type=com.google" in (dumpsys_account_output or "")
+    """Whether `dumpsys account` lists a com.google account (names not kept).
+
+    Only `Account {name=..., type=com.google}` lines count. The same dump
+    always lists Play services' authenticator as
+    `AuthenticatorDescription {type=com.google}`, signed in or not, so a plain
+    substring match reported every GApps phone as signed in (seen on the
+    first real boot, 2026-10-30).
+    """
+    return bool(_ACCOUNT_LINE.search(dumpsys_account_output or ""))
 
 
 # ---------------------------------------------------------------------------
