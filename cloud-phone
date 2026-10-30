@@ -23,7 +23,10 @@ Redroid (GApps automation pool):
   redroid-down      Stop and remove a Redroid container
   gapps-install     Install operator-supplied GApps zip into Redroid
   gapps-check       Validate Play/GMS packages on ADB
+  gapps-image       Bake a GApps zip into a Redroid image (recommended over gapps-install)
+  host-check        Read-only: can this host run Redroid (binder, Docker, RAM) / Cuttlefish (KVM)?
   verify-phone      Control API + optional GApps health on a Redroid host
+  real-app-smoke    Install 3 F-Droid apps and drive them through the Control API (real phone)
 
 Cuttlefish (ingest, spawn only when a camera stream is needed):
   deploy            Create/reuse OCI host and install Cuttlefish stack
@@ -96,6 +99,15 @@ case "$cmd" in
         ;;
     gapps-check)
         run_script "$SCRIPTS_DIR/install-gapps-redroid.sh" --validate-only "$@"
+        ;;
+    gapps-image)
+        run_script "$SCRIPTS_DIR/build-gapps-image.sh" "$@"
+        ;;
+    host-check)
+        run_script "$SCRIPTS_DIR/check-redroid-host.sh" "$@"
+        ;;
+    real-app-smoke)
+        python3 "$SCRIPTS_DIR/real-app-smoke.py" "$@"
         ;;
     api-run)
         python3 "$ROOT_DIR/api/server.py" "$@"

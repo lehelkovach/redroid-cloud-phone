@@ -10,6 +10,9 @@ camera or microphone. Steps to finish it:
 
 1. Confirm `/dev/kvm` and a booting ARM64 Cuttlefish guest on the chosen OCI
    shape, and document the exact host-tools and guest-image versions used.
+   Oracle says A1 VMs do not support nested virtualisation, so the
+   `VM.Standard.A1.Flex` shape the deploy scripts use will probably fail this
+   step ([GAPPS-AND-APP-INSTALL.md](docs/GAPPS-AND-APP-INSTALL.md#3-cuttlefish)).
 2. Pick an injection method for the Cuttlefish build in use and wire it in
    through `--front-cmd`, `--back-cmd` and `--mic-cmd` of
    `scripts/cuttlefish-rtmp-bridge.sh`.
@@ -20,6 +23,14 @@ camera or microphone. Steps to finish it:
    `EnvironmentFile` for `control-api.service`) and the correct ADB serial.
 5. Capture a Cuttlefish golden image and run it through the orchestrator with
    `purpose: "camera"` end to end.
+
+## Next: Google Play on a live phone
+
+The GApps image build, the off-by-default GApps phone and the app-install
+endpoints exist and are tested offline; no phone has booted them yet. See
+[GAPPS-AND-APP-INSTALL.md](docs/GAPPS-AND-APP-INSTALL.md#what-was-verified-and-what-was-not)
+for the first live checks and the owner's steps (device registration and
+Play sign-in).
 
 ## Other planned work
 
@@ -73,6 +84,12 @@ These are verified against the current code. None are fixed yet.
   container it cannot reach ADB on the host's `127.0.0.1` without host
   networking.
 - The Redroid installer never checks for binder support in the host kernel.
+  `./cloud-phone host-check` reports it, and the GApps unit refuses to start
+  without it, but the installer does not call either.
+- `POST /apps/<package>/stop`, `/clear` and `DELETE /apps/<package>/uninstall`
+  pass the package name to `adb` without validating it (`stop` and `clear`
+  inside an `adb shell` command line). `GET /apps/<package>` and the install
+  endpoints validate it.
 
 ### Control API
 
@@ -97,8 +114,8 @@ These are verified against the current code. None are fixed yet.
   first ADB port (`ORCH_REDROID_ADB_PORT_BASE`, 5555) collides with a phone
   started by hand on the default port.
 - The `mobile` procedure adapter sends `screenshot` as `POST` to
-  `/device/screenshot/base64` (GET only) and `install` to `/apps/install`
-  (no such route).
+  `/device/screenshot/base64` (GET only). (`install` to `/apps/install` now
+  has a route; its `path` must be under `APP_INSTALL_DIRS` on the phone host.)
 - `/health` reports `"runtime": "cuttlefish"` in `oci` mode even though the
   default pool there is Redroid.
 - Operation and procedure records keep request bodies, including login

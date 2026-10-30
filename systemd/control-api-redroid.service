@@ -1,8 +1,10 @@
 [Unit]
 Description=Cloud Phone Control API (Redroid GApps phones)
 Documentation=docs/RUNTIME-SPLIT.md
-After=network.target redroid-container.service
-Wants=redroid-container.service
+# After either phone unit, but Wants neither: wanting redroid-container.service
+# here started the plain phone, whose Conflicts= then stopped the GApps phone
+# (found booting the GApps phone on OCI A1, 2026-10-30).
+After=network.target docker.service redroid-container.service redroid-gapps-container.service
 PartOf=redroid-cloud-phone.target
 
 [Service]

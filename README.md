@@ -128,6 +128,8 @@ unauthenticated Control API on public ports.
 | `api-run` | `python3 api/server.py` (Control API) |
 | `orchestrator-run` | `python3 orchestrator/server.py` |
 | `gapps-install`, `gapps-check` | `scripts/install-gapps-redroid.sh` |
+| `gapps-image` | `scripts/build-gapps-image.sh` (bake GApps into a Redroid image) |
+| `host-check` | `scripts/check-redroid-host.sh` (read-only: binder, Docker, RAM, KVM) |
 | `verify-phone` | `scripts/verify-redroid-phone.sh` |
 | `deploy-redroid` | `scripts/deploy-redroid-oci.sh` |
 | `deploy` | `scripts/deploy-cuttlefish-oci.sh` |
@@ -148,7 +150,8 @@ variables ([docs/configuration.md](docs/configuration.md)).
 | Local setup, step by step | [docs/getting-started.md](docs/getting-started.md) |
 | Deploy on Oracle Cloud, golden images, fleets | [docs/deploy-oci.md](docs/deploy-oci.md) |
 | Cuttlefish camera/mic ingest (OBS, RTMP) | [docs/cuttlefish-ingest.md](docs/cuttlefish-ingest.md) |
-| Google Play (GApps) on Redroid | [docs/gapps.md](docs/gapps.md) |
+| Google Play on Redroid, installing apps (by APK or from Play), options compared | [docs/GAPPS-AND-APP-INSTALL.md](docs/GAPPS-AND-APP-INSTALL.md) |
+| Pushing a GApps zip into a running phone | [docs/gapps.md](docs/gapps.md) |
 | Every environment variable | [docs/configuration.md](docs/configuration.md) |
 | Control API reference | [docs/api/control-api.md](docs/api/control-api.md) |
 | Orchestrator API reference | [docs/api/orchestrator.md](docs/api/orchestrator.md) |
