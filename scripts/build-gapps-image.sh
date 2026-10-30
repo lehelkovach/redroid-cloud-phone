@@ -323,7 +323,11 @@ build() {
     if docker buildx version >/dev/null 2>&1; then
         docker buildx build --platform "$PLATFORM" --tag "$TAG" --load "$CTX" >&2
     else
-        DOCKER_BUILDKIT=1 docker build --platform "$PLATFORM" --tag "$TAG" "$CTX" >&2
+        # Ubuntu's docker.io ships without buildx, and with BuildKit asked for
+        # Docker 29 refuses to build ("buildx component is missing"). The
+        # layer is a plain COPY, so the legacy builder does the same job.
+        log_warn "docker buildx is not installed; using the legacy builder (apt install docker-buildx to use BuildKit)"
+        DOCKER_BUILDKIT=0 docker build --platform "$PLATFORM" --tag "$TAG" "$CTX" >&2
     fi
     if [[ -n "$SAVE_PATH" ]]; then
         log_info "saving image to $SAVE_PATH"
