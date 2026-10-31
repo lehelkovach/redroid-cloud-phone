@@ -102,9 +102,9 @@ These are verified against the current code. None are fixed yet.
 
 - `DELETE /proxy` and `DELETE /location` call `request.get_json()` and answer
   `415` unless the request has a JSON content type.
-- `POST /device/input`, `POST /device/screen`, `POST /location` and the
-  anti-detection endpoints report `success: true` without checking the `adb`
-  result.
+- `POST /location` and the anti-detection endpoints report `success: true`
+  without checking the `adb` result (`/device/input` and `/device/screen`
+  check it since rung M0).
 - `/opt/cloud-phone-scripts/proxy-control.sh` and `anti-detection.sh` are
   referenced but not in the repo.
 - `GET /logs` is unauthenticated even when `API_TOKEN` is set.

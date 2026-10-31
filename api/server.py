@@ -18,6 +18,8 @@ import subprocess
 import shlex
 import time
 import base64
+import contextlib
+import math
 import shutil
 import tempfile
 import threading
@@ -108,10 +110,42 @@ def current_adb_connect():
     return ADB_CONNECT
 
 
+# Commands that carry what the user typed (or a screen full of it) are logged
+# by a label, never by their arguments or output. See `_sensitive_adb`.
+_adb_quiet = threading.local()
+
+
+@contextlib.contextmanager
+def _sensitive_adb(label, secret=""):
+    """Within this block, run_adb logs `label` instead of argv and hides output."""
+    previous = (getattr(_adb_quiet, "label", None), getattr(_adb_quiet, "secret", ""))
+    _adb_quiet.label, _adb_quiet.secret = label, secret
+    try:
+        yield
+    finally:
+        _adb_quiet.label, _adb_quiet.secret = previous
+
+
+def _scrub(text, secret):
+    """Remove `secret` (and each word of it) from an error message."""
+    text = "" if text is None else str(text)
+    if not secret:
+        return text
+    pieces = {secret, secret.replace(" ", "%s")}
+    pieces.update(word for word in re.split(r"[\s%]+", secret) if len(word) >= 3)
+    for piece in sorted(pieces, key=len, reverse=True):
+        if piece:
+            text = text.replace(piece, "<text>")
+    return text
+
+
 def run_adb(*args, timeout=30):
     """Run ADB command and return (success, stdout, stderr)"""
     target = current_adb_connect()
     cmd = ["adb", "-s", target] + list(args)
+    quiet = getattr(_adb_quiet, "label", None)
+    secret = getattr(_adb_quiet, "secret", "") if quiet else ""
+    shown = f"adb -s {target} {quiet}" if quiet else " ".join(cmd)
     started = time.time()
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -120,25 +154,26 @@ def run_adb(*args, timeout=30):
         stderr = result.stderr.strip()
         elapsed_ms = int((time.time() - started) * 1000)
         if not success:
-            _state["last_adb_error"] = stderr or stdout or "adb command failed"
+            _state["last_adb_error"] = _scrub(stderr or stdout or "adb command failed", secret)
             adb_logger.warning(
                 "failed rc=%s ms=%s cmd=%s stderr=%s",
-                result.returncode, elapsed_ms, " ".join(cmd), truncate(stderr),
+                result.returncode, elapsed_ms, shown, truncate(_scrub(stderr, secret)),
             )
         else:
-            out_note = f"{len(stdout)} bytes" if "screencap" in " ".join(args) else truncate(stdout)
-            adb_logger.debug("ok ms=%s cmd=%s stdout=%s", elapsed_ms, " ".join(cmd), out_note)
+            hide = quiet or "screencap" in " ".join(args)
+            out_note = f"{len(stdout)} bytes" if hide else truncate(stdout)
+            adb_logger.debug("ok ms=%s cmd=%s stdout=%s", elapsed_ms, shown, out_note)
             if verbose_enabled():
-                adb_logger.info("ok ms=%s cmd=%s stdout=%s", elapsed_ms, " ".join(cmd), out_note)
+                adb_logger.info("ok ms=%s cmd=%s stdout=%s", elapsed_ms, shown, out_note)
         return success, stdout, stderr
     except subprocess.TimeoutExpired:
         _state["last_adb_error"] = "adb command timed out"
-        adb_logger.warning("timed out: %s", " ".join(cmd))
+        adb_logger.warning("timed out: %s", shown)
         return False, "", "Command timed out"
     except Exception as e:
-        _state["last_adb_error"] = str(e)
-        adb_logger.exception("exception: %s", " ".join(cmd))
-        return False, "", str(e)
+        _state["last_adb_error"] = _scrub(str(e), secret)
+        adb_logger.warning("exception: %s: %s", shown, _scrub(str(e), secret))
+        return False, "", _scrub(str(e), secret)
 
 def run_adb_shell(command, timeout=30):
     """Run ADB shell command"""
@@ -257,17 +292,175 @@ def _update_job(job_id, **updates):
         job["updated_at"] = time.time()
 
 
+# -----------------------------------------------------------------------------
+# Input: every command's adb result is checked (rung M0, honest actuation).
+# -----------------------------------------------------------------------------
+
+# `input` and `am`/`cmd` print these on failure. Old adb shell protocols exit 0
+# whatever the device command did, so the output is checked as well.
+_INPUT_FAILURE_MARKERS = (
+    "Exception occurred",
+    "Error:",
+    "java.lang.",
+    "Usage: input",
+    "Unknown command",
+    "inaccessible or not found",
+    "No shell command implementation",
+    "Can't find service",
+    "SecurityException",
+)
+KEYCODE_MOVE_END = "KEYCODE_MOVE_END"
+KEYCODE_DEL = 67
+KEYCODE_FORWARD_DEL = 112
+KEYCODE_PASTE = 279
+CLEAR_MAX_CHARS = 4096
+KEYEVENT_BATCH = 32
+SCREEN_SIZE_TTL = 300
+UNICODE_PATH_TTL = 300
+_SCREEN_SIZE_CACHE = {}    # adb serial -> (width, height, fetched_at)
+_UNICODE_PATH_CACHE = {}   # adb serial -> (path or None, tried, checked_at)
+_KEYCODE_NAME_RE = re.compile(r"^KEYCODE_[A-Z0-9_]+$")
+
+
+class InputError(Exception):
+    """An input that did not happen, with a machine-readable code."""
+
+    def __init__(self, code, message="", **extra):
+        super().__init__(message or code)
+        self.code = code
+        self.message = message
+        self.extra = extra
+
+
+def _input_failure(input_type, code, message="", **extra):
+    body = {
+        "success": False,
+        "type": input_type,
+        "error_code": code,
+        "error": f"{code}: {truncate(message, 200)}" if message else code,
+    }
+    body.update(extra)
+    return body
+
+
+def _input_step(command, label=None, secret=""):
+    """Run one input shell command. Raises InputError unless it really worked."""
+    if label:
+        with _sensitive_adb(label, secret):
+            ok, stdout, stderr = run_adb_shell(command)
+    else:
+        ok, stdout, stderr = run_adb_shell(command)
+    detail = _scrub((stderr or stdout or "").strip(), secret)
+    if not ok:
+        code = "adb_timeout" if "timed out" in detail.lower() else "adb_failed"
+        raise InputError(code, detail or "adb command failed")
+    combined = f"{stdout or ''}\n{stderr or ''}"
+    if any(marker in combined for marker in _INPUT_FAILURE_MARKERS):
+        raise InputError("input_rejected", detail)
+    return stdout or ""
+
+
+def _number(data, key, default=None):
+    value = data.get(key, default)
+    if isinstance(value, bool) or value is None:
+        raise InputError("bad_request", f"{key} must be a number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise InputError("bad_request", f"{key} must be a number")
+    if not math.isfinite(number):
+        raise InputError("bad_request", f"{key} must be a number")
+    return number
+
+
+def _device_screen_size():
+    """The phone's (width, height) from `wm size`, cached per phone; None if unknown."""
+    serial = current_adb_connect()
+    hit = _SCREEN_SIZE_CACHE.get(serial)
+    if hit and time.time() - hit[2] < SCREEN_SIZE_TTL:
+        return hit[0], hit[1]
+    ok, out, _ = run_adb_shell("wm size")
+    if not ok or not out:
+        return None
+    try:
+        width, height = ui_control.parse_wm_size(out)
+    except ui_control.UIError:
+        return None
+    _SCREEN_SIZE_CACHE[serial] = (width, height, time.time())
+    return width, height
+
+
+def _resolve_points(data, keys, default):
+    """Pixels for each (x, y) pair; with `percentage: true` they are 0-100 of the screen."""
+    raw = [(_number(data, xk, default), _number(data, yk, default)) for xk, yk in keys]
+    if not data.get("percentage"):
+        points = []
+        for x, y in raw:
+            if x < 0 or y < 0:
+                raise InputError("bad_request", "coordinates must not be negative")
+            points.append((int(round(x)), int(round(y))))
+        return points, None
+    for x, y in raw:
+        if not (0 <= x <= 100 and 0 <= y <= 100):
+            raise InputError("bad_request", "percentage coordinates must be within 0-100")
+    size = _device_screen_size()
+    if not size:
+        raise InputError("screen_size_unavailable", "could not read the screen size (wm size)")
+    width, height = size
+    points = [
+        (min(int(round(x / 100.0 * width)), width - 1),
+         min(int(round(y / 100.0 * height)), height - 1))
+        for x, y in raw
+    ]
+    return points, {"width": width, "height": height}
+
+
+def _keycode(value):
+    if isinstance(value, bool):
+        raise InputError("bad_request", "keycode must be a number or KEYCODE_ name")
+    if isinstance(value, int):
+        if 0 <= value <= 1000:
+            return str(value)
+        raise InputError("bad_request", "keycode out of range")
+    text = str(value or "").strip()
+    if text.isdigit() and int(text) <= 1000:
+        return text
+    if _KEYCODE_NAME_RE.match(text):
+        return text
+    try:
+        return str(ui_control.resolve_keycode(text))
+    except ui_control.UIError:
+        raise InputError("bad_request", "keycode must be a number or KEYCODE_ name")
+
+
+def _key_batches(keycode, count):
+    """`input keyevent` commands pressing `keycode` `count` times, in batches."""
+    commands = []
+    while count > 0:
+        n = min(count, KEYEVENT_BATCH)
+        commands.append("input keyevent " + " ".join([str(keycode)] * n))
+        count -= n
+    return commands
+
+
 def _do_screen_action(action):
-    if action == "on":
-        run_adb_shell("input keyevent KEYCODE_WAKEUP")
-    elif action == "off":
-        run_adb_shell("input keyevent KEYCODE_SLEEP")
-    elif action == "toggle":
-        run_adb_shell("input keyevent KEYCODE_POWER")
-    elif action == "unlock":
-        run_adb_shell("input keyevent KEYCODE_WAKEUP")
-        time.sleep(0.5)
-        run_adb_shell("input swipe 500 1500 500 500")
+    sequences = {
+        "on": ["input keyevent KEYCODE_WAKEUP"],
+        "off": ["input keyevent KEYCODE_SLEEP"],
+        "toggle": ["input keyevent KEYCODE_POWER"],
+        "unlock": ["input keyevent KEYCODE_WAKEUP", None, "input swipe 500 1500 500 500"],
+    }
+    if action not in sequences:
+        return _input_failure("screen", "unsupported_action", f"unknown screen action: {action}",
+                              action=action)
+    try:
+        for command in sequences[action]:
+            if command is None:
+                time.sleep(0.5)
+            else:
+                _input_step(command)
+    except InputError as exc:
+        return _input_failure("screen", exc.code, exc.message, action=action)
     return {"success": True, "action": action}
 
 
@@ -276,20 +469,38 @@ def _loggable_input(data):
     if str(payload.get("type") or payload.get("action") or "").lower() in {"text", "type"}:
         raw = data.get("text", "")
         payload = dict(payload)
-        payload["text"] = f"<{len(raw)} chars>"
+        payload["text"] = f"<{len(str(raw))} chars>"
     return payload
 
 
-
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+# Class names of text inputs: EditText and its subclasses, plus the
+# TextInput family some toolkits report.
+_EDITABLE_CLASS_MARKERS = ("EditText", "TextInput", "AutoCompleteTextView")
 
 
-def _parse_ui_elements(xml_text):
-    """Flatten a `uiautomator dump` hierarchy into labeled, tappable elements.
+def _flag(attrib, key):
+    return attrib.get(key) == "true"
 
-    Coordinates come back as the centre of the node's bounds, because tapping a
-    corner lands outside rounded or padded widgets.
+
+def _text_state(raw_text, hint, editable_or_password):
+    """What an input's `text` holds: "empty", "hint", "value" or "unknown".
+
+    Android reports an empty field's hint as its text. Only a dump that also
+    carries `hint` can tell the two apart; without one a non-empty field is
+    "unknown" and treated as a value.
     """
+    if not editable_or_password:
+        return None
+    if not raw_text.strip():
+        return "empty"
+    if hint is None:
+        return "unknown"
+    return "hint" if raw_text.strip() == hint else "value"
+
+
+def _parse_full_elements(xml_text):
+    """Every useful node, values included. Internal: callers get `_public_element`."""
     import xml.etree.ElementTree as ET
 
     try:
@@ -300,47 +511,106 @@ def _parse_ui_elements(xml_text):
     elements = []
     for node in root.iter("node"):
         attrib = node.attrib
-        label = (attrib.get("text") or attrib.get("content-desc") or "").strip()
+        raw_text = attrib.get("text") or ""
+        content_desc = (attrib.get("content-desc") or "").strip()
+        label = raw_text.strip() or content_desc
         resource_id = attrib.get("resource-id", "")
-        if not label and not resource_id:
+        cls = attrib.get("class", "")
+        editable = any(marker in cls for marker in _EDITABLE_CLASS_MARKERS)
+        password = _flag(attrib, "password")
+        if not label and not resource_id and not editable:
             continue
         match = _BOUNDS_RE.match(attrib.get("bounds", ""))
         if not match:
             continue
         left, top, right, bottom = (int(g) for g in match.groups())
+        hint = (attrib.get("hint") or "").strip() or None
+        state = _text_state(raw_text, hint, editable or password)
         elements.append({
             "label": label,
             "resource_id": resource_id,
-            "clickable": attrib.get("clickable") == "true",
-            "focused": attrib.get("focused") == "true",
-            "password": attrib.get("password") == "true",
+            "clickable": _flag(attrib, "clickable"),
+            "focused": _flag(attrib, "focused"),
+            "password": password,
             "x": (left + right) // 2,
             "y": (top + bottom) // 2,
             "bounds": [left, top, right, bottom],
+            "class": cls,
+            "package": attrib.get("package", ""),
+            "text": raw_text,
+            "content_desc": content_desc,
+            "hint": hint,
+            "checkable": _flag(attrib, "checkable"),
+            "checked": _flag(attrib, "checked"),
+            "enabled": _flag(attrib, "enabled"),
+            "focusable": _flag(attrib, "focusable"),
+            "editable": editable,
+            "long_clickable": _flag(attrib, "long-clickable"),
+            "scrollable": _flag(attrib, "scrollable"),
+            "selected": _flag(attrib, "selected"),
+            "text_state": state,
+            "text_len": 0 if state in ("empty", "hint") else len(raw_text),
+            "value_redacted": False,
         })
     return elements
+
+
+def _public_element(element, include_values=False):
+    """A copy safe to return: typed values are replaced by their length.
+
+    Passwords stay hidden even with `include_values`.
+    """
+    out = dict(element)
+    holds_value = element.get("text_state") in ("value", "unknown")
+    if holds_value and (not include_values or element.get("password")):
+        out["text"] = None
+        out["label"] = element.get("content_desc") or element.get("hint") or ""
+        out["value_redacted"] = True
+    return out
+
+
+def _parse_ui_elements(xml_text, include_values=False):
+    """Flatten a `uiautomator dump` hierarchy into labeled, tappable elements.
+
+    Coordinates come back as the centre of the node's bounds, because tapping a
+    corner lands outside rounded or padded widgets. Text an input holds is
+    redacted (`value_redacted`, `text_len`) unless `include_values`.
+    """
+    return [_public_element(e, include_values) for e in _parse_full_elements(xml_text)]
 
 
 UI_DUMP_PATH = "/data/local/tmp/cloudphone_ui.xml"
 
 
-def _read_ui_tree():
+def _read_ui_tree(include_values=False, raw=False):
+    """`raw=True` returns unredacted elements, for matching inside this process only."""
     ensure_adb_connected()
     # Dump to a file and cat it in the same shell. `uiautomator dump /dev/tty`
     # prints only "UI hierchary dumped to: /dev/tty" on Android 13 Redroid
     # (adb shell without a pty), so /device/ui failed on every GApps phone.
-    ok, stdout, stderr = run_adb_shell(
-        f"uiautomator dump {UI_DUMP_PATH} >/dev/null 2>&1 && cat {UI_DUMP_PATH}"
-    )
+    with _sensitive_adb(f"shell uiautomator dump {UI_DUMP_PATH} && cat"):
+        ok, stdout, stderr = run_adb_shell(
+            f"uiautomator dump {UI_DUMP_PATH} >/dev/null 2>&1 && cat {UI_DUMP_PATH}"
+        )
     if not ok:
-        return {"success": False, "error": stderr or stdout or "uiautomator dump failed"}
+        return {"success": False, "error": stderr or "uiautomator dump failed"}
     start = stdout.find("<?xml")
     if start == -1:
         start = stdout.find("<hierarchy")
     if start == -1:
         return {"success": False, "error": "no UI hierarchy in dump output"}
-    elements = _parse_ui_elements(stdout[start:])
-    return {"success": True, "count": len(elements), "elements": elements}
+    xml_text = stdout[start:]
+    full = _parse_full_elements(xml_text)
+    elements = full if raw else [_public_element(e, include_values) for e in full]
+    return {
+        "success": True,
+        "count": len(elements),
+        "elements": elements,
+        "values_included": bool(include_values or raw),
+        # False on dumpers that do not write `hint`: then an input showing its
+        # hint cannot be told from one holding a value.
+        "hints_exposed": ' hint="' in xml_text,
+    }
 
 
 def _find_by_label(elements, label):
@@ -386,43 +656,220 @@ def current_focus():
     return ""
 
 
-def _do_tap_label(label):
-    tree = _read_ui_tree()
+def _do_tap_label(label, include_values=False):
+    tree = _read_ui_tree(raw=True)
     if not tree.get("success"):
-        return tree
+        return _input_failure("tap_label", "ui_dump_failed", tree.get("error", ""))
     element = _find_by_label(tree["elements"], label)
     if not element:
-        available = [e["label"] for e in tree["elements"] if e["label"]][:12]
-        return {"success": False, "error": f"no element labeled '{label}'",
-                "available": available}
-    run_adb_shell(f"input tap {element['x']} {element['y']}")
+        available = [e["label"] for e in (_public_element(x) for x in tree["elements"])
+                     if e["label"]][:12]
+        return {"success": False, "type": "tap_label", "error_code": "no_match",
+                "error": f"no element labeled '{label}'", "available": available}
+    _input_step(f"input tap {element['x']} {element['y']}")
+    viewport.frame(vnc_logger)
     return {"success": True, "type": "tap_label", "label": label,
-            "x": element["x"], "y": element["y"], "matched": element}
+            "x": element["x"], "y": element["y"],
+            "matched": _public_element(element, include_values)}
+
+
+def _do_tap(data):
+    (point,), screen = _resolve_points(data, [("x", "y")], 500)
+    _input_step(f"input tap {point[0]} {point[1]}")
+    viewport.frame(vnc_logger)
+    body = {"success": True, "type": "tap", "x": point[0], "y": point[1]}
+    if screen:
+        body.update({"percentage": True, "screen": screen})
+    return body
+
+
+def _do_swipe(data):
+    defaults = {"x1": 100, "y1": 100, "x2": 500, "y2": 500}
+    merged = {**defaults, **{k: v for k, v in data.items() if v is not None}}
+    (start, end), screen = _resolve_points(merged, [("x1", "y1"), ("x2", "y2")], None)
+    duration = _number(data, "duration", 300)
+    if duration < 0:
+        raise InputError("bad_request", "duration must not be negative")
+    _input_step(f"input swipe {start[0]} {start[1]} {end[0]} {end[1]} {int(duration)}")
+    viewport.frame(vnc_logger)
+    body = {"success": True, "type": "swipe", "from": list(start), "to": list(end),
+            "duration": int(duration)}
+    if screen:
+        body.update({"percentage": True, "screen": screen})
+    return body
+
+
+def _do_key(data):
+    keycode = _keycode(data.get("keycode", 4))
+    _input_step(f"input keyevent {keycode}")
+    return {"success": True, "type": "key", "keycode": keycode}
+
+
+def _clear_focused_field():
+    """Empty the focused input: MOVE_END, then forward-delete and delete.
+
+    The count comes from the current text length in a fresh dump, so the
+    deletes are bounded; forward-deletes cover text after the cursor on a
+    multi-line field, where MOVE_END only reaches the end of the line.
+    """
+    tree = _read_ui_tree(raw=True)
+    if not tree.get("success"):
+        raise InputError("ui_dump_failed", tree.get("error", ""))
+    field = next((e for e in tree["elements"]
+                  if e["focused"] and (e["editable"] or e["password"])), None)
+    if field is None:
+        raise InputError("no_focused_field", "clear needs a focused text field; tap it first")
+    count = min(field["text_len"], CLEAR_MAX_CHARS)
+    if count:
+        _input_step(f"input keyevent {KEYCODE_MOVE_END}")
+        for command in _key_batches(KEYCODE_FORWARD_DEL, count) + _key_batches(KEYCODE_DEL, count):
+            _input_step(command)
+    return {"chars": count, "method": "move_end+forward_del+del",
+            "length_from": field["text_state"]}
+
+
+def _probe_adbkeyboard():
+    ok, out, _ = run_adb_shell("settings get secure default_input_method")
+    return ok and "com.android.adbkeyboard" in (out or "")
+
+
+def _probe_clipper():
+    ok, out, _ = run_adb_shell("pm path ca.zgrs.clipper")
+    return ok and "package:" in (out or "")
+
+
+class _PathUnavailable(Exception):
+    """This phone lacks a Unicode text path; try the next one."""
+
+
+def _set_clipboard_cmd(text, label):
+    try:
+        _input_step("cmd clipboard set-text " + ui_control.shell_quote(text), label, text)
+    except InputError as exc:
+        raise _PathUnavailable(exc.code)
+
+
+def _set_clipboard_clipper(text, label):
+    out = _input_step(
+        "am broadcast -n ca.zgrs.clipper/.ClipperReceiver -a clipper.set -e text "
+        + ui_control.shell_quote(text), label, text)
+    if "result=-1" not in out:  # Activity.RESULT_OK: Clipper copied it
+        raise InputError("input_rejected", "clipper did not confirm the copy")
+
+
+def _type_adbkeyboard(text, label):
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    _input_step(f"am broadcast -a ADB_INPUT_B64 --es msg {b64}", label, text)
+    return {}
+
+
+def _type_via_clipboard(setter, text, label):
+    setter(text, label)  # may raise _PathUnavailable: nothing was typed yet
+    _input_step(f"input keyevent {KEYCODE_PASTE}")
+    # Leave nothing personal on the clipboard for other apps to read.
+    try:
+        setter("", "clipboard clear")
+        cleared = True
+    except (InputError, _PathUnavailable):
+        cleared = False
+    return {"clipboard_cleared": cleared}
+
+
+# (name, availability probe or None to just try, typer). Tried in order.
+_UNICODE_PATHS = (
+    ("adbkeyboard", _probe_adbkeyboard, _type_adbkeyboard),
+    ("cmd_clipboard", None,
+     lambda text, label: _type_via_clipboard(_set_clipboard_cmd, text, label)),
+    ("clipper_broadcast", _probe_clipper,
+     lambda text, label: _type_via_clipboard(_set_clipboard_clipper, text, label)),
+)
+
+
+def _type_unicode(text, label):
+    """Type text `input text` cannot, by the first path this phone supports."""
+    serial = current_adb_connect()
+    paths = {name: (probe, typer) for name, probe, typer in _UNICODE_PATHS}
+    cached = _UNICODE_PATH_CACHE.get(serial)
+    if cached and time.time() - cached[2] < UNICODE_PATH_TTL:
+        name, tried = cached[0], cached[1]
+        if name is None:
+            raise InputError("unsupported_unicode", "no Unicode text path on this phone",
+                             tried=tried)
+        try:
+            return name, paths[name][1](text, label)
+        except _PathUnavailable as exc:
+            _UNICODE_PATH_CACHE.pop(serial, None)
+            raise InputError("unsupported_unicode", f"{name} stopped working ({exc})",
+                             tried=[name])
+        except InputError:
+            _UNICODE_PATH_CACHE.pop(serial, None)
+            raise
+    tried = []
+    for name, probe, typer in _UNICODE_PATHS:
+        tried.append(name)
+        if probe is not None and not probe():
+            continue
+        try:
+            extra = typer(text, label)
+        except _PathUnavailable:
+            continue  # e.g. this build has no `cmd clipboard`
+        _UNICODE_PATH_CACHE[serial] = (name, list(tried), time.time())
+        return name, extra
+    _UNICODE_PATH_CACHE[serial] = (None, list(tried), time.time())
+    raise InputError("unsupported_unicode",
+                     "no Unicode text path on this phone (install ADBKeyboard or Clipper)",
+                     tried=tried)
+
+
+def _do_text(data):
+    text = data.get("text", "")
+    text = "" if text is None else str(text)
+    body = {"success": True, "type": "text", "text_len": len(text)}
+    if data.get("clear"):
+        body["cleared"] = _clear_focused_field()
+    if not text:
+        body["path"] = "none"
+        return body
+    label = f"shell input text <{len(text)} chars>"
+    if ui_control.is_plain_text(text):
+        for command in ui_control.input_text_commands(text):
+            _input_step(command, label, text)
+        body["path"] = "input_text"
+        return body
+    path, extra = _type_unicode(text, f"shell <unicode text, {len(text)} chars>")
+    body["path"] = path
+    body.update(extra)
+    return body
+
+
+_INPUT_HANDLERS = {
+    "tap": _do_tap,
+    "swipe": _do_swipe,
+    "text": _do_text,
+    "key": _do_key,
+}
 
 
 def _do_device_input(data):
-    input_type = data.get("type", "tap")
+    """One input; `success` is true only when adb and the device accepted it."""
+    input_type = str(data.get("type") or "tap").lower()
     cmd_logger.info("commandlet %s payload=%s", input_type, _loggable_input(data))
-    if input_type == "tap":
-        x, y = data.get("x", 500), data.get("y", 500)
-        run_adb_shell(f"input tap {x} {y}")
-        viewport.frame(vnc_logger)
-    elif input_type == "tap_label":
-        return _do_tap_label(data.get("label"))
-    elif input_type == "swipe":
-        x1, y1 = data.get("x1", 100), data.get("y1", 100)
-        x2, y2 = data.get("x2", 500), data.get("y2", 500)
-        duration = data.get("duration", 300)
-        run_adb_shell(f"input swipe {x1} {y1} {x2} {y2} {duration}")
-        viewport.frame(vnc_logger)
-    elif input_type == "text":
-        text = data.get("text", "")
-        text = text.replace(" ", "%s").replace("'", "\\'")
-        run_adb_shell(f"input text '{text}'")
-    elif input_type == "key":
-        keycode = data.get("keycode", 4)
-        run_adb_shell(f"input keyevent {keycode}")
-    return {"success": True, "type": input_type}
+    try:
+        if input_type == "tap_label":
+            return _do_tap_label(data.get("label"), _truthy(data.get("include_values")))
+        handler = _INPUT_HANDLERS.get(input_type)
+        if handler is None:
+            raise InputError("unsupported_type", f"unsupported input type: {input_type}")
+        return handler(data)
+    except InputError as exc:
+        cmd_logger.warning("commandlet %s failed code=%s", input_type, exc.code)
+        return _input_failure(input_type, exc.code, exc.message, **exc.extra)
+
+
+def _truthy(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _appium_available():
@@ -490,20 +937,25 @@ def _execute_ui_command(cmd):
     backend = ui_control.select_backend(backend_pref, appium_available=_appium_available())
     if backend == "adb":
         shell_cmds = ui_control.build_adb_input(cmd, size)
+        is_text = str(cmd.get("action") or cmd.get("type") or "").lower() in ("text", "type")
+        secret = str(cmd.get("text", "")) if is_text else ""
+        shown = [f"input text <{len(secret)} chars>"] * len(shell_cmds) if is_text else shell_cmds
         cmd_logger.info(
             "commandlet action=%s backend=adb size=%sx%s cmds=%s",
-            cmd.get("action") or cmd.get("type"), size[0], size[1], shell_cmds,
+            cmd.get("action") or cmd.get("type"), size[0], size[1], shown,
         )
         results = []
-        for shell in shell_cmds:
-            ok, stdout, stderr = run_adb_shell(shell)
-            results.append({"cmd": shell, "ok": ok, "stdout": stdout, "stderr": stderr})
+        for shell, label in zip(shell_cmds, shown):
+            with _sensitive_adb(f"shell {label}", secret) if is_text else contextlib.nullcontext():
+                ok, stdout, stderr = run_adb_shell(shell)
+            results.append({"cmd": label, "ok": ok, "stdout": stdout,
+                            "stderr": _scrub(stderr, secret)})
         viewport.frame(vnc_logger)
         return {
             "success": all(item["ok"] for item in results) if results else True,
             "backend": "adb",
             "size": {"width": size[0], "height": size[1]},
-            "commands": shell_cmds,
+            "commands": shown,
             "results": results,
             "w3c": w3c,
         }, 200
@@ -1014,20 +1466,22 @@ def control_screen():
 @require_auth
 def device_input():
     """
-    Send input to device
-    
+    Send input to device. `success` is true only when adb and the device
+    accepted every command; otherwise `success: false` with `error_code`
+    (adb_failed, adb_timeout, input_rejected, bad_request, screen_size_unavailable,
+    no_focused_field, ui_dump_failed, unsupported_unicode, unsupported_type, no_match).
+
     Body:
     {
-        "type": "tap" | "swipe" | "text" | "key",
-        "x": 500,        // for tap
-        "y": 500,        // for tap
-        "x1": 100,       // for swipe
-        "y1": 100,       // for swipe
-        "x2": 500,       // for swipe
-        "y2": 500,       // for swipe
-        "duration": 300, // for swipe (ms)
-        "text": "hello", // for text
-        "keycode": 4     // for key (KEYCODE_BACK=4, HOME=3, etc)
+        "type": "tap" | "tap_label" | "swipe" | "text" | "key",
+        "x": 500, "y": 500,          // tap; with "percentage": true, 0-100 of the screen
+        "label": "Save",             // tap_label
+        "x1": 100, "y1": 100,        // swipe (percentage applies too)
+        "x2": 500, "y2": 500,
+        "duration": 300,             // swipe (ms)
+        "text": "hello",             // text; any characters, see `path` in the reply
+        "clear": false,              // text: empty the focused field first
+        "keycode": 4                 // key: number or KEYCODE_ name (BACK=4, HOME=3)
     }
     """
     data = request.get_json() or {}
@@ -1143,8 +1597,16 @@ def get_logs():
 @app.route("/device/ui", methods=["GET", "POST"])
 @require_auth
 def device_ui():
-    """Labeled elements with tap centres, so procedures address by label."""
-    result = _read_ui_tree()
+    """Labeled elements with tap centres, so procedures address by label.
+
+    Text typed into inputs is redacted (`value_redacted`, `text_len`) unless
+    the caller passes `include_values=1` (query, or JSON body on POST), e.g.
+    to read a form back after filling it. Passwords are never returned.
+    """
+    body = request.get_json(silent=True) if request.method == "POST" else None
+    include = _truthy(request.args.get("include_values")) or _truthy(
+        (body or {}).get("include_values") if isinstance(body, dict) else None)
+    result = _read_ui_tree(include_values=include)
     return jsonify(result), (200 if result.get("success") else 500)
 
 @app.route("/device/focus", methods=["GET"])

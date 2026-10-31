@@ -104,7 +104,9 @@ class Api:
         return self.call("POST", "/apps/%s/stop" % package, {})[1]
 
     def ui(self):
-        return self.call("GET", "/device/ui")[1]
+        # The smoke reads typed text back, so it asks for values explicitly;
+        # /device/ui redacts what inputs hold by default.
+        return self.call("GET", "/device/ui?include_values=1")[1]
 
     def tap_label(self, label):
         return self.call("POST", "/device/input", {"type": "tap_label", "label": label})[1]
@@ -298,7 +300,8 @@ def smoke_notes(run, app):
 
 def smoke_contacts(run, app):
     name, pkg = "contacts", app["package"]
-    surname = "Smoke%d" % int(time.time())
+    # The apostrophe checks that shell quoting survives the round trip.
+    surname = "O'Smoke%d" % int(time.time())
     # A first name no saved contact starts with: a matching one opens the
     # app's "matching contacts" dropdown, which covers Save and Surname and
     # turns the next tap into "pick that old contact".
@@ -333,7 +336,9 @@ def smoke_contacts(run, app):
             prompt = answer_permission_prompt(run.api, "Allow Contacts")
             if prompt:
                 run.api.tap_label(field_label)
-            run.api.type_text(text)
+            typed = run.api.type_text(text)
+            if not typed.get("success"):
+                return False, "typing into %s failed: %s" % (field_label, typed.get("error"))
             hit, els = run.wait_ui(lambda e: find(e, rid=rid, label=text), 6)
             if hit:
                 detail = "%s = %r" % (field_label, text)

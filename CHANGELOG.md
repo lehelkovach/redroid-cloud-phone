@@ -6,6 +6,18 @@ Notable changes, newest first. Dates are when the change was made on a branch.
 
 ### Added
 
+- Control API rung M0, honest input and a richer UI dump (2026-10-31):
+  `POST /device/input` tap/swipe accept `percentage: true` (0–100 of the
+  phone's `wm size`, cached per phone); `text` accepts `clear: true` (empty
+  the focused field, bounded by its current length) and types non-ASCII text
+  through ADBKeyboard or the clipboard + paste where the phone has one, else
+  answers `unsupported_unicode`; the reply's `path` says which way was used.
+  `GET /device/ui` elements gain `class`, `package`, `content_desc`, `text`,
+  `hint`, `checkable`, `checked`, `enabled`, `focusable`, `editable`,
+  `long_clickable`, `scrollable`, `selected`, `text_state`, `text_len` and
+  `value_redacted`; the reply gains `values_included` and `hints_exposed`.
+  New offline suite `device-input` with a hand-written Contacts editor
+  fixture (`tests/fixtures/ui/contacts_editor.xml`).
 - Per-owner, size-limited, encrypted volumes for phone `/data` and browser
   profiles, behind two flags that default to the old behaviour:
   `ORCH_PHONE_DATA=per_user` and `ORCH_BROWSER_PROFILE=volume`
@@ -23,6 +35,22 @@ Notable changes, newest first. Dates are when the change was made on a branch.
 
 ### Changed
 
+- `POST /device/input` and `POST /device/screen` check the `adb` result:
+  failures answer `success: false` with an `error_code` (`adb_failed`,
+  `adb_timeout`, `input_rejected`, `bad_request`, …) instead of `success: true`.
+  Unknown input types and screen actions are refused rather than reported as done.
+  Coordinates, durations and keycodes must be numbers (or `KEYCODE_` names), so
+  they can no longer carry shell text.
+- `input text` is single-quoted for the device shell, so `O'Brien` and text
+  with `$`, `&`, `;` or backticks types as written (the old `\'` escaping broke
+  the command). The same encoder backs `/ui/text`.
+- `GET /device/ui` redacts what inputs hold (`text: null`, `value_redacted`,
+  `text_len`) unless the caller passes `include_values=1`; passwords are always
+  redacted. `tap_label`'s `matched` and `available` follow the same rule.
+  `scripts/real-app-smoke.py` asks for values, since it reads typed text back,
+  and its Contacts surname now contains an apostrophe.
+- Typed text and UI dumps are no longer written to the ADB/CMD logs; those
+  commands are logged by a label and a length.
 - With `ORCH_PHONE_DATA=per_user`, `POST /instances/<id>/lease` answers
   `409 use_sessions`, and an instance that ran on per-user volumes is refused
   once the flag is turned off until it is reprovisioned.
