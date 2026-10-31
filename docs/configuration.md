@@ -63,6 +63,20 @@ The systemd units also set `CLOUD_PHONE_CONFIG`, but the code reads
 | `ORCH_OCI_PROFILE` | `DEFAULT` | `oci` CLI profile used to terminate VMs | `orchestrator/server.py:104` |
 | `ORCH_OCI_CONFIG` | `~/.oci/config` | `oci` CLI config file used to terminate VMs | `orchestrator/server.py:105` |
 | `ORCH_OCI_AUTH` | `security_token` | `oci` CLI `--auth` value used to terminate VMs | `orchestrator/server.py:106` |
+| `ORCH_PHONE_PROVIDER` | unset | `oci`: every new automation (Redroid) phone is its own OCI Compute instance, launched through `orchestrator/providers/oci_compute.py` with the `ORCH_OCI_*` variables below, whatever `ORCH_DEPLOY_MODE` says. Unset: phones come from `ORCH_DEPLOY_MODE` as before. Does not combine with `ORCH_PHONE_DATA=per_user`. See [deploy-oci.md](deploy-oci.md#phones-as-oci-instances-orch_phone_provideroci) | `_provision_instance()`, `provider_config_refusal()` |
+| `ORCH_OCI_IMAGE_ID` | empty, **required** with the provider | Custom image a phone boots from (made from the GApps phone host) | `providers/oci_compute.py` `config_from_env()` |
+| `ORCH_OCI_SUBNET_ID` | empty, **required** | Subnet for the phone's one VNIC; no public IP is assigned | same |
+| `ORCH_OCI_COMPARTMENT_ID` | empty, **required** | Compartment the phones are launched in and listed from | same |
+| `ORCH_OCI_AVAILABILITY_DOMAIN` | first AD of the compartment | Availability domain to launch in | same |
+| `ORCH_OCI_OCPUS` / `ORCH_OCI_MEMORY_GB` | `2` / `12` | Shape config of each `VM.Standard.A1.Flex` phone | same |
+| `ORCH_OCI_MAX_INSTANCES` | `2` | Phones the provider may have alive at once; over it: `429 oci_cap`, no OCI call. `/pool` reports the tighter of this and `ORCH_MAX_REDROID_INSTANCES` | `OciComputeProvider._check_caps()` |
+| `ORCH_OCI_MAX_LAUNCHES_PER_HOUR` | `4` | Launch attempts per rolling hour, failures included; over it: `429 oci_cap`, no OCI call | same |
+| `ORCH_OCI_RUNNING_TIMEOUT` / `ORCH_OCI_HEALTH_TIMEOUT` | `300` / `300` | Seconds to wait for `RUNNING`, then for the phone's `/health`. Giving up terminates the instance and answers `504 oci_timeout` / `504 oci_unhealthy` | `_wait_running()`, `_wait_health()` |
+| `ORCH_OCI_POLL_SECONDS` | `5` | Poll interval for both waits | same |
+| `ORCH_OCI_ORPHAN_TTL` | `7200` | At start-up, a tagged phone the state DB does not know and older than this is terminated; a younger one is kept and counted | `reconcile()` |
+| `ORCH_OCI_NAME_PREFIX` | `oslo-phone` | Display-name prefix: `<prefix>-<owner tag>-<n>` | `launch()` |
+| `ORCH_OCI_PHONE_PORT` | `8080` | Control API port on the phone's private IP | same |
+| `ORCH_OCI_PROVIDER_AUTH` | `auto` | `auto`: instance principal, else the `oci` config file (`ORCH_OCI_CONFIG`, `ORCH_OCI_PROFILE`). `instance_principal` or `config` forces one | `_signer_and_config()` |
 | `ORCH_ALLOW_NO_TOKEN` | unset | `1` lets a loopback-only orchestrator start without `ORCH_API_TOKEN` (development) | `startup_refusal()` |
 | `ORCH_ALLOW_PUBLIC_BIND` | unset | `1` allows a wildcard or public `ORCH_HOST` | `startup_refusal()` |
 | `ORCH_STATE_DB` | empty (memory) | SQLite file for leases, sessions, tenancy and ticket digests; survives restarts | `init_state()` |

@@ -1,0 +1,3 @@
+# The OCI Python SDK, only for ORCH_PHONE_PROVIDER=oci (orchestrator/providers/oci_compute.py).
+# Kept apart from requirements.txt so the default install and the offline tests need no SDK.
+oci>=2.100.0

@@ -37,10 +37,14 @@ API.
 {"status": "ok", "auth": {"required": true, "presented": true, "ok": true},
  "default_purpose": "automation", "default_runtime": "redroid",
  "deploy_mode": "mock", "runtime": "mock",
- "instances": 1, "sessions": 1, "max_instances": 5, "pool": {...}}
+ "instances": 1, "sessions": 1, "max_instances": 5,
+ "phone_provider": {"name": "builtin"}, "pool": {...}}
 ```
 
-`status` is `ok` or `unauthorized`.
+`status` is `ok` or `unauthorized`. With `ORCH_PHONE_PROVIDER=oci`,
+`phone_provider` is `{"name": "oci", "live", "max_instances",
+"launches_last_hour", "max_launches_per_hour", "auth"}` (`auth` is
+`instance_principal` or `config`, never a credential).
 
 Before running an operation or a procedure on a phone, the orchestrator calls
 that phone's `/health`. If the phone reports that the orchestrator's token is
@@ -98,6 +102,15 @@ Errors: `400` for a missing owner or bad purpose; `409` when the phone is in
 use, the pool or instance limit is reached, or the phone is "not clean" (see
 below); `500` for other failures (for example a failed deploy).
 
+With `ORCH_PHONE_PROVIDER=oci` a provisioning refusal carries a `code`:
+`429 oci_cap` (one of the two hard caps, with `live`, `max_instances`,
+`launches_last_hour`, `max_launches_per_hour` in the body; no OCI call was
+made), `502 oci_error` (an OCI service error, with `service_code` and
+`service_status`; never retried), `504 oci_timeout` / `504 oci_unhealthy` (the
+instance did not reach `RUNNING`, or its Control API never answered
+`/health`; the body's `terminated` says whether the instance was then
+terminated), `500 oci_auth` / `oci_config` / `oci_sdk_missing`.
+
 **Tenant isolation.** An instance remembers the last owner who leased it. It
 is refused to a different owner unless a reset was recorded after that use.
 No endpoint records a reset yet, so in practice an instance serves only the
@@ -126,13 +139,16 @@ first owner who held it until the orchestrator restarts. Other owners get
 |---|---|---|
 | `GET /instances` | | List of instance records |
 | `POST /instances` | `{"purpose"}` or `{"runtime"}` | `201` with the new record; `400` bad purpose; `409` when a limit is reached or a golden image ID is missing |
-| `DELETE /instances/<id>` | | `redroid` mode: runs `redroid-up.sh --down` (deletes the container's data). `oci` mode: terminates the VM. `mock`: forgets it. |
+| `DELETE /instances/<id>` | | `redroid` mode: runs `redroid-up.sh --down` (deletes the container's data). `oci` mode: terminates the VM. `mock`: forgets it. A `provider: "oci"` instance: terminates the Compute instance with its boot volume (`502 oci_error` with the service code if OCI refuses; the record then stays). |
 | `POST /instances/<id>/lease` | `{"owner": "default", "ttl_seconds": 300}` | `{"success", "instance_id", "owner", "ttl_seconds"}`; `409` if already leased; `400` if TTL < 10 |
 | `DELETE /instances/<id>/lease` | | `{"success", "instance_id"}` |
 
 An instance record contains `id`, `name`, `api_url`, `adb_connect`, `mode`,
 `runtime`, `purpose`, `gapps`, `instance_ocid`, `created_at`, `last_used`,
-and depending on mode `container`, `image`, `public_ip`, `golden_image`.
+and depending on mode `container`, `image`, `public_ip`, `golden_image`; a
+phone from `ORCH_PHONE_PROVIDER=oci` also carries `provider: "oci"`,
+`private_ip`, `shape` and `owner_tag`, and its `api_url` is
+`http://<private_ip>:8080`.
 
 How instances are provisioned depends on `ORCH_DEPLOY_MODE`:
 
@@ -141,6 +157,11 @@ How instances are provisioned depends on `ORCH_DEPLOY_MODE`:
 | `mock` | Record pointing at `ORCH_MOCK_API_URL` | Record pointing at `ORCH_MOCK_CAMERA_API_URL` or `ORCH_MOCK_API_URL` |
 | `redroid` | `redroid-up.sh` container on the next ADB port; Control API `ORCH_REDROID_API_URL` | OCI VM from `CUTTLEFISH_GOLDEN_IMAGE_ID` (required) |
 | `oci` | OCI VM from `REDROID_GOLDEN_IMAGE_ID` | OCI VM from `CUTTLEFISH_GOLDEN_IMAGE_ID` |
+
+`ORCH_PHONE_PROVIDER=oci` overrides the automation column in every mode: one
+OCI Compute instance per phone from `ORCH_OCI_IMAGE_ID`, through the SDK with
+an instance principal, capped by `ORCH_OCI_MAX_INSTANCES` and
+`ORCH_OCI_MAX_LAUNCHES_PER_HOUR` ([deploy-oci.md](../deploy-oci.md#phones-as-oci-instances-orch_phone_provideroci)).
 
 ## Relay to a phone
 

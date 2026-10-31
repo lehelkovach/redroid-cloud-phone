@@ -51,6 +51,7 @@ try:
     from orchestrator.proxy_relay import LeaseProxyRelay
     from orchestrator.runtimes import is_browser_request
     from orchestrator import user_volumes as uv
+    from orchestrator.providers import oci_compute as ocp
 except ImportError:  # running server.py directly
     import procedures as proc
     import browser_pool as bp  # type: ignore
@@ -59,6 +60,7 @@ except ImportError:  # running server.py directly
     from proxy_relay import LeaseProxyRelay  # type: ignore
     from runtimes import is_browser_request  # type: ignore
     import user_volumes as uv  # type: ignore
+    from providers import oci_compute as ocp  # type: ignore
 
 try:  # WebSocket relay (CDP, phone screen). Optional so the phone API runs without it.
     import simple_websocket
@@ -145,6 +147,10 @@ ORCH_REDROID_ADB_PORT_BASE = int(os.environ.get("ORCH_REDROID_ADB_PORT_BASE", "5
 ORCH_OCI_PROFILE = os.environ.get("ORCH_OCI_PROFILE", "DEFAULT")
 ORCH_OCI_CONFIG = os.environ.get("ORCH_OCI_CONFIG", str(Path.home() / ".oci" / "config"))
 ORCH_OCI_AUTH = os.environ.get("ORCH_OCI_AUTH", "security_token")
+# Where new automation phones come from. Unset: as before (containers or
+# deploy-from-golden VMs by ORCH_DEPLOY_MODE). `oci`: one OCI Compute instance
+# per phone through orchestrator/providers/oci_compute.py (ORCH_OCI_*).
+ORCH_PHONE_PROVIDER = os.environ.get("ORCH_PHONE_PROVIDER", "").strip().lower()
 
 # Isolation: persisted state, the chrome pool, and the ticketed relay.
 # docs/isolation.md explains each one; docs/configuration.md lists them.
@@ -477,8 +483,58 @@ def _count_runtime(runtime):
     return sum(1 for inst in _instances.values() if inst.get("runtime") == runtime)
 
 
+_oci_provider = None
+_oci_provider_lock = threading.Lock()
+
+
+def _phone_provider():
+    return (ORCH_PHONE_PROVIDER or "").strip().lower()
+
+
+def oci_provider():
+    """The OciComputeProvider, built from ORCH_OCI_* on first use (tests inject a fake)."""
+    global _oci_provider
+    with _oci_provider_lock:
+        if _oci_provider is None:
+            _oci_provider = ocp.OciComputeProvider()
+        return _oci_provider
+
+
+def set_oci_provider(provider):
+    global _oci_provider
+    with _oci_provider_lock:
+        _oci_provider = provider
+
+
+def provider_config_refusal():
+    """Why ORCH_PHONE_PROVIDER cannot be served as configured, or None."""
+    name = _phone_provider()
+    if not name:
+        return None
+    if name != "oci":
+        return f"ORCH_PHONE_PROVIDER must be unset or 'oci' (got {name!r})"
+    if (ORCH_PHONE_DATA or "instance").strip().lower() == "per_user":
+        return "ORCH_PHONE_PROVIDER=oci does not combine with ORCH_PHONE_DATA=per_user (a phone VM has no host volume)"
+    try:
+        return ocp.validate(ocp.config_from_env())
+    except ocp.ProviderError as exc:
+        return str(exc)
+
+
+def _provider_health():
+    if _phone_provider() != "oci":
+        return {"name": "builtin"}
+    out = {"name": "oci"}
+    if _oci_provider is not None:
+        out.update(_oci_provider.caps())
+        out["auth"] = _oci_provider.auth_mode
+    return out
+
+
 def _runtime_limit(runtime):
     if runtime == RUNTIME_REDROID:
+        if _phone_provider() == "oci" and _oci_provider is not None:
+            return min(ORCH_MAX_REDROID_INSTANCES, _oci_provider.config["max_instances"])
         return ORCH_MAX_REDROID_INSTANCES
     if runtime == RUNTIME_CUTTLEFISH:
         return ORCH_MAX_CUTTLEFISH_INSTANCES
@@ -588,6 +644,25 @@ def _provision_oci(runtime, purpose):
     return record
 
 
+def _provision_oci_compute(purpose, owner=None):
+    """ORCH_PHONE_PROVIDER=oci: one Compute instance per phone, tagged with the owner."""
+    rec = oci_provider().launch(owner or "unowned")
+    return _create_instance_record(
+        rec["api_url"],
+        rec["name"],
+        runtime=RUNTIME_REDROID,
+        purpose=purpose,
+        extra={
+            "provider": "oci",
+            "instance_ocid": rec["instance_ocid"],
+            "private_ip": rec.get("private_ip"),
+            "image": rec.get("image_id"),
+            "shape": rec.get("shape"),
+            "owner_tag": rec.get("owner_tag"),
+        },
+    )
+
+
 def _check_capacity(runtime):
     """Raise the pool-full RuntimeError if one more `runtime` instance would not fit."""
     with _instances_lock:
@@ -602,13 +677,16 @@ def _check_capacity(runtime):
             )
 
 
-def _provision_instance(purpose=None, runtime=None, data_dir=None, data_source=None):
+def _provision_instance(purpose=None, runtime=None, data_dir=None, data_source=None, owner=None):
     if is_browser_request(purpose, runtime):
         raise ValueError("browser leases go through POST /sessions with purpose=browser")
     purpose = resolve_purpose(purpose, runtime)
     runtime = runtime_for_purpose(purpose)
 
     _check_capacity(runtime)
+
+    if runtime == RUNTIME_REDROID and _phone_provider() == "oci":
+        return _provision_oci_compute(purpose, owner=owner)
 
     if ORCH_DEPLOY_MODE == "mock":
         api_url = _mock_api_url(runtime)
@@ -655,7 +733,7 @@ def _terminate_instance(instance_ocid: str):
     subprocess.check_call(cmd)
 
 
-def _get_or_create_instance(instance_id=None, purpose=None, runtime=None, provision=True):
+def _get_or_create_instance(instance_id=None, purpose=None, runtime=None, provision=True, owner=None):
     purpose = resolve_purpose(purpose, runtime)
     runtime = runtime_for_purpose(purpose)
 
@@ -679,7 +757,7 @@ def _get_or_create_instance(instance_id=None, purpose=None, runtime=None, provis
     if not provision:
         raise RuntimeError("phone in use")
     logger.info("No idle %s instance; provisioning purpose=%s", runtime, purpose)
-    return _provision_instance(purpose=purpose, runtime=runtime)
+    return _provision_instance(purpose=purpose, runtime=runtime, owner=owner)
 
 
 def _run_steps(api_url: str, steps, instance=None):
@@ -826,9 +904,12 @@ def create_instance():
         inst = _provision_instance(
             purpose=payload.get("purpose"),
             runtime=payload.get("runtime"),
+            owner=payload.get("owner") or payload.get("owner_user_id"),
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except ocp.ProviderError as exc:
+        return jsonify({"error": str(exc), "code": exc.code, **exc.extra}), exc.status
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 409
     return jsonify(inst), 201
@@ -840,6 +921,16 @@ def delete_instance(instance_id):
         inst = _instances.get(instance_id)
     if not inst:
         return jsonify({"error": "instance not found"}), 404
+    if inst.get("provider") == "oci":
+        try:
+            oci_provider().terminate(inst.get("instance_ocid"))
+        except ocp.ProviderError as exc:
+            return jsonify({"error": str(exc), "code": exc.code, **exc.extra}), exc.status
+        with _instances_lock:
+            _instances.pop(instance_id, None)
+        _persist("instances", instance_id, None)
+        _clear_lease(instance_id)
+        return jsonify({"success": True, "message": "OCI phone instance terminated"}), 200
     if inst.get("mode") == "redroid" and inst.get("name"):
         try:
             subprocess.check_call(
@@ -1570,7 +1661,8 @@ def _acquire_user_session(owner_user_id, ttl_seconds=3600, provision=True, purpo
     if per_user:
         inst = _acquire_per_user_instance(owner_user_id, purpose, runtime, provision)
     else:
-        inst = _get_or_create_instance(purpose=purpose, runtime=runtime, provision=provision)
+        inst = _get_or_create_instance(purpose=purpose, runtime=runtime, provision=provision,
+                                       owner=owner_user_id)
         if _is_lease_valid(inst["id"]) and not _is_lease_valid(inst["id"], owner=owner_user_id):
             raise RuntimeError("phone in use")
         if (inst.get("data_source") or {}).get("type") == "user_volume":
@@ -1716,6 +1808,8 @@ def create_session():
         return jsonify({"error": str(exc), "code": exc.code, **(getattr(exc, "extra", None) or {})}), exc.status
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except ocp.ProviderError as exc:  # oci_cap 429, oci_error 502, oci_timeout / oci_unhealthy 504
+        return jsonify({"error": str(exc), "code": exc.code, **exc.extra}), exc.status
     except RuntimeError as exc:
         msg = str(exc)
         # "not clean" is a policy refusal like "in use" -- the request conflicts
@@ -2534,6 +2628,7 @@ def health():
         "instances": len(items),
         "sessions": sessions,
         "max_instances": ORCH_MAX_INSTANCES,
+        "phone_provider": _provider_health(),
         "pool": {**pool, bp.PURPOSE_BROWSER: _browser_pool_snapshot()},
         "isolation": {
             "state": "persistent" if getattr(_store, "persistent", False) else "memory",
@@ -2547,14 +2642,35 @@ def health():
     })
 
 
+def reconcile_oci_phones():
+    """Boot: adopt the OCI phones the state DB knows, terminate orphans past the TTL.
+
+    A failure here is logged, not fatal: the caps then count only what this
+    process launches, and the first launch surfaces the same error to a caller.
+    """
+    with _instances_lock:
+        known = [i.get("instance_ocid") for i in _instances.values()
+                 if i.get("provider") == "oci" and i.get("instance_ocid")]
+    try:
+        result = oci_provider().reconcile(known)
+    except ocp.ProviderError as exc:
+        logger.error("OCI reconcile failed (%s): %s", exc.code, exc)
+        return None
+    logger.info("OCI reconcile: adopted=%d kept=%d terminated=%d",
+                len(result["adopted"]), len(result["kept"]), len(result["terminated"]))
+    return result
+
+
 def main():
     host = os.environ.get("ORCH_HOST", "127.0.0.1")
     port = int(os.environ.get("ORCH_PORT", "8090"))
-    why = startup_refusal(host, ORCH_API_TOKEN) or volume_config_refusal()
+    why = startup_refusal(host, ORCH_API_TOKEN) or volume_config_refusal() or provider_config_refusal()
     if why:
         logger.error(why)
         raise SystemExit(2)
     init_state(ORCH_STATE_DB or ":memory:")
+    if _phone_provider() == "oci":
+        reconcile_oci_phones()
     if _volumes_enabled():
         threading.Thread(target=_volume_sampler, name="volume-sampler", daemon=True).start()
         logger.info("Per-owner volumes on: phone_data=%s browser_profile=%s root=%s",

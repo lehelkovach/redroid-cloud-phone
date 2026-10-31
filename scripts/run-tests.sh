@@ -41,6 +41,7 @@ OFFLINE_SUITES=(
     "real-app-smoke:tests.test_real_app_smoke"
     "user-volumes:tests.test_user_volumes"
     "user-volumes-real:tests.test_user_volumes_real"
+    "oci-provider:tests.test_oci_compute_provider"
 )
 
 SCRIPT_SUITES=(
