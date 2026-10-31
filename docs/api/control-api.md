@@ -93,21 +93,60 @@ Always `200`. Tries to connect ADB, checks Play packages, and reports whether
 
 | `type` | Fields (defaults) | Effect |
 |---|---|---|
-| `tap` (default) | `x` (500), `y` (500) | `input tap x y` |
-| `tap_label` | `label` | Reads the UI tree and taps the best match (see `/device/ui`) |
-| `swipe` | `x1` (100), `y1` (100), `x2` (500), `y2` (500), `duration` ms (300) | `input swipe` |
-| `text` | `text` | `input text`; spaces become `%s` |
-| `key` | `keycode` (4 = Back) | `input keyevent` |
+| `tap` (default) | `x` (500), `y` (500), `percentage` (false) | `input tap x y` |
+| `tap_label` | `label`, `include_values` (false) | Reads the UI tree and taps the best match (see `/device/ui`) |
+| `swipe` | `x1` (100), `y1` (100), `x2` (500), `y2` (500), `duration` ms (300), `percentage` (false) | `input swipe` |
+| `text` | `text`, `clear` (false) | Types `text` into the focused field (see below) |
+| `key` | `keycode` (4 = Back): a number or a `KEYCODE_` name | `input keyevent` |
 
-Returns `{"success": true, "type": "<type>"}` without checking the `adb`
-result. `tap_label` returns `{"success", "type", "label", "x", "y", "matched"}`,
-or `success: false` with up to 12 `available` labels when nothing matched.
+`success` is `true` only when `adb` exited 0 and the device printed no error
+(old `adb` shell protocols exit 0 whatever happened, so the output is checked
+too). Otherwise the reply is `success: false` with an `error_code` and a
+human-readable `error`:
+
+| `error_code` | Meaning |
+|---|---|
+| `adb_failed` / `adb_timeout` | `adb` exited non-zero or timed out |
+| `input_rejected` | the device printed an error (e.g. `Exception occurred while executing`) |
+| `bad_request` | a coordinate, duration or keycode is not a number / out of range |
+| `screen_size_unavailable` | `percentage: true` but `wm size` could not be read |
+| `no_focused_field` / `ui_dump_failed` | `clear: true` found no focused input, or the dump failed |
+| `unsupported_unicode` | the text is not printable ASCII and the phone has no path for it (`tried` lists the paths) |
+| `unsupported_type`, `no_match` | unknown `type`; `tap_label` matched nothing (`available` lists up to 12 labels) |
+
+The HTTP status stays `200` for these, as before.
+
+**Percentages.** With `percentage: true`, `x`/`y` (and the swipe points) are
+0–100 of the screen, converted with the phone's own size from `wm size`
+(the override size if one is set), cached per phone for 5 minutes. The reply
+carries the pixels used and `screen: {width, height}`. Rotation is not taken
+into account.
+
+**Text.** Printable ASCII goes through `input text`, single-quoted for the
+device shell (so `O'Brien`, `$`, `&`, `;` arrive unchanged) with spaces as
+`%s`; a literal `%s` is split across two calls. Anything else is typed by
+the first path the phone supports: the ADBKeyboard IME
+(`am broadcast -a ADB_INPUT_B64`) when it is the active input method, then
+`cmd clipboard set-text` + paste (`KEYCODE_PASTE`), then the Clipper app's
+broadcast + paste; the clipboard is emptied afterwards. The reply's `path` says
+which was used (`input_text`, `adbkeyboard`, `cmd_clipboard`,
+`clipper_broadcast`, or `none` for empty text) and `text_len` how many
+characters were sent. The text itself is never echoed or logged.
+
+`clear: true` first empties the focused input: `KEYCODE_MOVE_END`, then as
+many forward-deletes and deletes as the field's current length in a fresh UI
+dump (`cleared: {"chars": n, ...}` in the reply). A field showing only its hint
+counts as empty.
+
+`tap_label` returns `{"success", "type", "label", "x", "y", "matched"}`;
+`matched` is redacted like `/device/ui` unless `include_values` is set.
 
 ### `POST /device/screen`
 
 Body `{"action": "on" | "off" | "toggle" | "unlock"}` (default `toggle`).
-Sends wake/sleep/power key events; `unlock` also swipes up. Always reports
-`success: true`.
+Sends wake/sleep/power key events; `unlock` also swipes up. Reports
+`success: false` with an `error_code` when a key event fails, or
+`unsupported_action` for any other action.
 
 ### `GET /device/screenshot`
 
@@ -119,19 +158,39 @@ PNG image (`image/png`). `500` with `{"error": ...}` on failure.
 
 ### `GET /device/ui` (also `POST`)
 
-Runs `uiautomator dump` and returns elements that have a label or resource ID,
-with the centre of their bounds as the tap point:
+Runs `uiautomator dump` and returns elements that have a label, a resource
+ID, or are inputs, with the centre of their bounds as the tap point:
 
 ```json
-{"success": true, "count": 2, "elements": [
-  {"label": "Email", "resource_id": "com.example:id/email", "clickable": true,
-   "focused": false, "password": false, "x": 540, "y": 812, "bounds": [40, 760, 1040, 864]}
+{"success": true, "count": 1, "values_included": false, "hints_exposed": true,
+ "elements": [
+  {"label": "First name", "resource_id": "com.example:id/first_name", "clickable": true,
+   "focused": false, "password": false, "x": 540, "y": 812, "bounds": [40, 760, 1040, 864],
+   "class": "android.widget.EditText", "package": "com.example", "text": null,
+   "content_desc": "", "hint": "First name", "checkable": false, "checked": false,
+   "enabled": true, "focusable": true, "editable": true, "long_clickable": true,
+   "scrollable": false, "selected": false, "text_state": "value", "text_len": 5,
+   "value_redacted": true}
 ]}
 ```
 
+- `editable` is true for the EditText family (class containing `EditText`,
+  `TextInput` or `AutoCompleteTextView`). `hint` is set only when the dump
+  carries a `hint` attribute; `hints_exposed` says whether this one did.
+- `text_state` (inputs and password fields only): `empty`, `hint` (the text is
+  the hint Android shows in an empty field), `value` (something was typed), or
+  `unknown` (non-empty, and the dump has no `hint` to compare with).
+- **Typed values are redacted by default.** For `value` and `unknown` the
+  reply has `text: null`, `value_redacted: true`, `text_len`, and `label` falls
+  back to the content description or hint (or `""`). Pass `include_values=1`
+  (query string, or `{"include_values": true}` in a POST body) to get them,
+  e.g. to read a filled form back. Password fields stay redacted either way.
+- `label` is otherwise the node's text or content description, as before.
+
 `500` with `success: false` if the dump fails. When matching a label,
 clickable elements win over exact text, and among clickable ones an exact
-match wins over a partial one.
+match wins over a partial one. Matching uses the real text, so `tap_label`
+still finds a field by the hint it shows or the value it holds.
 
 ### `GET /device/focus`
 

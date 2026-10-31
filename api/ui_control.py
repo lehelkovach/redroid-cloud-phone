@@ -79,8 +79,34 @@ def resolve_xy(cmd: Dict, size: Tuple[int, int], prefix: str = "") -> Tuple[int,
     raise UIError(f"missing coordinates ({xk}/{yk} or {xpk}/{ypk})")
 
 
-def _escape_text(text: str) -> str:
-    return text.replace(" ", "%s").replace("'", "\\'")
+_PLAIN_TEXT_RE = re.compile(r"^[\x20-\x7e]*$")
+
+
+def is_plain_text(text: str) -> bool:
+    """True when `input text` can type every character (printable ASCII).
+
+    `input text` maps characters through the virtual keyboard's key map, so
+    anything else (accents, CJK, emoji, newlines) fails on the device.
+    """
+    return bool(_PLAIN_TEXT_RE.match(text or ""))
+
+
+def shell_quote(value: str) -> str:
+    """Single-quote for the device's POSIX shell: nothing inside is special."""
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def input_text_commands(text: str) -> List[str]:
+    """`adb shell` commands that make `input text` type exactly `text`.
+
+    `input text` turns `%s` into a space and leaves everything else alone, so
+    spaces go out as `%s`. A literal "%s" in the text would also become a
+    space; splitting between its `%` and `s` sends them in separate calls,
+    where the escape cannot span. Each argument is single-quoted, so `'`,
+    `$`, `&`, `;`, backticks and the rest reach `input` unchanged.
+    """
+    chunks = [c for c in re.split(r"(?<=%)(?=s)", text or "") if c]
+    return ["input text " + shell_quote(chunk.replace(" ", "%s")) for chunk in chunks]
 
 
 def resolve_keycode(value) -> int:
@@ -122,7 +148,7 @@ def build_adb_input(cmd: Dict, size: Tuple[int, int]) -> List[str]:
         duration = int(cmd.get("duration", 300))
         return [f"input swipe {x1} {y1} {x2} {y2} {duration}"]
     if action in ("text", "type"):
-        return [f"input text '{_escape_text(cmd.get('text', ''))}'"]
+        return input_text_commands(str(cmd.get("text", "")))
     if action == "key":
         return [f"input keyevent {resolve_keycode(cmd.get('keycode', cmd.get('key', 4)))}"]
     raise UIError(f"unsupported UI action: {action!r}")
