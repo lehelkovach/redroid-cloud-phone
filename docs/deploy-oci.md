@@ -204,6 +204,64 @@ Pool limits: `ORCH_MAX_INSTANCES` (5), `ORCH_MAX_REDROID_INSTANCES` (3),
 orchestrator restarts, it forgets the VMs it created, and they keep running
 (and billing) until you terminate them yourself.
 
+## Phones as OCI instances (`ORCH_PHONE_PROVIDER=oci`)
+
+The path above shells out to `deploy-from-golden.sh` with an operator's CLI
+credentials and gives every phone a public IP. The provider in
+`orchestrator/providers/oci_compute.py` is the alternative for an
+orchestrator that itself runs on OCI: it launches one `VM.Standard.A1.Flex`
+instance per automation phone from a custom image, through the OCI Python
+SDK, authenticated as the orchestrator instance (instance principal), on the
+private subnet only. Default off; set `ORCH_PHONE_PROVIDER=oci` to turn it on.
+It applies to automation (Redroid) phones in every `ORCH_DEPLOY_MODE`; camera
+phones are unchanged.
+
+Prerequisites, all the founder's to do once (the OSLO repo's `deploy/oci/`
+scripts do them step by step and are documented in its
+`docs/OCI-PHONE-FLEET.md`):
+
+1. A dynamic group matching the orchestrator instance and a policy letting it
+   `manage instance-family`, `use virtual-network-family`, `use volume-family`,
+   `read instance-images` and `inspect compartments` in the compartment,
+   each `where request.instance.id = '<orchestrator instance OCID>'`.
+2. A custom image of the configured GApps phone host:
+   `oci compute image create --compartment-id <id> --instance-id <phone host id> --display-name cloud-phone-gapps-<date>`.
+   The image is taken from the running boot volume; OCI documents it as
+   consistent only when the instance is stopped first, so stop it for a
+   clean image (the first boot from a running-instance image usually works,
+   but a half-written `/data` cannot be ruled out). The phone's `API_TOKEN`
+   is baked in, so `ORCH_CONTROL_API_TOKEN` must equal it.
+3. `pip install -r orchestrator/requirements-oci.txt` in the orchestrator's
+   venv (the SDK is not in `requirements.txt`; nothing else needs it).
+4. In `/etc/cloud-phone/orchestrator.env`: `ORCH_PHONE_PROVIDER=oci`,
+   `ORCH_OCI_IMAGE_ID`, `ORCH_OCI_SUBNET_ID`, `ORCH_OCI_COMPARTMENT_ID`, and
+   the caps if the defaults (2 phones, 4 launches an hour) are not wanted.
+   `ORCH_STATE_DB` should be set, so a restart remembers which instances are
+   its phones.
+
+What happens on `POST /sessions` when no idle phone exists: both caps are
+checked (no API call if either is hit, `429 oci_cap`); the launch is
+recorded against the hourly budget; the instance is launched with freeform
+tags `oslo-owner=<owner token>`, `oslo-role=phone`, `oslo-created=<UTC
+time>`; the orchestrator waits for `RUNNING`, reads the private IP, waits for
+`http://<ip>:8080/health` to answer `ok`; the session's `api_url` is that
+address. If either wait gives up the instance is terminated and the refusal
+says so. `DELETE /instances/<id>` terminates the instance and its boot
+volume. At start-up the provider lists the compartment's `oslo-role=phone`
+instances: those in the state DB are adopted, orphans older than
+`ORCH_OCI_ORPHAN_TTL` (2 h) are terminated, younger ones are kept and counted
+against the cap.
+
+Costs: an A1.Flex 2 OCPU / 12 GB phone is about USD 29 a month while it runs
+(list price, us-phoenix-1, 2026-10; the boot volume adds about USD 2 for 50 GB)
+and nothing once terminated. The caps bound the worst case: at the defaults
+no bug can hold more than two phones or start more than four an hour.
+
+On a developer machine without an instance principal the provider falls
+back to `~/.oci/config` (`ORCH_OCI_CONFIG`, `ORCH_OCI_PROFILE`), and
+`/health` says which was used under `phone_provider.auth`. The offline suite
+`oci-provider` tests all of this against a fake SDK.
+
 ## Cuttlefish ingest host
 
 ```bash

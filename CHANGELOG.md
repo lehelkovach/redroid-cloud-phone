@@ -6,6 +6,25 @@ Notable changes, newest first. Dates are when the change was made on a branch.
 
 ### Added
 
+- OCI Compute phone provider, default off (2026-10-31): with
+  `ORCH_PHONE_PROVIDER=oci` every new automation phone is its own OCI
+  `VM.Standard.A1.Flex` instance (`ORCH_OCI_OCPUS`/`ORCH_OCI_MEMORY_GB`,
+  default 2/12) launched from a custom image of the GApps phone host
+  (`ORCH_OCI_IMAGE_ID`) on the private subnet, authenticated as the
+  orchestrator instance (instance principal; a dev box falls back to the
+  `oci` config file), tagged `oslo-owner`/`oslo-role=phone`/`oslo-created`,
+  and handed out as `api_url = http://<private ip>:8080` once `RUNNING` and
+  `/health` answer. Two hard caps are checked before any OCI call,
+  `ORCH_OCI_MAX_INSTANCES` (2) and `ORCH_OCI_MAX_LAUNCHES_PER_HOUR` (4,
+  failures count), answering `429 oci_cap`; an OCI error is `502 oci_error`
+  with the service code and is never retried; a phone that never got healthy
+  is terminated and the refusal says so (`504 oci_unhealthy`).
+  `DELETE /instances/<id>` terminates the instance with its boot volume; at
+  start-up tagged orphans older than `ORCH_OCI_ORPHAN_TTL` are terminated.
+  `/health` gains `phone_provider`. Unset, nothing changes. New module
+  `orchestrator/providers/oci_compute.py`, suite `oci-provider` (35 tests,
+  fake SDK), `orchestrator/requirements-oci.txt`; report
+  `.AGENT/reports/2026-10-31-oci-compute-provider.md`.
 - Browser slots (2026-10-31): one owner may hold several browsers at once,
   one per `slot`, each its own Chrome with its own profile and cookie jar,
   all still that owner's. `POST /sessions` with `purpose: "browser"` takes an
