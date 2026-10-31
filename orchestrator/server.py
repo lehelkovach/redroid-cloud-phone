@@ -168,6 +168,9 @@ ORCH_CHROME_IMAGE = os.environ.get("ORCH_CHROME_IMAGE", "")
 ORCH_CHROME_NETWORK = os.environ.get("ORCH_CHROME_NETWORK", "cloud-phone-browsers")
 ORCH_CHROME_CDP_PORT_BASE = int(os.environ.get("ORCH_CHROME_CDP_PORT_BASE", "19222"))
 ORCH_MAX_CHROME_INSTANCES = int(os.environ.get("ORCH_MAX_CHROME_INSTANCES", "4"))
+# Browsers one owner may hold at once, one per `slot` (default 1: the single
+# `main` browser every caller had before slots existed).
+ORCH_BROWSER_SLOTS_PER_OWNER = int(os.environ.get("ORCH_BROWSER_SLOTS_PER_OWNER", "1"))
 ORCH_CHROME_RELAY_BIND = os.environ.get("ORCH_CHROME_RELAY_BIND", "127.0.0.1")
 ORCH_TICKET_TTL_SECONDS = int(os.environ.get("ORCH_TICKET_TTL_SECONDS", "300"))
 ORCH_RELAY_RATE = float(os.environ.get("ORCH_RELAY_RATE", "50"))
@@ -1710,7 +1713,7 @@ def create_session():
             runtime=runtime,
         )
     except bp.LeaseError as exc:  # includes user_volumes.VolumeError (507 host_disk_low, ...)
-        return jsonify({"error": str(exc), "code": exc.code}), exc.status
+        return jsonify({"error": str(exc), "code": exc.code, **(getattr(exc, "extra", None) or {})}), exc.status
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
@@ -1728,13 +1731,24 @@ def create_session():
     return jsonify(body), (201 if created else 200)
 
 
+def _slot_args(data=None):
+    """`slot` and `lease_id` from the body or the query string (browser routes)."""
+    data = data or {}
+    slot = data.get("slot") or request.args.get("slot")
+    lease_id = data.get("lease_id") or request.args.get("lease_id")
+    return (str(slot) if slot else None), (str(lease_id) if lease_id else None)
+
+
 @app.route("/sessions/<owner_user_id>", methods=["GET"])
 def get_session(owner_user_id):
     purpose, runtime = _session_purpose_args()
     if is_browser_request(purpose, runtime):
         _reap_browser_sessions()
-        with _browser_lock:
-            sess = _browser_sessions.get(owner_user_id)
+        slot, lease_id = _slot_args()
+        try:
+            sess = _browser_session_for(owner_user_id, slot=slot, lease_id=lease_id)
+        except bp.LeaseError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status
         if not sess:
             return jsonify({"error": "session not found"}), 404
         return jsonify(bp.public_view(sess))
@@ -1750,9 +1764,14 @@ def get_session(owner_user_id):
 
 @app.route("/sessions/<owner_user_id>", methods=["DELETE"])
 def delete_session(owner_user_id):
-    purpose, runtime = _session_purpose_args(request.get_json(silent=True) or {})
+    data = request.get_json(silent=True) or {}
+    purpose, runtime = _session_purpose_args(data)
     if is_browser_request(purpose, runtime):
-        sess = _release_browser_session(owner_user_id)
+        slot, lease_id = _slot_args(data)
+        try:
+            sess = _release_browser_session(owner_user_id, slot=slot, lease_id=lease_id)
+        except bp.LeaseError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status
         if not sess:
             return jsonify({"error": "session not found"}), 404
         # The profile stays: release is not deletion (DELETE /profiles/<owner>).
@@ -1767,8 +1786,47 @@ def delete_session(owner_user_id):
 # Isolation: the chrome pool, tickets, and the relay (docs/isolation.md)
 # ==========================================================================
 
-_browser_sessions = {}          # owner_user_id -> session (persisted "browser_sessions")
+# Keyed by _browser_key(owner, slot): the owner id alone for the `main` slot
+# (the key every row had before slots existed), `<owner>\x1f<slot>` otherwise.
+# Persisted under the same keys in "browser_sessions".
+_browser_sessions = {}
 _browser_lock = threading.RLock()
+_SLOT_SEP = "\x1f"
+
+
+def _browser_key(owner, slot=bp.DEFAULT_SLOT):
+    slot = bp.normalize_slot(slot)
+    return owner if slot == bp.DEFAULT_SLOT else f"{owner}{_SLOT_SEP}{slot}"
+
+
+def _owner_browser_sessions(owner):
+    """Every live browser session of this owner, any slot. Takes the lock."""
+    with _browser_lock:
+        return [s for s in _browser_sessions.values() if s.get("owner_user_id") == owner]
+
+
+def _browser_lease_holder(lease_id):
+    """(key, session) of the browser lease with this id, whoever holds it, or (None, None)."""
+    if not lease_id:
+        return None, None
+    with _browser_lock:
+        for key, sess in _browser_sessions.items():
+            if sess.get("lease_id") == lease_id:
+                return key, sess
+    return None, None
+
+
+def _browser_session_for(owner, slot=None, lease_id=None):
+    """This owner's browser in `slot` (default main), or the one holding `lease_id`.
+
+    A lease id another owner holds is not found here: the caller's session
+    space is their own, and a refusal never names the holder.
+    """
+    if lease_id:
+        _, sess = _browser_lease_holder(lease_id)
+        return sess if sess is not None and sess.get("owner_user_id") == owner else None
+    with _browser_lock:
+        return _browser_sessions.get(_browser_key(owner, slot))
 _proxy_relays = {}              # lease_id -> LeaseProxyRelay; memory only, holds a credential
 _chrome_runtime = None
 
@@ -1802,9 +1860,8 @@ def _lease_check(record):
     owner = record.get("owner")
     lease_id = record.get("lease_id")
     if record.get("kind") == "browser":
-        with _browser_lock:
-            sess = _browser_sessions.get(owner)
-        if not sess or sess.get("lease_id") != lease_id:
+        sess = _browser_session_for(owner, lease_id=lease_id)
+        if not sess:
             return False, "browser lease released or reassigned"
         if sess.get("expires_at", 0) <= time.time():
             return False, "browser lease expired"
@@ -1855,6 +1912,10 @@ def init_state(path=None):
     with _browser_lock:
         _browser_sessions.clear()
         _browser_sessions.update(_store.load("browser_sessions"))
+        for sess in _browser_sessions.values():
+            # Rows written before slots existed are the owner's main browser.
+            sess.setdefault("slot", bp.DEFAULT_SLOT)
+            sess.setdefault("isolation_key", f"{sess.get('owner_token') or bp.owner_token(sess.get('owner_user_id'))}/{sess['slot']}")
     _tickets.load()
     logger.info(
         "State %s: instances=%d leases=%d phone_sessions=%d browser_sessions=%d",
@@ -1891,10 +1952,22 @@ def _stop_browser(sess):
     _limiter.forget(sess.get("lease_id"))
     if sess.get("profile_volume"):
         # ORCH_BROWSER_PROFILE=volume: lock the owner's profile volume. It is kept.
-        try:
-            volume_manager().close_token(sess["owner_token"], uv.KIND_BROWSER)
-        except Exception:  # noqa: BLE001
-            logger.exception("closing the profile volume failed lease=%s", sess.get("lease_id"))
+        _close_profile_volume_if_unused(sess["owner_token"], sess.get("lease_id"))
+
+
+def _close_profile_volume_if_unused(token, lease_id=None):
+    """Close the owner's profile volume unless another slot of theirs still runs on it."""
+    with _browser_lock:
+        busy = any(s.get("owner_token") == token and s.get("profile_volume") and s.get("lease_id") != lease_id
+                   for s in _browser_sessions.values())
+    if busy:
+        return False
+    try:
+        volume_manager().close_token(token, uv.KIND_BROWSER)
+    except Exception:  # noqa: BLE001
+        logger.exception("closing the profile volume failed lease=%s", lease_id)
+        return False
+    return True
 
 
 def _reap_browser_sessions(now=None):
@@ -1903,11 +1976,11 @@ def _reap_browser_sessions(now=None):
         expired = [(o, s) for o, s in _browser_sessions.items() if s.get("expires_at", 0) <= now]
         for owner, _ in expired:
             _browser_sessions.pop(owner, None)
-    for owner, sess in expired:
-        _persist_browser(owner, None)
+    for key, sess in expired:
+        _persist_browser(key, None)
         _stop_browser(sess)
-        logger.info("Browser lease expired owner=%s lease=%s (profile kept)",
-                    sess.get("owner_token"), sess.get("lease_id"))
+        logger.info("Browser lease expired owner=%s slot=%s lease=%s (profile kept)",
+                    sess.get("owner_token"), sess.get("slot"), sess.get("lease_id"))
     return [s for _, s in expired]
 
 
@@ -1920,19 +1993,24 @@ def _proxy_from_request(data):
     return (proxy_id or "direct"), (str(upstream) if upstream else None)
 
 
-def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_upstream=None, lease_id=None):
+def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_upstream=None, lease_id=None,
+                             slot=None):
     owner = str(owner or "").strip()
     if not owner:
         raise bp.LeaseError("owner_required", "owner_user_id required", 400)
+    slot = bp.normalize_slot(slot)
     _reap_browser_sessions()
     ttl = bp.clamp_ttl(ttl_seconds)
     with _browser_lock:
         if lease_id:
-            holder = next((s for s in _browser_sessions.values() if s.get("lease_id") == lease_id), None)
+            _, holder = _browser_lease_holder(lease_id)
             if holder is not None and holder.get("owner_user_id") != owner:
                 # Never reassigned. The refusal does not say whose it is.
                 raise bp.LeaseError("forbidden", "that lease belongs to another account", 403)
-        mine = _browser_sessions.get(owner)
+            if holder is not None:
+                slot = holder.get("slot") or bp.DEFAULT_SLOT  # a lease id names its slot
+        key = _browser_key(owner, slot)
+        mine = _browser_sessions.get(key)
         if mine:
             if proxy_upstream is not None and proxy_id != mine.get("proxy_id"):
                 raise bp.LeaseError(
@@ -1943,8 +2021,17 @@ def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_u
             mine["expires_at"] = time.time() + ttl
             mine["ttl_seconds"] = ttl
             mine["renewals"] = int(mine.get("renewals", 0)) + 1
-            _persist_browser(owner, mine)
+            _persist_browser(key, mine)
             return mine, False
+        held = sorted(s.get("slot") or bp.DEFAULT_SLOT for s in _browser_sessions.values()
+                      if s.get("owner_user_id") == owner)
+        if len(held) >= ORCH_BROWSER_SLOTS_PER_OWNER:
+            # The owner's own cap, before the pool's: a second slot under the
+            # default cap of 1 is refused here, and the body says the cap.
+            raise bp.LeaseError("slots_exhausted",
+                                f"this owner already holds {len(held)} browser slot(s); "
+                                f"ORCH_BROWSER_SLOTS_PER_OWNER={ORCH_BROWSER_SLOTS_PER_OWNER}",
+                                429, cap=ORCH_BROWSER_SLOTS_PER_OWNER, slots=held)
         if len(_browser_sessions) >= ORCH_MAX_CHROME_INSTANCES:
             raise bp.LeaseError("at_capacity", f"all {ORCH_MAX_CHROME_INSTANCES} browser slots are leased")
         port = _free_cdp_port()
@@ -1953,19 +2040,30 @@ def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_u
         volume = None
         if _browser_volume():
             # The owner's own LUKS volume, sized to their quota, is the profile.
+            # Every slot of the owner lives on that one volume; a slot other
+            # than main takes a directory of its own on it.
             volume = volume_manager().open_token(bp.owner_token(owner), uv.KIND_BROWSER)
             profile = volume["mount"]
+            if slot != bp.DEFAULT_SLOT:
+                profile = os.path.join(volume["mount"], "slots", slot)
+                try:
+                    os.makedirs(profile, mode=0o700, exist_ok=True)
+                except OSError as exc:
+                    _close_profile_volume_if_unused(bp.owner_token(owner))
+                    raise bp.LeaseError("slot_profile_failed", f"cannot create the slot's profile directory: {exc}", 500)
         else:
             bp.ensure_profile_root(ORCH_PROFILE_ROOT)
             ok, detail = bp.check_profile_encryption(ORCH_PROFILE_ROOT, ORCH_PROFILE_ENCRYPTION)
             if not ok:
                 raise bp.LeaseError("profile_not_encrypted", f"refusing to create a profile: {detail}", 503)
-            profile = bp.ensure_profile_dir(ORCH_PROFILE_ROOT, owner)
+            profile = bp.ensure_profile_dir(ORCH_PROFILE_ROOT, owner, slot)
         t = time.time()
         sess = {
             "lease_id": "bl-" + uuid.uuid4().hex[:16],
             "owner_user_id": owner,
             "owner_token": bp.owner_token(owner),
+            "slot": slot,
+            "isolation_key": bp.isolation_key(owner, slot),
             "purpose": bp.PURPOSE_BROWSER,
             "runtime": bp.RUNTIME_CHROME,
             "chrome_runtime": chrome_runtime().name,
@@ -1993,27 +2091,38 @@ def _acquire_browser_session(owner, ttl_seconds=3600, proxy_id="direct", proxy_u
             started = chrome_runtime().start(sess, proxy_server=proxy_server)
         except Exception:
             if volume:
-                try:
-                    volume_manager().close_token(sess["owner_token"], uv.KIND_BROWSER)
-                except Exception:  # noqa: BLE001 - report the start failure
-                    logger.exception("closing the profile volume after a failed start failed")
+                _close_profile_volume_if_unused(sess["owner_token"], sess["lease_id"])
             raise
         sess.update({k: v for k, v in (started or {}).items() if v is not None})
-        _browser_sessions[owner] = sess
-        _persist_browser(owner, sess)
-    logger.info("Browser lease owner=%s lease=%s runtime=%s egress=%s",
-                sess["owner_token"], sess["lease_id"], sess["chrome_runtime"], sess["egress"])
+        _browser_sessions[key] = sess
+        _persist_browser(key, sess)
+    logger.info("Browser lease owner=%s slot=%s lease=%s runtime=%s egress=%s",
+                sess["owner_token"], slot, sess["lease_id"], sess["chrome_runtime"], sess["egress"])
     return sess, True
 
 
-def _release_browser_session(owner):
+def _release_browser_session(owner, slot=None, lease_id=None):
+    """Release one of the owner's browsers: the slot named (default main) or the lease id.
+
+    Another owner's lease id is a 403, never a release. One slot's release
+    never touches another slot of the same owner.
+    """
     with _browser_lock:
-        sess = _browser_sessions.pop(owner, None)
+        if lease_id:
+            key, sess = _browser_lease_holder(lease_id)
+            if sess is not None and sess.get("owner_user_id") != owner:
+                raise bp.LeaseError("forbidden", "that lease belongs to another account", 403)
+        else:
+            key = _browser_key(owner, slot)
+            sess = _browser_sessions.get(key)
+        if sess is not None:
+            _browser_sessions.pop(key, None)
     if not sess:
         return None
-    _persist_browser(owner, None)
+    _persist_browser(key, None)
     _stop_browser(sess)
-    logger.info("Browser released owner=%s lease=%s (profile kept)", sess.get("owner_token"), sess.get("lease_id"))
+    logger.info("Browser released owner=%s slot=%s lease=%s (profile kept)",
+                sess.get("owner_token"), sess.get("slot"), sess.get("lease_id"))
     return sess
 
 
@@ -2061,9 +2170,9 @@ def _create_browser_session(owner, ttl, data):
     proxy_id, upstream = _proxy_from_request(data)
     try:
         sess, created = _acquire_browser_session(owner, ttl, proxy_id=proxy_id, proxy_upstream=upstream,
-                                                 lease_id=data.get("lease_id"))
+                                                 lease_id=data.get("lease_id"), slot=data.get("slot"))
     except bp.LeaseError as exc:
-        return jsonify({"error": str(exc), "code": exc.code}), exc.status
+        return jsonify({"error": str(exc), "code": exc.code, **(getattr(exc, "extra", None) or {})}), exc.status
     except RuntimeError as exc:
         return jsonify({"error": str(exc), "code": "runtime_failed"}), 500
     body = {"success": True, "session": bp.public_view(sess), "created": created}
@@ -2081,13 +2190,15 @@ def mint_ticket():
     ttl = data.get("ttl_seconds") or ORCH_TICKET_TTL_SECONDS
     if is_browser_request(data.get("purpose"), data.get("runtime")):
         _reap_browser_sessions()
-        with _browser_lock:
-            sess = _browser_sessions.get(owner)
-            foreign = any(s.get("lease_id") == data.get("lease_id") and o != owner
-                          for o, s in _browser_sessions.items())
-        if foreign:
+        slot, lease_id = _slot_args(data)
+        _, holder = _browser_lease_holder(lease_id)
+        if holder is not None and holder.get("owner_user_id") != owner:
             return jsonify({"error": "that lease belongs to another account", "code": "forbidden"}), 403
-        if not sess or (data.get("lease_id") and data["lease_id"] != sess["lease_id"]):
+        try:
+            sess = _browser_session_for(owner, slot=slot, lease_id=lease_id)
+        except bp.LeaseError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status
+        if not sess:
             return jsonify({"error": "no browser lease for this owner", "code": "no_such_lease"}), 404
         return jsonify({"success": True, **_browser_ticket_body(sess, ttl)}), 201
     with _user_sessions_lock:
@@ -2122,8 +2233,11 @@ def kill_session_streams(owner_user_id):
     data = request.get_json(silent=True) or {}
     purpose, runtime = _session_purpose_args(data)
     if is_browser_request(purpose, runtime):
-        with _browser_lock:
-            sess = _browser_sessions.get(owner_user_id)
+        slot, lease_id = _slot_args(data)
+        try:
+            sess = _browser_session_for(owner_user_id, slot=slot, lease_id=lease_id)
+        except bp.LeaseError as exc:
+            return jsonify({"error": str(exc), "code": exc.code}), exc.status
     else:
         with _user_sessions_lock:
             sess = _user_sessions.get(owner_user_id)
@@ -2163,9 +2277,8 @@ def delete_profile(owner_user_id):
     if data.get("confirm") != owner_user_id:
         return jsonify({"error": "confirm must repeat the owner_user_id", "code": "confirm_required"}), 400
     _reap_browser_sessions()
-    with _browser_lock:
-        if owner_user_id in _browser_sessions:
-            return jsonify({"error": "release the browser lease first", "code": "lease_active"}), 409
+    if _owner_browser_sessions(owner_user_id):
+        return jsonify({"error": "release the browser lease first", "code": "lease_active"}), 409
     try:
         if _browser_volume():
             deleted = volume_manager().delete_volume(owner_user_id, uv.KIND_BROWSER)
@@ -2304,8 +2417,7 @@ def relay_cdp(lease_id):
     token, record, err = _ticket_or_error("browser", lease_id=lease_id)
     if err:
         return err
-    with _browser_lock:
-        sess = _browser_sessions.get(record["owner"])
+    sess = _browser_session_for(record["owner"], lease_id=record["lease_id"])
     upstream_url = (sess or {}).get("cdp_ws_internal")
     if not upstream_url:
         return jsonify({"error": "no browser is running for this lease", "code": "no_browser"}), 503
@@ -2359,7 +2471,8 @@ def _browser_pool_snapshot():
     with _browser_lock:
         leased = len(_browser_sessions)
     return {"runtime": bp.RUNTIME_CHROME, "chrome_runtime": chrome_runtime().name,
-            "total": leased, "leased": leased, "idle": 0, "max": ORCH_MAX_CHROME_INSTANCES}
+            "total": leased, "leased": leased, "idle": 0, "max": ORCH_MAX_CHROME_INSTANCES,
+            "slots_per_owner": ORCH_BROWSER_SLOTS_PER_OWNER}
 
 
 # ---- start-up policy -------------------------------------------------------

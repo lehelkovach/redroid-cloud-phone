@@ -46,14 +46,39 @@ RUNTIME_CHROME = "chrome"
 DEFAULT_TTL_SECONDS = 3600
 MAX_TTL_SECONDS = 12 * 3600
 
+# Slots: one owner may hold several browsers, one per slot, each its own
+# runtime and profile and all still that owner's. `main` is the browser every
+# caller had before slots existed, and stays byte-for-byte the same.
+DEFAULT_SLOT = "main"
+SLOT_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+
 
 class LeaseError(Exception):
-    """A refused lease operation. `status` is the HTTP status to answer with."""
+    """A refused lease operation. `status` is the HTTP status to answer with.
 
-    def __init__(self, code, message, status=409):
+    `extra` is merged into the JSON refusal (for example the slot cap).
+    """
+
+    def __init__(self, code, message, status=409, **extra):
         super().__init__(message)
         self.code = code
         self.status = status
+        self.extra = extra
+
+
+def normalize_slot(slot):
+    """`main` when unset; otherwise the slot name, or a 400 for one that does not fit."""
+    if slot is None:
+        return DEFAULT_SLOT
+    raw = str(slot).strip()
+    if not SLOT_RE.match(raw):
+        raise LeaseError("bad_slot", "slot must match ^[a-z0-9_-]{1,32}$", 400)
+    return raw
+
+
+def isolation_key(owner, slot=DEFAULT_SLOT):
+    """`<owner token>/<slot>`: names one browser runtime, distinct per owner and per slot."""
+    return f"{owner_token(owner)}/{normalize_slot(slot)}"
 
 
 def owner_token(owner):
@@ -105,24 +130,32 @@ def ensure_profile_root(root):
     return root
 
 
-def profile_dir_for(root, owner):
+def profile_dir_for(root, owner, slot=DEFAULT_SLOT):
+    """`<root>/<token>` for the main slot; `<root>/<token>.slot-<slot>` for any other.
+
+    A slot profile is a sibling, not a child, of the main profile: only the
+    main directory is mounted into the main browser's container, so a slot's
+    cookies never ride along into it. No owner token contains a dot, so the
+    sibling cannot collide with another owner's directory.
+    """
     token = owner_token(owner)
     if not token:
         raise LeaseError("owner_required", "a profile needs an owner", 400)
-    path = os.path.join(root, token)
+    slot = normalize_slot(slot)
+    path = os.path.join(root, token if slot == DEFAULT_SLOT else f"{token}.slot-{slot}")
     if not _is_within(path, root) or os.path.realpath(path) == os.path.realpath(root):
         raise LeaseError("bad_owner", "owner does not map to a directory under the profile root", 400)
     return path
 
 
-def ensure_profile_dir(root, owner):
-    """The owner's profile directory, created 0700 if missing.
+def ensure_profile_dir(root, owner, slot=DEFAULT_SLOT):
+    """The owner's profile directory (for this slot), created 0700 if missing.
 
     Refuses a symlink (it could point into another owner's directory) and
     tightens a directory someone loosened.
     """
     ensure_profile_root(root)
-    path = profile_dir_for(root, owner)
+    path = profile_dir_for(root, owner, slot)
     if os.path.lexists(path):
         st = os.lstat(path)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
@@ -136,16 +169,23 @@ def ensure_profile_dir(root, owner):
 
 
 def delete_profile_dir(root, owner):
-    path = profile_dir_for(root, owner)
-    if not os.path.lexists(path):
-        return False
-    if os.path.islink(path):
-        os.unlink(path)  # never follow it
-        return True
-    if not _is_within(path, root):
-        raise LeaseError("bad_owner", "refusing to delete outside the profile root", 400)
-    shutil.rmtree(path)
-    return True
+    """Delete the owner's main profile and every slot profile of theirs. Nobody else's."""
+    main = profile_dir_for(root, owner)
+    slots = [os.path.join(root, name) for name in (os.listdir(root) if os.path.isdir(root) else [])
+             if name.startswith(os.path.basename(main) + ".slot-")]
+    deleted = False
+    for path in [main] + slots:
+        if not os.path.lexists(path):
+            continue
+        if os.path.islink(path):
+            os.unlink(path)  # never follow it
+            deleted = True
+            continue
+        if not _is_within(path, root):
+            raise LeaseError("bad_owner", "refusing to delete outside the profile root", 400)
+        shutil.rmtree(path)
+        deleted = True
+    return deleted
 
 
 # --------------------------------------------------------------------------
@@ -244,6 +284,9 @@ def docker_run_argv(session, *, image, network, container_prefix="orch-chrome", 
     but the orchestrator, which owns the relay -- can reach it.
     """
     name = f"{container_prefix}-{session['owner_token']}"
+    slot = session.get("slot") or DEFAULT_SLOT
+    if slot != DEFAULT_SLOT:
+        name += f".{slot}"  # a dot: never in a token or a slot, so one name per (owner, slot)
     argv = [
         "docker", "run", "-d", "--rm",
         "--name", name,

@@ -126,6 +126,19 @@ Runtimes (`ORCH_CHROME_RUNTIME`): `mock` (no process; default with
 `docker` (one container per lease from `ORCH_CHROME_IMAGE` on
 `ORCH_CHROME_NETWORK`, `--cap-drop ALL`, `no-new-privileges`).
 
+**Slots.** An owner may hold several browsers at once, one per `slot`
+(`POST /sessions {"slot": "swarm-1"}`), each its own runtime: profile
+`ORCH_PROFILE_ROOT/<owner token>.slot-<slot>` (a sibling of the main profile,
+so it is never mounted into the main browser's container), its own DevTools
+port, its own lease and tickets, container `orch-chrome-<owner token>.<slot>`.
+`main` is the default and the browser of before. The cap
+`ORCH_BROWSER_SLOTS_PER_OWNER` (default 1) is the founder's switch; over it the
+orchestrator answers `429 slots_exhausted`. A slot is still the owner's: the
+same owner token, the same cross-owner refusals, the same relay. With
+`ORCH_BROWSER_PROFILE=volume` the slots of one owner share that owner's one
+encrypted profile volume (`<mount>/slots/<slot>`); it closes when the last slot
+is released.
+
 ## Persistence
 
 `ORCH_STATE_DB` names a SQLite file (0600). Instances, phone leases and

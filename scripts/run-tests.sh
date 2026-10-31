@@ -26,6 +26,7 @@ OFFLINE_SUITES=(
     "procedures:tests.test_procedures"
     "orchestrator:tests.test_orchestrator_unit"
     "sessions:tests.test_user_sessions"
+    "browser-slots:tests.test_browser_slots"
     "gapps:tests.test_gapps_zip"
     "gapps-health:tests.test_gapps_health"
     "gapps-image:tests.test_gapps_image"

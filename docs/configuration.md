@@ -83,6 +83,7 @@ The systemd units also set `CLOUD_PHONE_CONFIG`, but the code reads
 | `ORCH_CHROME_NETWORK` | `cloud-phone-browsers` | Docker network for browser containers | `DockerChromeRuntime` |
 | `ORCH_CHROME_CDP_PORT_BASE` | `19222` | First internal DevTools port (loopback only) | `_free_cdp_port()` |
 | `ORCH_MAX_CHROME_INSTANCES` | `4` | Browser pool limit | `_acquire_browser_session()` |
+| `ORCH_BROWSER_SLOTS_PER_OWNER` | `1` | Browsers one owner may hold at once, one per `slot` (`POST /sessions` `slot`). `1` is the single `main` browser of before; OSLO's swarm needs at least `OSLO_SWARM_PARALLEL`. Over the cap: `429 slots_exhausted` | `_acquire_browser_session()` |
 | `ORCH_CHROME_RELAY_BIND` | `127.0.0.1` | Bind address of per-lease authenticating proxy relays | `LeaseProxyRelay` |
 | `ORCH_TICKET_TTL_SECONDS` | `300` | Session ticket lifetime (max 3600, never past the lease) | `orchestrator/relay.py` |
 | `ORCH_RELAY_RATE` / `ORCH_RELAY_BURST` | `50` / `200` | Per-lease relay rate limit (commands per second, bucket size) | `RateLimiter` |

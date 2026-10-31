@@ -6,6 +6,23 @@ Notable changes, newest first. Dates are when the change was made on a branch.
 
 ### Added
 
+- Browser slots (2026-10-31): one owner may hold several browsers at once,
+  one per `slot`, each its own Chrome with its own profile and cookie jar,
+  all still that owner's. `POST /sessions` with `purpose: "browser"` takes an
+  optional `slot` (`^[a-z0-9_-]{1,32}$`, default `main`); `main` is the
+  browser every caller had before and behaves exactly as it did. Each session
+  carries `slot` and `isolation_key` (`<owner token>/<slot>`). The per-owner
+  cap `ORCH_BROWSER_SLOTS_PER_OWNER` (default 1, so nothing changes until the
+  founder raises it) answers `429 slots_exhausted` with the cap in the body.
+  `DELETE /sessions/<owner>?purpose=browser` releases the slot named
+  (`slot=`) or the lease (`lease_id=`), default `main`, and never another
+  slot; another owner's lease id is `403`. `/tickets`, `/sessions/<owner>`
+  and the kill switch take `slot` or `lease_id` the same way. Lease rows
+  written before this change load as slot `main`. With
+  `ORCH_BROWSER_PROFILE=volume` every slot of an owner lives on that owner's
+  one profile volume, which closes when the last slot is released. OSLO's
+  swarm (`OSLO_SWARM`) leases `OSLO_SWARM_PARALLEL` such slots. New suite
+  `browser-slots`; report `.AGENT/reports/2026-10-31-browser-slots.md`.
 - Control API rung M0, honest input and a richer UI dump (2026-10-31):
   `POST /device/input` tap/swipe accept `percentage: true` (0–100 of the
   phone's `wm size`, cached per phone); `text` accepts `clear: true` (empty

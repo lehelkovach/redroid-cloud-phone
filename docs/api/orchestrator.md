@@ -230,8 +230,17 @@ Full description in [isolation.md](../isolation.md).
 ```json
 {"owner_user_id": "slack:U0EXAMPLE", "purpose": "browser", "ttl_seconds": 3600,
  "proxy": {"id": "owner-resi", "upstream": "http://user:pass@proxy.example:8000"},
- "lease_id": "bl-... (optional: renew this lease; another owner's is 403)"}
+ "lease_id": "bl-... (optional: renew this lease; another owner's is 403)",
+ "slot": "main (optional, ^[a-z0-9_-]{1,32}$: one more browser of this owner under this name)"}
 ```
+
+A **slot** is one of the owner's browsers: its own Chrome, profile and
+DevTools port, still that owner's. `main` (the default) is the browser every
+caller had before slots and renews as before. The session carries `slot` and
+`isolation_key` (`<owner token>/<slot>`). `ORCH_BROWSER_SLOTS_PER_OWNER`
+(default 1) caps the slots one owner holds: over it, `429 slots_exhausted`
+with `cap` and the held `slots` in the body. The pool limit
+`ORCH_MAX_CHROME_INSTANCES` still applies on top (`409 at_capacity`).
 
 `201` (new) / `200` (renewed):
 
@@ -246,12 +255,17 @@ Full description in [isolation.md](../isolation.md).
  "relay": {"cdp_ws_url": "ws://<orchestrator>/relay/cdp/bl-…"}}
 ```
 
-Refusals: `400 owner_required`, `403 forbidden` (another owner's lease),
-`409 at_capacity`, `409 proxy_changed`, `503 profile_not_encrypted`.
+Refusals: `400 owner_required`, `400 bad_slot`, `403 forbidden` (another owner's lease),
+`409 at_capacity`, `409 proxy_changed`, `429 slots_exhausted`, `503 profile_not_encrypted`.
 
 `GET /sessions/<owner>?purpose=browser` and `DELETE /sessions/<owner>?purpose=browser`
-read and release it (release keeps the profile: `"profile_kept": true`).
-`GET /sessions` lists `browser_sessions` next to the phone `sessions`.
+read and release it (release keeps the profile: `"profile_kept": true`). Both
+take `&slot=<slot>` or `&lease_id=<id>` (body or query) to name one of the
+owner's slots; the default is `main`. Releasing one slot never touches
+another; another owner's lease id is `403`. `/tickets` and
+`POST /sessions/<owner>/kill` take `slot` / `lease_id` the same way.
+`GET /sessions` lists `browser_sessions` next to the phone `sessions`, each
+with its `slot`.
 
 A phone `POST /sessions` now also returns `ticket`, `ticket_id`,
 `ticket_expires_at` and `relay: {phone_api_url, phone_stream_url}`, and the
