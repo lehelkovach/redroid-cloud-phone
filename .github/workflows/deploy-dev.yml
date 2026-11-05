@@ -17,10 +17,11 @@ name: Deploy to dev OCI server
 # The job no-ops (does not fail) if DEV_DEPLOY_HOST is not set, so the workflow is
 # safe to merge before the secrets/target are configured.
 
+# Manual-only (2026-11-05): the Actions budget is spent, so every automatic
+# run ended in startup_failure and emailed the owner. Tests run locally
+# before a merge; run this by hand from the Actions tab when needed.
 on:
-  push:
-    branches: [dev]
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 concurrency:
   group: deploy-dev
