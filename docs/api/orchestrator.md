@@ -140,7 +140,7 @@ first owner who held it until the orchestrator restarts. Other owners get
 | `GET /instances` | | List of instance records |
 | `POST /instances` | `{"purpose"}` or `{"runtime"}` | `201` with the new record; `400` bad purpose; `409` when a limit is reached or a golden image ID is missing |
 | `DELETE /instances/<id>` | | `redroid` mode: runs `redroid-up.sh --down` (deletes the container's data). `oci` mode: terminates the VM. `mock`: forgets it. A `provider: "oci"` instance: terminates the Compute instance with its boot volume (`502 oci_error` with the service code if OCI refuses; the record then stays). |
-| `POST /instances/<id>/lease` | `{"owner": "default", "ttl_seconds": 300}` | `{"success", "instance_id", "owner", "ttl_seconds"}`; `409` if already leased; `400` if TTL < 10 |
+| `POST /instances/<id>/lease` | `{"owner": "default", "ttl_seconds": 300}` | `{"success", "instance_id", "owner", "ttl_seconds"}`; `409` if leased by another owner (the same owner renews); `400` if TTL < 10; `503 waking` while a hibernated host starts |
 | `DELETE /instances/<id>/lease` | | `{"success", "instance_id"}` |
 
 An instance record contains `id`, `name`, `api_url`, `adb_connect`, `mode`,
@@ -162,6 +162,25 @@ How instances are provisioned depends on `ORCH_DEPLOY_MODE`:
 OCI Compute instance per phone from `ORCH_OCI_IMAGE_ID`, through the SDK with
 an instance principal, capped by `ORCH_OCI_MAX_INSTANCES` and
 `ORCH_OCI_MAX_LAUNCHES_PER_HOUR` ([deploy-oci.md](../deploy-oci.md#phones-as-oci-instances-orch_phone_provideroci)).
+
+## Hibernated hosts
+
+With `ORCH_HIBERNATE_ALLOWLIST` set, phone hosts on it are stopped when idle
+and started again on demand ([deploy-oci.md](../deploy-oci.md#hibernate-idle-phone-hosts-orch_hibernate_allowlist)).
+`POST /sessions`, `POST /instances/<id>/lease` and `/phones/<id>/…` on a
+stopped host keep the lease and answer
+`503 {"status": "waking", "code": "waking", "eta_seconds", "retry_after", "error": "Waking the cloud phone, about N min"}`
+with a `Retry-After` header. Retry the same request until it is 2xx. A
+failed wake is answered once with its own code: `oci_capacity` (503),
+`oci_error` (502), `oci_timeout` / `oci_unhealthy` (504) or `oci_gone` (410).
+
+| Method and path | Body | Response |
+|---|---|---|
+| `GET /hosts` | | `{"enabled", "active", "idle_minutes", "hosts": [{"name", "state", "idle_seconds", "held", "error", "code"}]}` |
+| `POST /hosts/<name>/wake` | `{"hold_seconds": 3600, "owner"}` | `200 {"status": "ready"}` or the `503 waking` / failure answers above; `404 not_managed` for a host that is not allowlisted or is protected. A hold keeps the host from being stopped until it runs out. |
+| `DELETE /hosts/<name>/hold` | | Ends the hold; the idle window starts then |
+
+`/health` carries the same report under `hibernate`.
 
 ## Relay to a phone
 

@@ -6,6 +6,25 @@ Notable changes, newest first. Dates are when the change was made on a branch.
 
 ### Added
 
+- Hibernate idle phone hosts, default off (2026-11-09): hosts named in
+  `ORCH_HIBERNATE_ALLOWLIST` (OCIDs or OCI display names) are soft-stopped
+  after `HIBERNATE_IDLE_MIN` (10) minutes with no lease, hold or phone
+  traffic. SOFTSTOP first, then STOP after a timeout; never while a lease is
+  valid; never terminated. A lease, session or phone call on a stopped host
+  starts it again: `START`, then `RUNNING`, then the phone's `/health`,
+  within `HIBERNATE_WAKE_TIMEOUT` (240 s). Meanwhile the answer is
+  `503 waking` with `eta_seconds` and `Retry-After`. State is read from OCI,
+  so a restarted orchestrator still wakes a stopped host. "Out of host
+  capacity" is retried 3 times with doubling backoff, then answered
+  `503 oci_capacity` in plain words. A hard denylist in code (`omnistream`,
+  `ksg-main-eb91`, `cloud-phone-orch*`, `ORCH_SELF_OCID`, the hostname)
+  is never stopped or started. New routes `GET /hosts`,
+  `POST /hosts/<name>/wake` (hold) and `DELETE /hosts/<name>/hold` serve
+  phones used directly. `/health` gains `hibernate`. `POST
+  /instances/<id>/lease` now lets the lease's own owner re-lease (to poll a
+  wake); other owners still get 409. Empty allowlist or `HIBERNATE=0`:
+  nothing changes. New module `orchestrator/hibernate.py`, suite
+  `hibernate` (33 tests, fake OCI).
 - OCI Compute phone provider, default off (2026-10-31): with
   `ORCH_PHONE_PROVIDER=oci` every new automation phone is its own OCI
   `VM.Standard.A1.Flex` instance (`ORCH_OCI_OCPUS`/`ORCH_OCI_MEMORY_GB`,

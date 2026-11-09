@@ -42,6 +42,7 @@ OFFLINE_SUITES=(
     "user-volumes:tests.test_user_volumes"
     "user-volumes-real:tests.test_user_volumes_real"
     "oci-provider:tests.test_oci_compute_provider"
+    "hibernate:tests.test_hibernate"
 )
 
 SCRIPT_SUITES=(
