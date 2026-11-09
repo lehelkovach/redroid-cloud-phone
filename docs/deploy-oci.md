@@ -262,6 +262,112 @@ back to `~/.oci/config` (`ORCH_OCI_CONFIG`, `ORCH_OCI_PROFILE`), and
 `/health` says which was used under `phone_provider.auth`. The offline suite
 `oci-provider` tests all of this against a fake SDK.
 
+## Hibernate idle phone hosts (`ORCH_HIBERNATE_ALLOWLIST`)
+
+A running A1.Flex phone host bills all the time. A stopped one bills only its
+boot volume (about USD 2 a month for 50 GB). The orchestrator therefore
+stops the phone hosts it is told to manage after `HIBERNATE_IDLE_MIN` minutes
+(default 10) with nobody on them. The next lease starts them again. The
+orchestrator VM itself stays running all the time, because it is what does
+the stopping and starting. Code: `orchestrator/hibernate.py`. Tests: suite
+`hibernate` (fake OCI).
+
+**Off by default.** With `ORCH_HIBERNATE_ALLOWLIST` empty, nothing happens
+and no OCI call is made. `HIBERNATE=0` (or `ORCH_HIBERNATE=0`) turns it off
+even when the allowlist is set.
+
+### Setting it up
+
+In `/etc/cloud-phone/orchestrator.env` on the orchestrator VM:
+
+```
+ORCH_HIBERNATE_ALLOWLIST=cloud-phone-gapps-a1,cloud-phone-agent-6c58
+ORCH_OCI_COMPARTMENT_ID=<compartment OCID>       # lets names resolve to instances
+ORCH_SELF_OCID=<this orchestrator's instance OCID>
+ORCH_HIBERNATE_HEALTH_URLS=cloud-phone-gapps-a1=http://<phone private ip>:8080
+ORCH_STATE_DB=/var/lib/cloud-phone-orchestrator/state.db
+# optional: HIBERNATE_IDLE_MIN=10  HIBERNATE_WAKE_TIMEOUT=240
+```
+
+Each allowlist entry is an instance OCID or an OCI display name. A name is
+resolved through `ListInstances` in `ORCH_OCI_COMPARTMENT_ID`. Without a
+compartment, a name can only match an orchestrator instance record. Only list
+hosts that run nothing else: `cloud-phone-agent-6c58` is described as an
+"agent worker" in OSLO's `docs/OCI-PHONE-FLEET.md`, so confirm it serves
+nothing always-on before you add it.
+
+**Hard denylist, in code, not config.** The following are never stopped or
+started, even when allowlisted (`hibernate.PROTECTED_NAME_PATTERNS`):
+
+- any display name containing `omnistream`;
+- `ksg-main-eb91` (prod);
+- any name starting with `cloud-phone-orch` (the orchestrator itself);
+- `ORCH_SELF_OCID`, `ORCH_SELF_NAME`, and this machine's hostname.
+
+The live OCI display name is read and checked again right before every
+SOFTSTOP, STOP and START.
+
+**IAM.** Power actions on the phone hosts need `INSTANCE_POWER_ACTIONS`.
+The `manage instance-family` grant from the provider policy above covers it
+when the hosts are in that compartment. Otherwise add
+`Allow dynamic-group <orchestrator group> to use instances in compartment <c>`.
+
+### Behaviour
+
+- **Idle.** A host is in use while any of these holds:
+  - an orchestrator lease on it is valid;
+  - a hold from `POST /hosts/<name>/wake` has not run out;
+  - phone traffic (`/phones/<id>/…`) arrived within the window.
+
+  `HIBERNATE_IDLE_MIN` minutes after the last of these, the loop (every
+  `ORCH_HIBERNATE_TICK_SECONDS`, 60) checks for a lease once more and sends
+  `SOFTSTOP`. If the host is not `STOPPED` after
+  `ORCH_HIBERNATE_SOFTSTOP_TIMEOUT` (180 s), it sends `STOP`. If a lease
+  arrives during the soft stop, the escalation is skipped and the host is
+  started again once it has stopped. Nothing is ever terminated. A host seen
+  for the first time, including after an orchestrator restart, gets a full
+  idle window before it can be stopped.
+- **Wake.** `POST /sessions`, `POST /instances/<id>/lease` and the
+  `/phones/<id>/…` routes check the host's OCI `lifecycle_state`. That state
+  comes from OCI, not memory, so this also works after an orchestrator
+  restart. If the host is stopped or stopping, the orchestrator keeps the
+  lease, starts the host in the background and answers:
+
+  ```
+  HTTP 503  Retry-After: 30
+  {"success": false, "status": "waking", "code": "waking",
+   "error": "Waking the cloud phone, about 2 min", "eta_seconds": 150,
+   "retry_after": 30, "instance_id": "…", "host": "cloud-phone-gapps-a1"}
+  ```
+
+  The caller retries the same request, which renews the same lease, until it
+  gets 2xx. The background wake does three things in order:
+  1. sends `START`;
+  2. waits for `RUNNING`;
+  3. waits for the phone's `/health` to answer `ok`.
+
+  All of it fits within `HIBERNATE_WAKE_TIMEOUT` (240 s). The ETA starts at
+  `ORCH_HIBERNATE_WAKE_ETA` (150 s) and then follows the last real wake.
+- **Capacity.** If `START` fails with "Out of host capacity", the
+  orchestrator retries `ORCH_HIBERNATE_CAPACITY_RETRIES` (3) times. The
+  backoff starts at `ORCH_HIBERNATE_CAPACITY_BACKOFF` (20 s) and doubles up
+  to 120 s. If every retry fails, the next request gets
+  `503 {"code": "oci_capacity", "error": "OCI has no free capacity to start
+  the phone host … It is still stopped; try again later."}` once, and the
+  request after that tries again. Other OCI errors give `oci_error`, a phone
+  that never turned healthy gives `oci_unhealthy`, and neither is retried.
+  A host that is running but unhealthy is still stopped by the idle loop
+  later, so it does not keep billing.
+- **Phones used directly.** When OSLO talks to a phone without an
+  orchestrator session (`CLOUD_PHONE_API_URL`), it calls
+  `POST /hosts/<name>/wake {"hold_seconds": N}` first, gets the same
+  503 / 200 answers, and releases the hold with `DELETE /hosts/<name>/hold`.
+  `GET /hosts` and `/health` → `hibernate` list each managed host's name,
+  state, idle seconds and last error. OCIDs are never shown.
+
+Costs while stopped: the boot volume only (about USD 2 a month for 50 GB).
+The first lease after a stop waits roughly the ETA.
+
 ## Cuttlefish ingest host
 
 ```bash

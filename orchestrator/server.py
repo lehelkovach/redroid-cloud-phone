@@ -52,6 +52,7 @@ try:
     from orchestrator.runtimes import is_browser_request
     from orchestrator import user_volumes as uv
     from orchestrator.providers import oci_compute as ocp
+    from orchestrator import hibernate as hib
 except ImportError:  # running server.py directly
     import procedures as proc
     import browser_pool as bp  # type: ignore
@@ -61,6 +62,7 @@ except ImportError:  # running server.py directly
     from runtimes import is_browser_request  # type: ignore
     import user_volumes as uv  # type: ignore
     from providers import oci_compute as ocp  # type: ignore
+    import hibernate as hib  # type: ignore
 
 try:  # WebSocket relay (CDP, phone screen). Optional so the phone API runs without it.
     import simple_websocket
@@ -506,6 +508,83 @@ def set_oci_provider(provider):
         _oci_provider = provider
 
 
+# Hibernation of idle paid phone hosts (orchestrator/hibernate.py). Off unless
+# ORCH_HIBERNATE_ALLOWLIST names hosts; HIBERNATE=0 turns it off outright.
+_hibernator = None
+_hibernator_lock = threading.Lock()
+
+
+def _hibernate_records():
+    with _instances_lock:
+        return [dict(i) for i in _instances.values()]
+
+
+def _hibernate_busy(instance_id):
+    return _is_lease_valid(instance_id)
+
+
+def _hibernate_compute():
+    if _phone_provider() == "oci":
+        return oci_provider().clients()["compute"]
+    return hib.default_compute_client()
+
+
+def hibernator():
+    global _hibernator
+    with _hibernator_lock:
+        if _hibernator is None:
+            _hibernator = hib.Hibernator(records=_hibernate_records, busy=_hibernate_busy,
+                                         compute_factory=_hibernate_compute)
+        return _hibernator
+
+
+def set_hibernator(h):
+    global _hibernator
+    with _hibernator_lock:
+        _hibernator = h
+
+
+def _wake_response(res, instance_id=None):
+    """A `waking` / failed-wake answer from the hibernator as a Flask response."""
+    body = {
+        "success": False,
+        "status": res["status"],
+        "code": res.get("code") or res["status"],
+        "error": res.get("message"),
+        "host": res.get("name"),
+    }
+    if instance_id:
+        body["instance_id"] = instance_id
+    for key in ("eta_seconds", "retry_after"):
+        if key in res:
+            body[key] = res[key]
+    resp = jsonify(body)
+    resp.status_code = int(res.get("http_status") or 503)
+    if res.get("retry_after"):
+        resp.headers["Retry-After"] = str(res["retry_after"])
+    return resp
+
+
+def _wake_gate(instance_id):
+    """None when the instance's host is usable now, else the response to answer with.
+
+    Free when hibernation is off: no allowlist, no OCI call.
+    """
+    h = hibernator()
+    if not h.active or not instance_id:
+        return None
+    with _instances_lock:
+        inst = _instances.get(instance_id)
+    if not inst:
+        return None
+    try:
+        res = h.ensure_awake(dict(inst))
+    except Exception as exc:  # noqa: BLE001 - an OCI read failing must not turn into a 500
+        logger.error("hibernate: wake check for %s failed: %s", instance_id, exc)
+        return None
+    return _wake_response(res, instance_id) if res else None
+
+
 def provider_config_refusal():
     """Why ORCH_PHONE_PROVIDER cannot be served as configured, or None."""
     name = _phone_provider()
@@ -554,14 +633,15 @@ def _golden_image_for(runtime):
 
 
 def _find_idle_instance(runtime):
+    h = hibernator()
     with _instances_lock:
-        for inst in _instances.values():
-            if inst.get("runtime") != runtime:
-                continue
-            if _is_lease_valid(inst["id"]):
-                continue
-            inst["last_used"] = time.time()
-            return inst
+        free = [i for i in _instances.values()
+                if i.get("runtime") == runtime and not _is_lease_valid(i["id"])]
+        # A host that is up beats one that would have to be woken first.
+        free.sort(key=lambda i: h.is_asleep(i))
+        if free:
+            free[0]["last_used"] = time.time()
+            return free[0]
     return None
 
 
@@ -972,9 +1052,14 @@ def lease_instance(instance_id):
         # tenancy guard); per-user phones are leased through POST /sessions only.
         return jsonify({"error": "ORCH_PHONE_DATA=per_user: lease phones with POST /sessions",
                         "code": "use_sessions"}), 409
-    if _is_lease_valid(instance_id):
+    if _is_lease_valid(instance_id) and not _is_lease_valid(instance_id, owner=owner):
         return jsonify({"error": "instance already leased"}), 409
     _set_lease(instance_id, owner, ttl)
+    # A hibernated host is started now; the lease is held while it wakes and
+    # the same owner polls this route until it answers 200.
+    gate = _wake_gate(instance_id)
+    if gate is not None:
+        return gate
     return jsonify({"success": True, "instance_id": instance_id, "owner": owner, "ttl_seconds": ttl})
 
 
@@ -989,6 +1074,12 @@ def _require_instance(instance_id):
         inst = _instances.get(instance_id)
     if not inst:
         return None, (jsonify({"error": "instance not found"}), 404)
+    h = hibernator()
+    if h.active:
+        h.touch(inst)  # phone traffic is activity: it resets the idle window
+        gate = _wake_gate(instance_id)
+        if gate is not None:
+            return None, gate
     return inst, None
 
 
@@ -1820,6 +1911,11 @@ def create_session():
         )
         status = 409 if conflict else 500
         return jsonify({"error": str(exc)}), status
+    # The session (and its lease) stand while a hibernated host wakes; the
+    # caller retries POST /sessions, which renews it, until this is 2xx.
+    gate = _wake_gate(sess.get("instance_id"))
+    if gate is not None:
+        return gate
     body = {"success": True, "session": sess, "created": created}
     body.update(_phone_ticket_body(sess))
     return jsonify(body), (201 if created else 200)
@@ -2609,6 +2705,44 @@ def startup_refusal(host, token, env=None):
     return None
 
 
+@app.route("/hosts", methods=["GET"])
+def list_hibernate_hosts():
+    """Allowlisted phone hosts and their hibernation state (names only, no OCIDs)."""
+    return jsonify(hibernator().snapshot())
+
+
+@app.route("/hosts/<key>/wake", methods=["POST"])
+def wake_hibernate_host(key):
+    """Make an allowlisted host usable and hold it awake for `hold_seconds`.
+
+    For a phone OSLO reaches directly (no orchestrator session): call this
+    first, then use the phone; 503 `waking` means retry after Retry-After.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        hold = max(0, int(data.get("hold_seconds") or 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "hold_seconds must be an integer"}), 400
+    try:
+        res = hibernator().wake_host(key, hold_seconds=hold, owner=data.get("owner"))
+    except Exception as exc:  # noqa: BLE001 - an OCI read failing is a 502, said plainly
+        logger.error("hibernate: wake %s failed: %s", key, exc)
+        return jsonify({"success": False, "code": "oci_error", "error": f"could not read the host's state: {exc}"}), 502
+    if res["status"] == "ready":
+        return jsonify({"success": True, "status": "ready", "host": res["host"]}), 200
+    if res["status"] == "not_managed":
+        return jsonify({"success": False, "status": "not_managed", "code": "not_managed",
+                        "error": res["message"]}), 404
+    return _wake_response(res)
+
+
+@app.route("/hosts/<key>/hold", methods=["DELETE"])
+def release_hibernate_hold(key):
+    if not hibernator().release_hold(key):
+        return jsonify({"success": False, "error": f"{key} is not an allowlisted host"}), 404
+    return jsonify({"success": True, "host": key})
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Open (the auth middleware exempts it), so it reports the caller's auth."""
@@ -2639,6 +2773,7 @@ def health():
             "open_streams": _streams.count(),
         },
         "volumes": _volumes_health(),
+        "hibernate": hibernator().snapshot(),
     })
 
 
@@ -2675,6 +2810,8 @@ def main():
         threading.Thread(target=_volume_sampler, name="volume-sampler", daemon=True).start()
         logger.info("Per-owner volumes on: phone_data=%s browser_profile=%s root=%s",
                     ORCH_PHONE_DATA, ORCH_BROWSER_PROFILE, ORCH_VOLUME_ROOT)
+    if hibernator().active:
+        threading.Thread(target=hibernator().run_forever, name="hibernate", daemon=True).start()
     if not ORCH_STATE_DB:
         logger.warning("ORCH_STATE_DB unset: leases live in memory and a restart forgets every owner")
     logger.info(

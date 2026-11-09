@@ -77,6 +77,15 @@ The systemd units also set `CLOUD_PHONE_CONFIG`, but the code reads
 | `ORCH_OCI_NAME_PREFIX` | `oslo-phone` | Display-name prefix: `<prefix>-<owner tag>-<n>` | `launch()` |
 | `ORCH_OCI_PHONE_PORT` | `8080` | Control API port on the phone's private IP | same |
 | `ORCH_OCI_PROVIDER_AUTH` | `auto` | `auto`: instance principal, else the `oci` config file (`ORCH_OCI_CONFIG`, `ORCH_OCI_PROFILE`). `instance_principal` or `config` forces one | `_signer_and_config()` |
+| `ORCH_HIBERNATE_ALLOWLIST` | empty (off, no OCI call) | Comma-separated instance OCIDs or OCI display names of phone hosts to stop when idle and start on demand. Names in the hard denylist (`omnistream`, `ksg-main-eb91`, `cloud-phone-orch*`, self) are never touched. See [deploy-oci.md](deploy-oci.md#hibernate-idle-phone-hosts-orch_hibernate_allowlist) | `orchestrator/hibernate.py` |
+| `HIBERNATE` / `ORCH_HIBERNATE` | on | `0` turns hibernation off even with an allowlist | same |
+| `HIBERNATE_IDLE_MIN` | `10` | Minutes with no lease, hold or phone traffic before SOFTSTOP | `Hibernator.tick()` |
+| `HIBERNATE_WAKE_TIMEOUT` | `240` | Seconds a wake may take from START to a healthy phone | `Hibernator.wake()` |
+| `ORCH_HIBERNATE_SOFTSTOP_TIMEOUT` / `ORCH_HIBERNATE_STOP_TIMEOUT` | `180` / `300` | Seconds to wait for STOPPED after SOFTSTOP before escalating to STOP; after STOP | `Hibernator.hibernate()` |
+| `ORCH_HIBERNATE_CAPACITY_RETRIES` / `ORCH_HIBERNATE_CAPACITY_BACKOFF` | `3` / `20` | "Out of host capacity" retries on START, backoff doubling to 120 s; then `503 oci_capacity` | `Hibernator._start()` |
+| `ORCH_HIBERNATE_WAKE_ETA` | `150` | First ETA (seconds) in a `waking` answer; later the last real wake | `eta_seconds()` |
+| `ORCH_HIBERNATE_HEALTH_URLS` | empty | `name=http://ip:8080,…`: phone `/health` to wait for after a wake, for hosts without an orchestrator record | `refresh()` |
+| `ORCH_SELF_OCID` / `ORCH_SELF_NAME` | empty | This orchestrator's own instance; never stopped (the hostname is protected too) | `is_protected()` |
 | `ORCH_ALLOW_NO_TOKEN` | unset | `1` lets a loopback-only orchestrator start without `ORCH_API_TOKEN` (development) | `startup_refusal()` |
 | `ORCH_ALLOW_PUBLIC_BIND` | unset | `1` allows a wildcard or public `ORCH_HOST` | `startup_refusal()` |
 | `ORCH_STATE_DB` | empty (memory) | SQLite file for leases, sessions, tenancy and ticket digests; survives restarts | `init_state()` |
